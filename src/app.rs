@@ -102,9 +102,10 @@ impl App {
         let conv_data = self.db.load_conversations(500)?;
         let order = self.db.load_conversation_order()?;
 
-        for (conv, unread) in conv_data {
+        for (mut conv, unread) in conv_data {
             let id = conv.id.clone();
             let msg_count = conv.messages.len();
+            conv.unread = unread;
             self.conversations.insert(id.clone(), conv);
             // Derive last_read_index from unread count
             if msg_count > 0 {

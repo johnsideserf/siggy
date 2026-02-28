@@ -5,8 +5,6 @@ use rusqlite::{params, Connection};
 
 use crate::app::{Conversation, DisplayMessage};
 
-const CURRENT_VERSION: i32 = 1;
-
 pub struct Database {
     conn: Connection,
 }
@@ -38,6 +36,8 @@ impl Database {
         if version < 1 {
             self.conn.execute_batch(
                 "
+                BEGIN;
+
                 CREATE TABLE conversations (
                     id         TEXT PRIMARY KEY,
                     name       TEXT NOT NULL,
@@ -61,6 +61,8 @@ impl Database {
                 );
 
                 INSERT INTO schema_version (version) VALUES (1);
+
+                COMMIT;
                 ",
             )?;
         }
