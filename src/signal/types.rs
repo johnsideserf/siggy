@@ -13,6 +13,8 @@ pub enum SignalEvent {
         sender: String,
         is_typing: bool,
     },
+    ContactList(Vec<Contact>),
+    GroupList(Vec<Group>),
     Error(String),
 }
 

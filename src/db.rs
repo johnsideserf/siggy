@@ -19,6 +19,15 @@ impl Database {
         Ok(db)
     }
 
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        let db = Self { conn };
+        db.migrate()?;
+        Ok(db)
+    }
+
     fn migrate(&self) -> Result<()> {
         // Create schema_version table if it doesn't exist
         self.conn.execute_batch(

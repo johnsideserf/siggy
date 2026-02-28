@@ -269,6 +269,10 @@ async fn run_app(
     app.load_from_db()?;
     app.set_connected();
 
+    // Request contacts and groups from signal-cli (best-effort)
+    let _ = signal_client.list_contacts().await;
+    let _ = signal_client.list_groups().await;
+
     loop {
         // Render
         terminal.draw(|frame| ui::draw(frame, &app))?;

@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::db::Database;
 use crate::input::{self, InputAction, HELP_TEXT};
-use crate::signal::types::{SignalEvent, SignalMessage};
+use crate::signal::types::{Contact, Group, SignalEvent, SignalMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -162,6 +162,8 @@ impl App {
                     self.typing_indicators.remove(&sender);
                 }
             }
+            SignalEvent::ContactList(contacts) => self.handle_contact_list(contacts),
+            SignalEvent::GroupList(groups) => self.handle_group_list(groups),
             SignalEvent::Error(err) => {
                 self.status_message = format!("error: {err}");
             }
@@ -256,6 +258,31 @@ impl App {
         if !is_active {
             if let Some(c) = self.conversations.get_mut(&conv_id) {
                 c.unread += 1;
+            }
+        }
+    }
+
+    fn handle_contact_list(&mut self, contacts: Vec<Contact>) {
+        for contact in contacts {
+            let name = contact.name.as_deref().unwrap_or(&contact.number);
+            let conv = self.get_or_create_conversation(&contact.number, name, false);
+            // Update name if contact provides a better one
+            if let Some(ref contact_name) = contact.name {
+                if !contact_name.is_empty() && conv.name != *contact_name {
+                    conv.name = contact_name.clone();
+                    let _ = self.db.upsert_conversation(&contact.number, contact_name, false);
+                }
+            }
+        }
+    }
+
+    fn handle_group_list(&mut self, groups: Vec<Group>) {
+        for group in groups {
+            let conv = self.get_or_create_conversation(&group.id, &group.name, true);
+            // Update name if group provides a better one
+            if !group.name.is_empty() && conv.name != group.name {
+                conv.name = group.name.clone();
+                let _ = self.db.upsert_conversation(&group.id, &group.name, true);
             }
         }
     }
@@ -476,5 +503,216 @@ fn short_name(number: &str) -> String {
         format!("{prefix}***{last4}")
     } else {
         number.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::signal::types::{Contact, Group, SignalEvent, SignalMessage};
+
+    fn test_app() -> App {
+        let db = Database::open_in_memory().unwrap();
+        let mut app = App::new("+10000000000".to_string(), db);
+        app.set_connected();
+        app
+    }
+
+    // --- Test 2: Sidebar populates with contacts and groups on startup ---
+
+    #[test]
+    fn contact_list_creates_conversations() {
+        let mut app = test_app();
+        assert!(app.conversations.is_empty());
+
+        app.handle_signal_event(SignalEvent::ContactList(vec![
+            Contact { number: "+1".to_string(), name: Some("Alice".to_string()) },
+            Contact { number: "+2".to_string(), name: Some("Bob".to_string()) },
+        ]));
+
+        assert_eq!(app.conversations.len(), 2);
+        assert_eq!(app.conversation_order.len(), 2);
+        assert_eq!(app.conversations["+1"].name, "Alice");
+        assert_eq!(app.conversations["+2"].name, "Bob");
+        assert!(!app.conversations["+1"].is_group);
+    }
+
+    #[test]
+    fn group_list_creates_conversations() {
+        let mut app = test_app();
+
+        app.handle_signal_event(SignalEvent::GroupList(vec![
+            Group { id: "g1".to_string(), name: "Family".to_string(), members: vec![] },
+            Group { id: "g2".to_string(), name: "Work".to_string(), members: vec![] },
+        ]));
+
+        assert_eq!(app.conversations.len(), 2);
+        assert_eq!(app.conversations["g1"].name, "Family");
+        assert_eq!(app.conversations["g2"].name, "Work");
+        assert!(app.conversations["g1"].is_group);
+        assert!(app.conversations["g2"].is_group);
+    }
+
+    // --- Test 3: Existing conversations with messages still appear first ---
+
+    #[test]
+    fn existing_conversations_appear_before_new_contacts() {
+        let mut app = test_app();
+
+        // Simulate a pre-existing conversation (as if loaded from DB)
+        let msg = SignalMessage {
+            source: "+1".to_string(),
+            source_name: Some("Alice".to_string()),
+            timestamp: chrono::Utc::now(),
+            body: Some("hello".to_string()),
+            attachments: vec![],
+            group_id: None,
+            group_name: None,
+            is_outgoing: false,
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert_eq!(app.conversation_order, vec!["+1"]);
+
+        // Now contacts arrive — new ones appended after existing
+        app.handle_signal_event(SignalEvent::ContactList(vec![
+            Contact { number: "+1".to_string(), name: Some("Alice".to_string()) },
+            Contact { number: "+2".to_string(), name: Some("Bob".to_string()) },
+        ]));
+
+        // +1 should still be first (already existed), +2 appended
+        assert_eq!(app.conversation_order, vec!["+1", "+2"]);
+    }
+
+    // --- Test 4: Contact names display correctly ---
+
+    #[test]
+    fn contact_name_updates_existing_conversation() {
+        let mut app = test_app();
+
+        // A message arrives first with just a phone number
+        let msg = SignalMessage {
+            source: "+15551234567".to_string(),
+            source_name: None,
+            timestamp: chrono::Utc::now(),
+            body: Some("hey".to_string()),
+            attachments: vec![],
+            group_id: None,
+            group_name: None,
+            is_outgoing: false,
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert_eq!(app.conversations["+15551234567"].name, "+15551234567");
+
+        // Contact list arrives with a proper name
+        app.handle_signal_event(SignalEvent::ContactList(vec![
+            Contact { number: "+15551234567".to_string(), name: Some("Alice".to_string()) },
+        ]));
+
+        assert_eq!(app.conversations["+15551234567"].name, "Alice");
+    }
+
+    #[test]
+    fn contact_without_name_does_not_overwrite_existing_name() {
+        let mut app = test_app();
+
+        // Create conversation with a name already
+        let msg = SignalMessage {
+            source: "+1".to_string(),
+            source_name: Some("Alice".to_string()),
+            timestamp: chrono::Utc::now(),
+            body: Some("hi".to_string()),
+            attachments: vec![],
+            group_id: None,
+            group_name: None,
+            is_outgoing: false,
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert_eq!(app.conversations["+1"].name, "Alice");
+
+        // Contact arrives with no name — should NOT overwrite
+        app.handle_signal_event(SignalEvent::ContactList(vec![
+            Contact { number: "+1".to_string(), name: None },
+        ]));
+
+        assert_eq!(app.conversations["+1"].name, "Alice");
+    }
+
+    // --- Test 5: Groups have is_group=true (UI renders # prefix based on this) ---
+
+    #[test]
+    fn groups_are_marked_as_groups() {
+        let mut app = test_app();
+
+        app.handle_signal_event(SignalEvent::GroupList(vec![
+            Group { id: "g1".to_string(), name: "Family".to_string(), members: vec![] },
+        ]));
+        app.handle_signal_event(SignalEvent::ContactList(vec![
+            Contact { number: "+1".to_string(), name: Some("Alice".to_string()) },
+        ]));
+
+        assert!(app.conversations["g1"].is_group);
+        assert!(!app.conversations["+1"].is_group);
+    }
+
+    // --- Test 6: Receiving a message from a pre-loaded contact works (no duplicates) ---
+
+    #[test]
+    fn message_from_preloaded_contact_no_duplicate_conversation() {
+        let mut app = test_app();
+
+        // Contacts arrive first
+        app.handle_signal_event(SignalEvent::ContactList(vec![
+            Contact { number: "+1".to_string(), name: Some("Alice".to_string()) },
+        ]));
+        assert_eq!(app.conversations.len(), 1);
+        assert_eq!(app.conversation_order.len(), 1);
+
+        // Then a message arrives from the same contact
+        let msg = SignalMessage {
+            source: "+1".to_string(),
+            source_name: Some("Alice".to_string()),
+            timestamp: chrono::Utc::now(),
+            body: Some("hello!".to_string()),
+            attachments: vec![],
+            group_id: None,
+            group_name: None,
+            is_outgoing: false,
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+
+        // Still only 1 conversation, not 2
+        assert_eq!(app.conversations.len(), 1);
+        assert_eq!(app.conversation_order.len(), 1);
+        // Message was added to the existing conversation
+        assert_eq!(app.conversations["+1"].messages.len(), 1);
+        assert_eq!(app.conversations["+1"].messages[0].body, "hello!");
+    }
+
+    #[test]
+    fn message_from_preloaded_group_no_duplicate() {
+        let mut app = test_app();
+
+        // Group loaded first
+        app.handle_signal_event(SignalEvent::GroupList(vec![
+            Group { id: "g1".to_string(), name: "Family".to_string(), members: vec!["+1".to_string()] },
+        ]));
+        assert_eq!(app.conversations.len(), 1);
+
+        // Message arrives in that group
+        let msg = SignalMessage {
+            source: "+1".to_string(),
+            source_name: Some("Alice".to_string()),
+            timestamp: chrono::Utc::now(),
+            body: Some("hey family".to_string()),
+            attachments: vec![],
+            group_id: Some("g1".to_string()),
+            group_name: Some("Family".to_string()),
+            is_outgoing: false,
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+
+        assert_eq!(app.conversations.len(), 1);
+        assert_eq!(app.conversations["g1"].messages.len(), 1);
     }
 }
