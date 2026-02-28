@@ -2,6 +2,7 @@ use chrono::{DateTime, Local, Utc};
 use std::collections::HashMap;
 use std::time::Instant;
 
+use crate::db::Database;
 use crate::input::{self, InputAction, HELP_TEXT};
 use crate::signal::types::{SignalEvent, SignalMessage};
 
@@ -70,10 +71,12 @@ pub struct App {
     pub connected: bool,
     /// Current input mode (Normal or Insert)
     pub mode: InputMode,
+    /// SQLite database for persistent storage
+    pub db: Database,
 }
 
 impl App {
-    pub fn new(account: String) -> Self {
+    pub fn new(account: String, db: Database) -> Self {
         Self {
             conversations: HashMap::new(),
             conversation_order: Vec::new(),
@@ -90,7 +93,29 @@ impl App {
             last_read_index: HashMap::new(),
             connected: false,
             mode: InputMode::Insert,
+            db,
         }
+    }
+
+    /// Load conversations and messages from the database on startup
+    pub fn load_from_db(&mut self) -> anyhow::Result<()> {
+        let conv_data = self.db.load_conversations(500)?;
+        let order = self.db.load_conversation_order()?;
+
+        for (mut conv, unread) in conv_data {
+            let id = conv.id.clone();
+            let msg_count = conv.messages.len();
+            conv.unread = unread;
+            self.conversations.insert(id.clone(), conv);
+            // Derive last_read_index from unread count
+            if msg_count > 0 {
+                let read_index = msg_count.saturating_sub(unread);
+                self.last_read_index.insert(id, read_index);
+            }
+        }
+
+        self.conversation_order = order;
+        Ok(())
     }
 
     /// Resize sidebar by delta, clamped between 14..=40
@@ -105,6 +130,11 @@ impl App {
             if let Some(conv) = self.conversations.get(conv_id) {
                 self.last_read_index
                     .insert(conv_id.clone(), conv.messages.len());
+            }
+            // Persist read marker
+            let conv_id = conv_id.clone();
+            if let Ok(Some(rowid)) = self.db.last_message_rowid(&conv_id) {
+                let _ = self.db.save_read_marker(&conv_id, rowid);
             }
         }
     }
@@ -146,7 +176,8 @@ impl App {
             msg.source.clone()
         };
 
-        let conv = self.get_or_create_conversation(
+        // Ensure conversation exists (drop the mutable ref immediately)
+        self.get_or_create_conversation(
             &conv_id,
             msg.group_name
                 .as_deref()
@@ -163,14 +194,25 @@ impl App {
                 .unwrap_or_else(|| short_name(&msg.source))
         };
 
+        let ts_rfc3339 = msg.timestamp.to_rfc3339();
+
         // Add text body
         if let Some(ref body) = msg.body {
-            conv.messages.push(DisplayMessage {
-                sender: sender_display.clone(),
-                timestamp: msg.timestamp,
-                body: body.clone(),
-                is_system: false,
-            });
+            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                conv.messages.push(DisplayMessage {
+                    sender: sender_display.clone(),
+                    timestamp: msg.timestamp,
+                    body: body.clone(),
+                    is_system: false,
+                });
+            }
+            let _ = self.db.insert_message(
+                &conv_id,
+                &sender_display,
+                &ts_rfc3339,
+                body,
+                false,
+            );
         }
 
         // Add attachment notices
@@ -184,12 +226,22 @@ impl App {
                 .as_deref()
                 .map(|p| format!(" -> {p}"))
                 .unwrap_or_default();
-            conv.messages.push(DisplayMessage {
-                sender: sender_display.clone(),
-                timestamp: msg.timestamp,
-                body: format!("[attachment: {label}]{path_info}"),
-                is_system: false,
-            });
+            let att_body = format!("[attachment: {label}]{path_info}");
+            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                conv.messages.push(DisplayMessage {
+                    sender: sender_display.clone(),
+                    timestamp: msg.timestamp,
+                    body: att_body.clone(),
+                    is_system: false,
+                });
+            }
+            let _ = self.db.insert_message(
+                &conv_id,
+                &sender_display,
+                &ts_rfc3339,
+                &att_body,
+                false,
+            );
         }
 
         let is_active = self
@@ -211,6 +263,7 @@ impl App {
         name: &str,
         is_group: bool,
     ) -> &mut Conversation {
+        let _ = self.db.upsert_conversation(id, name, is_group);
         if !self.conversations.contains_key(id) {
             self.conversations.insert(
                 id.to_string(),
@@ -248,14 +301,22 @@ impl App {
                     let conv_id = conv_id.clone();
 
                     // Add our own message to the display
+                    let now = Utc::now();
                     if let Some(conv) = self.conversations.get_mut(&conv_id) {
                         conv.messages.push(DisplayMessage {
                             sender: "you".to_string(),
-                            timestamp: Utc::now(),
+                            timestamp: now,
                             body: text.clone(),
                             is_system: false,
                         });
                     }
+                    let _ = self.db.insert_message(
+                        &conv_id,
+                        "you",
+                        &now.to_rfc3339(),
+                        &text,
+                        false,
+                    );
                     self.scroll_offset = 0;
                     return Some((conv_id, text, is_group));
                 } else {

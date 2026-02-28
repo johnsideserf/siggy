@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod db;
 mod input;
 mod signal;
 mod ui;
@@ -76,6 +77,14 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(&config.download_dir)?;
     }
 
+    // Open database
+    let db_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("signal-tui");
+    std::fs::create_dir_all(&db_dir)?;
+    let db_path = db_dir.join("signal-tui.db");
+    let database = db::Database::open(&db_path)?;
+
     // Spawn signal-cli backend
     let mut signal_client = SignalClient::spawn(&config).await?;
 
@@ -87,7 +96,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run the app
-    let result = run_app(&mut terminal, &mut signal_client, &config).await;
+    let result = run_app(&mut terminal, &mut signal_client, &config, database).await;
 
     // Restore terminal
     disable_raw_mode()?;
@@ -109,8 +118,10 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     signal_client: &mut SignalClient,
     config: &Config,
+    db: db::Database,
 ) -> Result<()> {
-    let mut app = App::new(config.account.clone());
+    let mut app = App::new(config.account.clone(), db);
+    app.load_from_db()?;
     app.set_connected();
 
     loop {
