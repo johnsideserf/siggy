@@ -181,6 +181,19 @@ impl SignalClient {
         Ok(())
     }
 
+    pub async fn send_sync_request(&self) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendSyncRequest".to_string(),
+            id,
+            params: Some(serde_json::json!({ "account": self.account })),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx.send(json).await.context("Failed to send")?;
+        Ok(())
+    }
+
     pub async fn shutdown(&mut self) -> Result<()> {
         let _ = self.child.kill().await;
         Ok(())

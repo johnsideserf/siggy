@@ -269,7 +269,8 @@ async fn run_app(
     app.load_from_db()?;
     app.set_connected();
 
-    // Request contacts and groups from signal-cli (best-effort)
+    // Ask primary device to sync contacts/groups, then fetch them (best-effort)
+    let _ = signal_client.send_sync_request().await;
     let _ = signal_client.list_contacts().await;
     let _ = signal_client.list_groups().await;
 
