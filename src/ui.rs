@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, VisibleImage, SETTINGS_ITEMS};
+use crate::app::{App, InputMode, VisibleImage, SETTINGS};
 use crate::image_render::ImageProtocol;
 use crate::input::COMMANDS;
 use crate::signal::types::MessageStatus;
@@ -1062,7 +1062,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, &label) in SETTINGS_ITEMS.iter().enumerate() {
+    for (i, def) in SETTINGS.iter().enumerate() {
         let enabled = app.setting_value(i);
         let checkbox = if enabled { "[x]" } else { "[ ]" };
         let is_selected = i == app.settings_index;
@@ -1081,7 +1081,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
 
         lines.push(Line::from(vec![
             Span::styled(format!("  {} ", checkbox), check_style),
-            Span::styled(label.to_string(), style),
+            Span::styled(def.label.to_string(), style),
         ]));
     }
     lines.push(Line::from(""));

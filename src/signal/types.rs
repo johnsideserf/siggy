@@ -102,9 +102,9 @@ pub struct JsonRpcRequest {
 }
 
 /// JSON-RPC response from signal-cli
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcResponse {
+    #[allow(dead_code)]
     pub jsonrpc: String,
     pub id: Option<String>,
     pub result: Option<serde_json::Value>,
@@ -132,6 +132,6 @@ pub struct Contact {
 pub struct Group {
     pub id: String,
     pub name: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // used in tests; will be used for @mentions
     pub members: Vec<String>,
 }

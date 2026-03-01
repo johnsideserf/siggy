@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::DateTime;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -10,12 +11,15 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::signal::types::*;
 
+/// Maximum age for pending RPC entries before they are considered stale.
+const PENDING_REQUEST_TTL: Duration = Duration::from_secs(60);
+
 pub struct SignalClient {
     child: Child,
     stdin_tx: mpsc::Sender<String>,
     pub event_rx: mpsc::Receiver<SignalEvent>,
     account: String,
-    pending_requests: Arc<Mutex<HashMap<String, String>>>,
+    pending_requests: Arc<Mutex<HashMap<String, (String, Instant)>>>,
 }
 
 impl SignalClient {
@@ -43,7 +47,7 @@ impl SignalClient {
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
 
         let download_dir = config.download_dir.clone();
-        let pending_requests: Arc<Mutex<HashMap<String, String>>> =
+        let pending_requests: Arc<Mutex<HashMap<String, (String, Instant)>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_clone = Arc::clone(&pending_requests);
 
@@ -62,7 +66,12 @@ impl SignalClient {
                         // Check if this is a response to a pending request
                         let rpc_id = resp.id.clone();
                         let pending_method = rpc_id.as_ref().and_then(|id| {
-                            pending_clone.lock().ok().and_then(|mut map| map.remove(id))
+                            pending_clone.lock().ok().and_then(|mut map| {
+                                let method = map.remove(id).map(|(m, _)| m);
+                                // Sweep stale entries (signal-cli never responded)
+                                map.retain(|_, (_, ts)| ts.elapsed() < PENDING_REQUEST_TTL);
+                                method
+                            })
                         });
 
                         let event = if let Some(method) = pending_method {
@@ -138,7 +147,7 @@ impl SignalClient {
 
         // Track the RPC so we can correlate the response with a SendTimestamp/SendFailed event
         if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), "send".to_string());
+            map.insert(id.clone(), ("send".to_string(), Instant::now()));
         }
 
         let params = if is_group {
@@ -173,7 +182,7 @@ impl SignalClient {
     pub async fn list_groups(&self) -> Result<()> {
         let id = Uuid::new_v4().to_string();
         if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), "listGroups".to_string());
+            map.insert(id.clone(), ("listGroups".to_string(), Instant::now()));
         }
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -189,7 +198,7 @@ impl SignalClient {
     pub async fn list_contacts(&self) -> Result<()> {
         let id = Uuid::new_v4().to_string();
         if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), "listContacts".to_string());
+            map.insert(id.clone(), ("listContacts".to_string(), Instant::now()));
         }
         let request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),

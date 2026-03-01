@@ -173,61 +173,98 @@ pub struct App {
     pub focused_message_time: Option<DateTime<Utc>>,
 }
 
-pub const SETTINGS_ITEMS: &[&str] = &[
-    "Direct message notifications",
-    "Group message notifications",
-    "Sidebar visible",
-    "Inline image previews",
-    "Native images (experimental)",
-    "Read receipts",
-    "Receipt colors",
-    "Nerd Font icons",
+/// A single settings toggle entry: label, getter, setter, and optional config persistence.
+pub struct SettingDef {
+    pub label: &'static str,
+    get: fn(&App) -> bool,
+    set: fn(&mut App, bool),
+    save: Option<fn(&mut crate::config::Config, bool)>,
+    on_toggle: Option<fn(&mut App)>,
+}
+
+pub const SETTINGS: &[SettingDef] = &[
+    SettingDef {
+        label: "Direct message notifications",
+        get: |a| a.notify_direct,
+        set: |a, v| a.notify_direct = v,
+        save: Some(|c, v| c.notify_direct = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Group message notifications",
+        get: |a| a.notify_group,
+        set: |a, v| a.notify_group = v,
+        save: Some(|c, v| c.notify_group = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Sidebar visible",
+        get: |a| a.sidebar_visible,
+        set: |a, v| a.sidebar_visible = v,
+        save: None, // runtime-only, not persisted
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Inline image previews",
+        get: |a| a.inline_images,
+        set: |a, v| a.inline_images = v,
+        save: Some(|c, v| c.inline_images = v),
+        on_toggle: Some(|a| a.refresh_image_previews()),
+    },
+    SettingDef {
+        label: "Native images (experimental)",
+        get: |a| a.native_images,
+        set: |a, v| a.native_images = v,
+        save: Some(|c, v| c.native_images = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Read receipts",
+        get: |a| a.show_receipts,
+        set: |a, v| a.show_receipts = v,
+        save: Some(|c, v| c.show_receipts = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Receipt colors",
+        get: |a| a.color_receipts,
+        set: |a, v| a.color_receipts = v,
+        save: Some(|c, v| c.color_receipts = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Nerd Font icons",
+        get: |a| a.nerd_fonts,
+        set: |a, v| a.nerd_fonts = v,
+        save: Some(|c, v| c.nerd_fonts = v),
+        on_toggle: None,
+    },
 ];
 
 impl App {
     pub fn toggle_setting(&mut self, index: usize) {
-        match index {
-            0 => self.notify_direct = !self.notify_direct,
-            1 => self.notify_group = !self.notify_group,
-            2 => self.sidebar_visible = !self.sidebar_visible,
-            3 => {
-                self.inline_images = !self.inline_images;
-                self.refresh_image_previews();
+        if let Some(def) = SETTINGS.get(index) {
+            let cur = (def.get)(self);
+            (def.set)(self, !cur);
+            if let Some(hook) = def.on_toggle {
+                hook(self);
             }
-            4 => self.native_images = !self.native_images,
-            5 => self.show_receipts = !self.show_receipts,
-            6 => self.color_receipts = !self.color_receipts,
-            7 => self.nerd_fonts = !self.nerd_fonts,
-            _ => {}
         }
     }
 
     pub fn setting_value(&self, index: usize) -> bool {
-        match index {
-            0 => self.notify_direct,
-            1 => self.notify_group,
-            2 => self.sidebar_visible,
-            3 => self.inline_images,
-            4 => self.native_images,
-            5 => self.show_receipts,
-            6 => self.color_receipts,
-            7 => self.nerd_fonts,
-            _ => false,
-        }
+        SETTINGS.get(index).is_some_and(|def| (def.get)(self))
     }
 
     /// Persist current settings to the config file.
     fn save_settings(&self) {
-        // Load existing config to preserve non-settings fields (signal_cli_path, download_dir)
         let mut config = crate::config::Config::load(None).unwrap_or_default();
         config.account = self.account.clone();
-        config.notify_direct = self.notify_direct;
-        config.notify_group = self.notify_group;
-        config.inline_images = self.inline_images;
-        config.native_images = self.native_images;
-        config.show_receipts = self.show_receipts;
-        config.color_receipts = self.color_receipts;
-        config.nerd_fonts = self.nerd_fonts;
+        for def in SETTINGS {
+            if let Some(save_fn) = def.save {
+                save_fn(&mut config, (def.get)(self));
+            }
+        }
         if let Err(e) = config.save() {
             crate::debug_log::logf(format_args!("settings save error: {e}"));
         }
@@ -255,7 +292,7 @@ impl App {
     pub fn handle_settings_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_index < SETTINGS_ITEMS.len() - 1 {
+                if self.settings_index < SETTINGS.len() - 1 {
                     self.settings_index += 1;
                 }
             }
@@ -441,10 +478,10 @@ impl App {
         let conv_data = self.db.load_conversations(500)?;
         let order = self.db.load_conversation_order()?;
 
-        for (mut conv, unread) in conv_data {
+        for mut conv in conv_data {
             let id = conv.id.clone();
             let msg_count = conv.messages.len();
-            conv.unread = unread;
+            let unread = conv.unread;
 
             // Promote stale Sending messages to Sent — if they're in the DB, the
             // send completed but the app exited before the RPC response arrived.

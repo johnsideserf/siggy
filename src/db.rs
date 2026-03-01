@@ -115,8 +115,7 @@ impl Database {
     }
 
     /// Load all conversations with their most recent messages (up to `msg_limit`).
-    /// Returns (Conversation, unread_count) pairs.
-    pub fn load_conversations(&self, msg_limit: usize) -> Result<Vec<(Conversation, usize)>> {
+    pub fn load_conversations(&self, msg_limit: usize) -> Result<Vec<Conversation>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, name, is_group FROM conversations")?;
@@ -131,7 +130,7 @@ impl Database {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(convs.len());
 
         for (id, name, is_group) in convs {
             // Load last N messages
@@ -174,16 +173,13 @@ impl Database {
 
             let unread = self.unread_count(&id).unwrap_or(0);
 
-            result.push((
-                Conversation {
-                    name,
-                    id: id.clone(),
-                    messages,
-                    unread: 0, // will be set by caller
-                    is_group,
-                },
+            result.push(Conversation {
+                name,
+                id: id.clone(),
+                messages,
                 unread,
-            ));
+                is_group,
+            });
         }
 
         Ok(result)
@@ -354,7 +350,7 @@ mod tests {
 
         let convs = db.load_conversations(100).unwrap();
         assert_eq!(convs.len(), 1);
-        assert_eq!(convs[0].0.name, "Alice");
+        assert_eq!(convs[0].name, "Alice");
     }
 
     #[test]
@@ -365,9 +361,9 @@ mod tests {
         db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi!", false, None, 0).unwrap();
 
         let convs = db.load_conversations(100).unwrap();
-        assert_eq!(convs[0].0.messages.len(), 2);
-        assert_eq!(convs[0].0.messages[0].body, "hello");
-        assert_eq!(convs[0].0.messages[1].body, "hi!");
+        assert_eq!(convs[0].messages.len(), 2);
+        assert_eq!(convs[0].messages[0].body, "hello");
+        assert_eq!(convs[0].messages[1].body, "hi!");
     }
 
     #[test]
