@@ -10,10 +10,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, InputMode, VisibleImage, SETTINGS};
+use crate::app::{App, InputMode, VisibleImage, QUICK_REACTIONS, SETTINGS};
+use crate::signal::types::{MessageStatus, Reaction};
 use crate::image_render::ImageProtocol;
 use crate::input::COMMANDS;
-use crate::signal::types::MessageStatus;
 
 // Layout constants
 const SIDEBAR_AUTO_HIDE_WIDTH: u16 = 60;
@@ -22,7 +22,7 @@ const MSG_WINDOW_MULTIPLIER: usize = 3;
 
 // Popup dimensions
 const SETTINGS_POPUP_WIDTH: u16 = 42;
-const SETTINGS_POPUP_HEIGHT: u16 = 14;
+const SETTINGS_POPUP_HEIGHT: u16 = 15;
 const CONTACTS_POPUP_WIDTH: u16 = 50;
 const CONTACTS_MAX_VISIBLE: usize = 20;
 
@@ -344,6 +344,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_contacts(frame, app, size);
     }
 
+    // Reaction picker overlay
+    if app.show_reaction_picker {
+        draw_reaction_picker(frame, app, size);
+    }
+
     // Collect link regions from the rendered buffer for OSC 8 injection
     let area = frame.area();
     app.link_regions = collect_link_regions(frame.buffer_mut(), area);
@@ -611,6 +616,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     }
                 }
             }
+
+            // Render reaction summary line
+            if !msg.reactions.is_empty() {
+                lines.push(build_reaction_summary(&msg.reactions, app.reaction_verbose));
+                line_msg_idx.push(Some(msg_index));
+            }
         }
     }
 
@@ -740,6 +751,68 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .end_symbol(None);
         frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
     }
+}
+
+/// Build a reaction summary line like "    👍 2  ❤️ 1  😂 1"
+fn build_reaction_summary(reactions: &[Reaction], verbose: bool) -> Line<'static> {
+    if verbose {
+        // Verbose: group by emoji, show sender names
+        let mut grouped: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for r in reactions {
+            grouped.entry(r.emoji.clone()).or_default().push(r.sender.clone());
+        }
+        let mut spans = vec![Span::raw("    ".to_string())];
+        for (emoji, senders) in &grouped {
+            spans.push(Span::raw(format!("{emoji} ")));
+            spans.push(Span::styled(
+                senders.join(", "),
+                Style::default().fg(Color::DarkGray),
+            ));
+            spans.push(Span::raw("  ".to_string()));
+        }
+        Line::from(spans)
+    } else {
+        // Summary: emoji + count
+        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for r in reactions {
+            *counts.entry(r.emoji.clone()).or_default() += 1;
+        }
+        let mut spans = vec![Span::raw("    ".to_string())];
+        for (emoji, count) in &counts {
+            spans.push(Span::raw(emoji.clone()));
+            spans.push(Span::styled(
+                format!(" {count}  "),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Line::from(spans)
+    }
+}
+
+fn draw_reaction_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let emoji_count = QUICK_REACTIONS.len();
+    let popup_width = (emoji_count * 4 + 4) as u16;
+    let popup_height = 3u16;
+
+    let (popup_area, block) = centered_popup(
+        frame, area, popup_width, popup_height, " React ",
+    );
+
+    let mut spans = vec![Span::raw(" ".to_string())];
+    for (i, emoji) in QUICK_REACTIONS.iter().enumerate() {
+        let style = if i == app.reaction_picker_index {
+            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let prefix = if i == app.reaction_picker_index { "[" } else { " " };
+        let suffix = if i == app.reaction_picker_index { "]" } else { " " };
+        spans.push(Span::styled(format!("{prefix}{emoji}{suffix}"), style));
+    }
+
+    let line = Line::from(spans);
+    let popup = Paragraph::new(vec![line]).block(block);
+    frame.render_widget(popup, popup_area);
 }
 
 /// Render the welcome/empty-state screen when no conversation is active.
@@ -1129,6 +1202,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("0 / $", "Start / end of line"),
         ("x / D", "Delete char / to end"),
         ("y / Y", "Copy message / full line"),
+        ("r", "React to focused message"),
         ("/", "Start command input"),
     ];
 

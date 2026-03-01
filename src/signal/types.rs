@@ -40,6 +40,13 @@ impl MessageStatus {
     }
 }
 
+/// A single emoji reaction on a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reaction {
+    pub emoji: String,
+    pub sender: String,
+}
+
 /// Events received from signal-cli
 #[derive(Debug, Clone)]
 pub enum SignalEvent {
@@ -60,6 +67,15 @@ pub enum SignalEvent {
         sender: String,
         sender_name: Option<String>,
         is_typing: bool,
+    },
+    ReactionReceived {
+        conv_id: String,
+        emoji: String,
+        sender: String,
+        sender_name: Option<String>,
+        target_author: String,
+        target_timestamp: i64,
+        is_remove: bool,
     },
     ContactList(Vec<Contact>),
     GroupList(Vec<Group>),

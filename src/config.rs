@@ -43,6 +43,10 @@ pub struct Config {
     /// Use Nerd Font glyphs for status symbols
     #[serde(default)]
     pub nerd_fonts: bool,
+
+    /// Show verbose reaction display (usernames instead of counts)
+    #[serde(default)]
+    pub reaction_verbose: bool,
 }
 
 fn default_true() -> bool {
@@ -72,6 +76,7 @@ impl Default for Config {
             show_receipts: true,
             color_receipts: true,
             nerd_fonts: false,
+            reaction_verbose: false,
         }
     }
 }

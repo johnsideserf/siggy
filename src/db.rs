@@ -4,7 +4,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 
 use crate::app::{Conversation, DisplayMessage};
-use crate::signal::types::MessageStatus;
+use crate::signal::types::{MessageStatus, Reaction};
 
 pub struct Database {
     conn: Connection,
@@ -99,6 +99,26 @@ impl Database {
             )?;
         }
 
+        if version < 4 {
+            self.conn.execute_batch(
+                "
+                BEGIN;
+                CREATE TABLE reactions (
+                    rowid           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    target_ts_ms    INTEGER NOT NULL,
+                    target_author   TEXT NOT NULL,
+                    emoji           TEXT NOT NULL,
+                    sender          TEXT NOT NULL,
+                    UNIQUE(conversation_id, target_ts_ms, target_author, sender)
+                );
+                CREATE INDEX idx_reactions_target ON reactions(conversation_id, target_ts_ms);
+                UPDATE schema_version SET version = 4;
+                COMMIT;
+                ",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -164,12 +184,36 @@ impl Database {
                         image_path: None,
                         status: MessageStatus::from_i32(status_i32),
                         timestamp_ms,
+                        reactions: Vec::new(),
                     })
                 })
                 .collect();
 
             // Reverse so oldest first
             messages.reverse();
+
+            // Attach reactions from DB to matching messages.
+            // Match on timestamp AND author when possible. Since msg.sender may be
+            // a display name while target_author is a phone number, we accept:
+            // exact match, msg.sender == "you", or fall back to timestamp-only.
+            if let Ok(reactions) = self.load_reactions(&id) {
+                for (target_ts, target_author, emoji, sender) in reactions {
+                    // Find best match: prefer author+timestamp, fall back to timestamp-only
+                    let idx = messages.iter().position(|m| {
+                        m.timestamp_ms == target_ts
+                            && (m.sender == target_author || m.sender == "you")
+                    }).or_else(|| {
+                        messages.iter().position(|m| m.timestamp_ms == target_ts)
+                    });
+                    if let Some(msg) = idx.and_then(|i| messages.get_mut(i)) {
+                        if let Some(existing) = msg.reactions.iter_mut().find(|r| r.sender == sender) {
+                            existing.emoji = emoji;
+                        } else {
+                            msg.reactions.push(Reaction { emoji, sender });
+                        }
+                    }
+                }
+            }
 
             let unread = self.unread_count(&id).unwrap_or(0);
 
@@ -291,6 +335,62 @@ impl Database {
         )?;
 
         Ok(count as usize)
+    }
+
+    // --- Reactions ---
+
+    pub fn upsert_reaction(
+        &self,
+        conv_id: &str,
+        target_ts_ms: i64,
+        target_author: &str,
+        sender: &str,
+        emoji: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO reactions (conversation_id, target_ts_ms, target_author, sender, emoji)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(conversation_id, target_ts_ms, target_author, sender)
+             DO UPDATE SET emoji = excluded.emoji",
+            params![conv_id, target_ts_ms, target_author, sender, emoji],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_reaction(
+        &self,
+        conv_id: &str,
+        target_ts_ms: i64,
+        target_author: &str,
+        sender: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM reactions
+             WHERE conversation_id = ?1 AND target_ts_ms = ?2
+               AND target_author = ?3 AND sender = ?4",
+            params![conv_id, target_ts_ms, target_author, sender],
+        )?;
+        Ok(())
+    }
+
+    /// Load all reactions for a conversation.
+    /// Returns (target_ts_ms, target_author, emoji, sender) tuples.
+    pub fn load_reactions(&self, conv_id: &str) -> Result<Vec<(i64, String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT target_ts_ms, target_author, emoji, sender FROM reactions
+             WHERE conversation_id = ?1",
+        )?;
+        let rows: Vec<(i64, String, String, String)> = stmt
+            .query_map(params![conv_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     // --- Muted conversations ---
@@ -432,5 +532,63 @@ mod tests {
         let r2 = db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "msg2", false, None, 0).unwrap();
 
         assert_eq!(db.last_message_rowid("+1").unwrap(), Some(r2));
+    }
+
+    #[test]
+    fn migration_v4_creates_reactions_table() {
+        let db = test_db();
+        // Should be able to query reactions table
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM reactions", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn upsert_reaction_insert_and_replace() {
+        let db = test_db();
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
+
+        // Insert a reaction
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
+        let reactions = db.load_reactions("+1").unwrap();
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0], (1000, "Alice".to_string(), "👍".to_string(), "Bob".to_string()));
+
+        // Replace: same sender reacts with different emoji
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "❤️").unwrap();
+        let reactions = db.load_reactions("+1").unwrap();
+        assert_eq!(reactions.len(), 1);
+        assert_eq!(reactions[0].2, "❤️");
+    }
+
+    #[test]
+    fn remove_reaction() {
+        let db = test_db();
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
+        assert_eq!(db.load_reactions("+1").unwrap().len(), 1);
+
+        db.remove_reaction("+1", 1000, "Alice", "Bob").unwrap();
+        assert_eq!(db.load_reactions("+1").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn load_reactions_attaches_to_messages() {
+        let db = test_db();
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
+        db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi", false, None, 2000).unwrap();
+
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
+        db.upsert_reaction("+1", 2000, "you", "Alice", "❤️").unwrap();
+
+        let convs = db.load_conversations(100).unwrap();
+        assert_eq!(convs[0].messages[0].reactions.len(), 1);
+        assert_eq!(convs[0].messages[0].reactions[0].emoji, "👍");
+        assert_eq!(convs[0].messages[1].reactions.len(), 1);
+        assert_eq!(convs[0].messages[1].reactions[0].emoji, "❤️");
     }
 }

@@ -224,6 +224,58 @@ impl SignalClient {
         Ok(())
     }
 
+    pub async fn send_reaction(
+        &self,
+        recipient: &str,
+        is_group: bool,
+        emoji: &str,
+        target_author: &str,
+        target_timestamp: i64,
+        remove: bool,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("sendReaction".to_string(), Instant::now()));
+        }
+
+        let mut params = if is_group {
+            serde_json::json!({
+                "groupId": recipient,
+                "emoji": emoji,
+                "targetAuthor": target_author,
+                "targetTimestamp": target_timestamp,
+                "account": self.account,
+            })
+        } else {
+            serde_json::json!({
+                "recipient": recipient,
+                "emoji": emoji,
+                "targetAuthor": target_author,
+                "targetTimestamp": target_timestamp,
+                "account": self.account,
+            })
+        };
+
+        if remove {
+            params.as_object_mut().unwrap().insert("remove".to_string(), serde_json::json!(true));
+        }
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendReaction".to_string(),
+            id,
+            params: Some(params),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send reaction to signal-cli stdin")?;
+        Ok(())
+    }
+
     pub async fn shutdown(&mut self) -> Result<()> {
         let _ = self.child.kill().await;
         Ok(())
@@ -290,6 +342,7 @@ fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&st
                 .collect();
             Some(SignalEvent::GroupList(groups))
         }
+        "sendReaction" => None, // reaction applied optimistically, no action needed
         _ => None,
     }
 }
@@ -416,6 +469,15 @@ fn parse_data_message(
         }
     };
 
+    // Check for reaction before extracting body/attachments
+    if let Some(reaction) = data.get("reaction") {
+        let group_id = data
+            .get("groupInfo")
+            .and_then(|g| g.get("groupId"))
+            .and_then(|v| v.as_str());
+        return parse_reaction(envelope, reaction, group_id);
+    }
+
     let source = envelope
         .get("sourceNumber")
         .and_then(|v| v.as_str())
@@ -480,6 +542,11 @@ fn parse_sent_sync(
     sent: &serde_json::Value,
     download_dir: &std::path::Path,
 ) -> Option<SignalEvent> {
+    // Check for synced reaction before extracting body/attachments
+    if let Some(reaction) = sent.get("reaction") {
+        return parse_reaction_sync(envelope, sent, reaction);
+    }
+
     let source = envelope
         .get("sourceNumber")
         .and_then(|v| v.as_str())
@@ -537,6 +604,84 @@ fn parse_sent_sync(
         is_outgoing: true,
         destination,
     }))
+}
+
+fn parse_reaction(
+    envelope: &serde_json::Value,
+    reaction: &serde_json::Value,
+    group_id: Option<&str>,
+) -> Option<SignalEvent> {
+    let emoji = reaction.get("emoji").and_then(|v| v.as_str())?.to_string();
+    let target_author = reaction.get("targetAuthor").and_then(|v| v.as_str())?.to_string();
+    let target_timestamp = reaction.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
+    let is_remove = reaction.get("isRemove").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let sender = envelope
+        .get("sourceNumber")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let sender_name = envelope
+        .get("sourceName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    let conv_id = group_id
+        .map(|g| g.to_string())
+        .unwrap_or_else(|| sender.clone());
+
+    Some(SignalEvent::ReactionReceived {
+        conv_id,
+        emoji,
+        sender,
+        sender_name,
+        target_author,
+        target_timestamp,
+        is_remove,
+    })
+}
+
+fn parse_reaction_sync(
+    envelope: &serde_json::Value,
+    sent: &serde_json::Value,
+    reaction: &serde_json::Value,
+) -> Option<SignalEvent> {
+    let emoji = reaction.get("emoji").and_then(|v| v.as_str())?.to_string();
+    let target_author = reaction.get("targetAuthor").and_then(|v| v.as_str())?.to_string();
+    let target_timestamp = reaction.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
+    let is_remove = reaction.get("isRemove").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let sender = envelope
+        .get("sourceNumber")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let group_id = sent
+        .get("groupInfo")
+        .and_then(|g| g.get("groupId"))
+        .and_then(|v| v.as_str());
+
+    let conv_id = group_id
+        .map(|g| g.to_string())
+        .or_else(|| {
+            sent.get("destinationNumber")
+                .or_else(|| sent.get("destination"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| sender.clone());
+
+    Some(SignalEvent::ReactionReceived {
+        conv_id,
+        emoji,
+        sender,
+        sender_name: None,
+        target_author,
+        target_timestamp,
+        is_remove,
+    })
 }
 
 fn parse_attachment(
@@ -893,6 +1038,160 @@ mod tests {
                 assert_eq!(receipt_type, "READ");
             }
             _ => panic!("Expected ReceiptReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_reaction_incoming() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "sourceName": "Alice",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "reaction": {
+                            "emoji": "👍",
+                            "targetAuthor": "+15559876543",
+                            "targetSentTimestamp": 1699999999000_i64,
+                            "isRemove": false
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::ReactionReceived {
+                conv_id, emoji, sender, sender_name, target_author, target_timestamp, is_remove,
+            } => {
+                assert_eq!(conv_id, "+15551234567");
+                assert_eq!(emoji, "👍");
+                assert_eq!(sender, "+15551234567");
+                assert_eq!(sender_name.as_deref(), Some("Alice"));
+                assert_eq!(target_author, "+15559876543");
+                assert_eq!(target_timestamp, 1699999999000);
+                assert!(!is_remove);
+            }
+            _ => panic!("Expected ReactionReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_reaction_remove() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "reaction": {
+                            "emoji": "👍",
+                            "targetAuthor": "+15559876543",
+                            "targetSentTimestamp": 1699999999000_i64,
+                            "isRemove": true
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::ReactionReceived { is_remove, .. } => {
+                assert!(is_remove);
+            }
+            _ => panic!("Expected ReactionReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_reaction_group() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "sourceName": "Alice",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "groupInfo": {
+                            "groupId": "group123",
+                            "groupName": "Family"
+                        },
+                        "reaction": {
+                            "emoji": "❤️",
+                            "targetAuthor": "+15559876543",
+                            "targetSentTimestamp": 1699999999000_i64,
+                            "isRemove": false
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::ReactionReceived { conv_id, .. } => {
+                assert_eq!(conv_id, "group123");
+            }
+            _ => panic!("Expected ReactionReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_reaction_sync() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "timestamp": 1700000000000_i64,
+                    "syncMessage": {
+                        "sentMessage": {
+                            "timestamp": 1700000000000_i64,
+                            "destinationNumber": "+15559876543",
+                            "reaction": {
+                                "emoji": "😂",
+                                "targetAuthor": "+15559876543",
+                                "targetSentTimestamp": 1699999999000_i64,
+                                "isRemove": false
+                            }
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::ReactionReceived {
+                conv_id, emoji, sender, target_author, ..
+            } => {
+                assert_eq!(conv_id, "+15559876543");
+                assert_eq!(emoji, "😂");
+                assert_eq!(sender, "+15551234567");
+                assert_eq!(target_author, "+15559876543");
+            }
+            _ => panic!("Expected ReactionReceived, got {:?}", event),
         }
     }
 }

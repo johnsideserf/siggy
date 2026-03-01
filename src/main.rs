@@ -29,7 +29,7 @@ use ratatui::{
     Terminal,
 };
 
-use app::{App, Conversation, DisplayMessage, InputMode};
+use app::{App, Conversation, DisplayMessage, InputMode, SendRequest};
 use config::Config;
 use setup::SetupResult;
 use signal::client::SignalClient;
@@ -435,6 +435,29 @@ async fn send_msg(
     }
 }
 
+/// Dispatch a SendRequest to signal-cli.
+async fn dispatch_send(
+    signal_client: &mut SignalClient,
+    app: &mut App,
+    req: SendRequest,
+) {
+    match req {
+        SendRequest::Message { recipient, body, is_group, local_ts_ms } => {
+            send_msg(signal_client, app, &recipient, &body, is_group, local_ts_ms).await;
+        }
+        SendRequest::Reaction {
+            conv_id, emoji, is_group, target_author, target_timestamp, remove,
+        } => {
+            if let Err(e) = signal_client
+                .send_reaction(&conv_id, is_group, &emoji, &target_author, target_timestamp, remove)
+                .await
+            {
+                app.status_message = format!("reaction error: {e}");
+            }
+        }
+    }
+}
+
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     signal_client: &mut SignalClient,
@@ -451,6 +474,7 @@ async fn run_app(
     app.show_receipts = config.show_receipts;
     app.color_receipts = config.color_receipts;
     app.nerd_fonts = config.nerd_fonts;
+    app.reaction_verbose = config.reaction_verbose;
     app.load_from_db()?;
     app.set_connected();
 
@@ -483,8 +507,8 @@ async fn run_app(
                 }
                 if !app.handle_global_key(key.modifiers, key.code) {
                     let (overlay_handled, send_request) = app.handle_overlay_key(key.code);
-                    if let Some((recipient, body, is_group, local_ts_ms)) = send_request {
-                        send_msg(signal_client, &mut app, &recipient, &body, is_group, local_ts_ms).await;
+                    if let Some(req) = send_request {
+                        dispatch_send(signal_client, &mut app, req).await;
                     }
                     if !overlay_handled {
                         let send_request = match app.mode {
@@ -494,8 +518,8 @@ async fn run_app(
                             }
                             InputMode::Insert => app.handle_insert_key(key.modifiers, key.code),
                         };
-                        if let Some((recipient, body, is_group, local_ts_ms)) = send_request {
-                            send_msg(signal_client, &mut app, &recipient, &body, is_group, local_ts_ms).await;
+                        if let Some(req) = send_request {
+                            dispatch_send(signal_client, &mut app, req).await;
                         }
                     }
                 }
@@ -633,6 +657,7 @@ fn populate_demo_data(app: &mut App) {
             image_path: None,
             status: if is_outgoing { Some(crate::signal::types::MessageStatus::Sent) } else { None },
             timestamp_ms: time.timestamp_millis(),
+            reactions: Vec::new(),
         }
     };
 
@@ -748,6 +773,27 @@ fn populate_demo_data(app: &mut App) {
     }
 
     app.conversation_order = order;
-    app.active_conversation = Some(alice_id);
+    app.active_conversation = Some(alice_id.clone());
     app.status_message = "connected | demo mode".to_string();
+
+    // Add sample reactions to some messages
+    use crate::signal::types::Reaction;
+    if let Some(conv) = app.conversations.get_mut(&alice_id) {
+        // Alice's first message gets a thumbs up from "you"
+        if let Some(msg) = conv.messages.get_mut(0) {
+            msg.reactions.push(Reaction { emoji: "\u{1f44d}".to_string(), sender: "you".to_string() });
+        }
+        // "you" message gets a heart from Alice
+        if let Some(msg) = conv.messages.get_mut(1) {
+            msg.reactions.push(Reaction { emoji: "\u{2764}\u{fe0f}".to_string(), sender: "Alice".to_string() });
+        }
+    }
+    if let Some(conv) = app.conversations.get_mut("group_rustdevs") {
+        // Group message gets multiple reactions
+        if let Some(msg) = conv.messages.get_mut(3) {
+            msg.reactions.push(Reaction { emoji: "\u{1f44d}".to_string(), sender: "Alice".to_string() });
+            msg.reactions.push(Reaction { emoji: "\u{1f44d}".to_string(), sender: "Bob".to_string() });
+            msg.reactions.push(Reaction { emoji: "\u{2764}\u{fe0f}".to_string(), sender: "Dave".to_string() });
+        }
+    }
 }
