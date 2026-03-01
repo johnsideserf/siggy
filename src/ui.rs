@@ -905,9 +905,15 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     ];
     let shortcuts: &[(&str, &str)] = &[
         ("Tab / Shift+Tab", "Next / prev conversation"),
+        ("Up / Down", "Recall input history"),
         ("PgUp / PgDn", "Scroll messages"),
         ("Ctrl+Left/Right", "Resize sidebar"),
         ("Ctrl+C", "Quit"),
+    ];
+    let cli: &[(&str, &str)] = &[
+        ("--incognito", "No local message storage"),
+        ("--demo", "Launch with dummy data"),
+        ("--setup", "Re-run first-time wizard"),
     ];
     let vim: &[(&str, &str)] = &[
         ("Esc", "Normal mode"),
@@ -928,7 +934,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     let popup_width = (key_col_width + desc_col_width + 6) // padding + borders
         .min(area.width.saturating_sub(4) as usize) as u16;
     let content_lines =
-        commands.len() + shortcuts.len() + vim.len() + 5; // +5 for headers + footer + spacing
+        commands.len() + shortcuts.len() + vim.len() + cli.len() + 7; // +7 for headers + footer + spacing
     let popup_height = (content_lines as u16 + 2) // +2 for borders
         .min(area.height.saturating_sub(2));
 
@@ -980,6 +986,12 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("  Vim Keybindings", header_style)));
     for &(key, desc) in vim {
+        push_row(&mut lines, key, desc);
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  CLI Options", header_style)));
+    for &(key, desc) in cli {
         push_row(&mut lines, key, desc);
     }
 
