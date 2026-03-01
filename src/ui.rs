@@ -783,6 +783,12 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color));
 
+    // Available width inside the border (minus border cells on each side)
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let prefix = "> ";
+    let prefix_len = prefix.len(); // 2
+    let text_width = inner_width.saturating_sub(prefix_len); // usable chars for buffer text
+
     if app.input_buffer.is_empty() {
         let placeholder = match app.mode {
             InputMode::Normal => "  Press i to type, / for commands",
@@ -795,7 +801,11 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         .block(block);
         frame.render_widget(input, area);
     } else {
-        let input_text = format!("> {}", app.input_buffer);
+        // Scroll the visible window so the cursor is always on screen
+        let scroll_offset = app.input_cursor.saturating_sub(text_width);
+        let visible_end = (scroll_offset + text_width).min(app.input_buffer.len());
+        let visible = &app.input_buffer[scroll_offset..visible_end];
+        let input_text = format!("{prefix}{visible}");
         let input = Paragraph::new(input_text)
             .style(Style::default().fg(Color::White))
             .block(block);
@@ -804,7 +814,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
 
     // Place cursor (only visible in Insert mode)
     if app.mode == InputMode::Insert {
-        let cursor_x = area.x + 3 + app.input_cursor as u16;
+        let scroll_offset = app.input_cursor.saturating_sub(text_width);
+        let cursor_x = area.x + 1 + prefix_len as u16 + (app.input_cursor - scroll_offset) as u16;
         let cursor_y = area.y + 1;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
