@@ -710,6 +710,13 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
     } else if app.connected {
         segments.push(Span::styled(" ● ", Style::default().fg(Color::Green)));
         segments.push(Span::styled("connected", Style::default().fg(Color::White)));
+        if app.incognito {
+            segments.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+            segments.push(Span::styled(
+                "incognito",
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            ));
+        }
     } else {
         segments.push(Span::styled(" ● ", Style::default().fg(Color::Red)));
         segments.push(Span::styled("disconnected", Style::default().fg(Color::White)));

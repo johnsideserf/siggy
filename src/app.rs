@@ -114,6 +114,8 @@ pub struct App {
     pub inline_images: bool,
     /// Link regions detected in the last rendered frame (for OSC 8 injection)
     pub link_regions: Vec<crate::ui::LinkRegion>,
+    /// Incognito mode — in-memory DB, no local persistence
+    pub incognito: bool,
 }
 
 pub const SETTINGS_ITEMS: &[&str] = &[
@@ -241,6 +243,7 @@ impl App {
             show_help: false,
             inline_images: true,
             link_regions: Vec::new(),
+            incognito: false,
         }
     }
 

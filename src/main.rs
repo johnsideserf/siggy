@@ -41,6 +41,7 @@ async fn main() -> Result<()> {
     let mut account: Option<String> = None;
     let mut force_setup = false;
     let mut demo_mode = false;
+    let mut incognito = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -71,6 +72,10 @@ async fn main() -> Result<()> {
                 demo_mode = true;
                 i += 1;
             }
+            "--incognito" => {
+                incognito = true;
+                i += 1;
+            }
             "--help" => {
                 eprintln!("signal-tui - Terminal Signal client");
                 eprintln!();
@@ -81,6 +86,7 @@ async fn main() -> Result<()> {
                 eprintln!("  -c, --config <PATH>     Config file path");
                 eprintln!("      --setup             Run first-time setup wizard");
                 eprintln!("      --demo              Launch with dummy data (no signal-cli needed)");
+                eprintln!("      --incognito         No local message storage (in-memory only)");
                 eprintln!("      --help              Show this help");
                 std::process::exit(0);
             }
@@ -105,7 +111,7 @@ async fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Run the main flow inside a closure so we can always restore the terminal
-    let result = run_main_flow(&mut terminal, &mut config, force_setup, demo_mode).await;
+    let result = run_main_flow(&mut terminal, &mut config, force_setup, demo_mode, incognito).await;
 
     // Restore terminal
     disable_raw_mode()?;
@@ -125,6 +131,7 @@ async fn run_main_flow(
     config: &mut Config,
     force_setup: bool,
     demo_mode: bool,
+    incognito: bool,
 ) -> Result<()> {
     if demo_mode {
         let database = db::Database::open_in_memory()?;
@@ -151,13 +158,17 @@ async fn run_main_flow(
         std::fs::create_dir_all(&config.download_dir)?;
     }
 
-    // Open database
-    let db_dir = dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("signal-tui");
-    std::fs::create_dir_all(&db_dir)?;
-    let db_path = db_dir.join("signal-tui.db");
-    let database = db::Database::open(&db_path)?;
+    // Open database (in-memory for incognito mode)
+    let database = if incognito {
+        db::Database::open_in_memory()?
+    } else {
+        let db_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("signal-tui");
+        std::fs::create_dir_all(&db_dir)?;
+        let db_path = db_dir.join("signal-tui.db");
+        db::Database::open(&db_path)?
+    };
 
     // Quick pre-flight: check if account is registered (skip if wizard already handled it)
     if !setup_handled_linking {
@@ -193,7 +204,7 @@ async fn run_main_flow(
     };
 
     // Run the app
-    let result = run_app(terminal, &mut signal_client, config, database).await;
+    let result = run_app(terminal, &mut signal_client, config, database, incognito).await;
 
     // Shut down signal-cli
     signal_client.shutdown().await?;
@@ -310,11 +321,13 @@ async fn run_app(
     signal_client: &mut SignalClient,
     config: &Config,
     db: db::Database,
+    incognito: bool,
 ) -> Result<()> {
     let mut app = App::new(config.account.clone(), db);
     app.notify_direct = config.notify_direct;
     app.notify_group = config.notify_group;
     app.inline_images = config.inline_images;
+    app.incognito = incognito;
     app.load_from_db()?;
     app.set_connected();
 
