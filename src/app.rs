@@ -1287,4 +1287,170 @@ mod tests {
         let mut app = test_app();
         assert!(!app.apply_input_edit(KeyCode::F(1)));
     }
+
+    // --- Input history tests ---
+
+    #[test]
+    fn history_up_empty_is_noop() {
+        let mut app = test_app();
+        app.input_buffer = "draft".to_string();
+        app.history_up();
+        assert_eq!(app.input_buffer, "draft");
+        assert_eq!(app.history_index, None);
+    }
+
+    #[test]
+    fn history_down_without_browsing_is_noop() {
+        let mut app = test_app();
+        app.input_buffer = "draft".to_string();
+        app.history_down();
+        assert_eq!(app.input_buffer, "draft");
+        assert_eq!(app.history_index, None);
+    }
+
+    #[test]
+    fn history_up_recalls_last_entry() {
+        let mut app = test_app();
+        app.input_history = vec!["hello".to_string(), "world".to_string()];
+        app.input_buffer = "draft".to_string();
+        app.input_cursor = 5;
+
+        app.history_up();
+        assert_eq!(app.input_buffer, "world");
+        assert_eq!(app.history_index, Some(1));
+        assert_eq!(app.history_draft, "draft");
+        assert_eq!(app.input_cursor, 5); // cursor at end of "world"
+    }
+
+    #[test]
+    fn history_up_walks_to_oldest() {
+        let mut app = test_app();
+        app.input_history = vec!["first".to_string(), "second".to_string(), "third".to_string()];
+        app.input_buffer = String::new();
+
+        app.history_up(); // -> "third"
+        assert_eq!(app.input_buffer, "third");
+        assert_eq!(app.history_index, Some(2));
+
+        app.history_up(); // -> "second"
+        assert_eq!(app.input_buffer, "second");
+        assert_eq!(app.history_index, Some(1));
+
+        app.history_up(); // -> "first"
+        assert_eq!(app.input_buffer, "first");
+        assert_eq!(app.history_index, Some(0));
+
+        // At oldest — stays put
+        app.history_up();
+        assert_eq!(app.input_buffer, "first");
+        assert_eq!(app.history_index, Some(0));
+    }
+
+    #[test]
+    fn history_down_walks_forward_and_restores_draft() {
+        let mut app = test_app();
+        app.input_history = vec!["aaa".to_string(), "bbb".to_string()];
+        app.input_buffer = "my draft".to_string();
+
+        // Go to oldest
+        app.history_up(); // -> "bbb"
+        app.history_up(); // -> "aaa"
+        assert_eq!(app.input_buffer, "aaa");
+        assert_eq!(app.history_index, Some(0));
+
+        // Walk forward
+        app.history_down(); // -> "bbb"
+        assert_eq!(app.input_buffer, "bbb");
+        assert_eq!(app.history_index, Some(1));
+
+        // Past newest restores draft
+        app.history_down();
+        assert_eq!(app.input_buffer, "my draft");
+        assert_eq!(app.history_index, None);
+    }
+
+    #[test]
+    fn history_cursor_moves_to_end() {
+        let mut app = test_app();
+        app.input_history = vec!["short".to_string(), "a longer entry".to_string()];
+        app.input_buffer = String::new();
+        app.input_cursor = 0;
+
+        app.history_up(); // -> "a longer entry"
+        assert_eq!(app.input_cursor, 14);
+
+        app.history_up(); // -> "short"
+        assert_eq!(app.input_cursor, 5);
+
+        app.history_down(); // -> "a longer entry"
+        assert_eq!(app.input_cursor, 14);
+
+        app.history_down(); // -> draft ""
+        assert_eq!(app.input_cursor, 0);
+    }
+
+    #[test]
+    fn handle_input_saves_to_history() {
+        let mut app = test_app();
+        // Need an active conversation for SendText to work
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+
+        app.input_buffer = "hello".to_string();
+        app.input_cursor = 5;
+        app.handle_input();
+        assert_eq!(app.input_history, vec!["hello".to_string()]);
+        assert_eq!(app.history_index, None);
+
+        app.input_buffer = "world".to_string();
+        app.input_cursor = 5;
+        app.handle_input();
+        assert_eq!(app.input_history, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn handle_input_trims_and_skips_empty() {
+        let mut app = test_app();
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+
+        // Whitespace-only input should not be saved
+        app.input_buffer = "   ".to_string();
+        app.handle_input();
+        assert!(app.input_history.is_empty());
+
+        // Input with surrounding whitespace should be trimmed
+        app.input_buffer = "  hello  ".to_string();
+        app.input_cursor = 9;
+        app.handle_input();
+        assert_eq!(app.input_history, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn handle_input_resets_history_index() {
+        let mut app = test_app();
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+
+        app.input_history = vec!["old".to_string()];
+        app.history_index = Some(0);
+        app.input_buffer = "new".to_string();
+        app.input_cursor = 3;
+        app.handle_input();
+
+        assert_eq!(app.history_index, None);
+    }
+
+    #[test]
+    fn apply_input_edit_up_down_routes_to_history() {
+        let mut app = test_app();
+        app.input_history = vec!["recalled".to_string()];
+        app.input_buffer = "draft".to_string();
+
+        assert!(app.apply_input_edit(KeyCode::Up));
+        assert_eq!(app.input_buffer, "recalled");
+
+        assert!(app.apply_input_edit(KeyCode::Down));
+        assert_eq!(app.input_buffer, "draft");
+    }
 }
