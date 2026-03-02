@@ -2015,7 +2015,7 @@ impl App {
         }
         // Re-resolve reaction senders: DB stores phone numbers but display
         // needs contact names (or "you" for own reactions).
-        self.resolve_reaction_senders();
+        self.resolve_stored_names();
     }
 
     fn handle_group_list(&mut self, groups: Vec<Group>) {
@@ -2038,25 +2038,53 @@ impl App {
             }
         }
         // Re-resolve reaction senders with any new names from group members.
-        self.resolve_reaction_senders();
+        self.resolve_stored_names();
     }
 
-    /// Re-resolve reaction sender names across all conversations.
-    /// Called after contact_names is populated (e.g. after ContactList/GroupList
-    /// arrives) so that reactions loaded from DB with raw phone numbers get
-    /// display names.
-    fn resolve_reaction_senders(&mut self) {
+    /// Re-resolve reaction senders and quote authors across all conversations.
+    /// Uses contact_names first, then falls back to sender_id→sender mappings
+    /// from the messages themselves (covers people not in formal contacts but
+    /// whose display name was captured from the wire at message time).
+    fn resolve_stored_names(&mut self) {
+        // Build phone→name lookup from message sender_id fields
+        let mut phone_to_name: HashMap<String, String> = HashMap::new();
+        for conv in self.conversations.values() {
+            for msg in &conv.messages {
+                if !msg.sender_id.is_empty()
+                    && msg.sender_id != "you"
+                    && !msg.sender.is_empty()
+                    && msg.sender != msg.sender_id
+                {
+                    phone_to_name.insert(msg.sender_id.clone(), msg.sender.clone());
+                }
+            }
+        }
+
+        // Merge contact_names on top (takes priority)
+        for (phone, name) in &self.contact_names {
+            phone_to_name.insert(phone.clone(), name.clone());
+        }
+
+        // Resolve reaction senders and quote authors
         for conv in self.conversations.values_mut() {
             for msg in &mut conv.messages {
+                // Resolve reaction senders
                 for reaction in &mut msg.reactions {
-                    // Skip already-resolved names (non-phone-number strings)
                     if reaction.sender == "you" {
                         continue;
                     }
                     if reaction.sender == self.account {
                         reaction.sender = "you".to_string();
-                    } else if let Some(name) = self.contact_names.get(&reaction.sender) {
+                    } else if let Some(name) = phone_to_name.get(&reaction.sender) {
                         reaction.sender = name.clone();
+                    }
+                }
+                // Resolve quote author
+                if let Some(ref mut quote) = msg.quote {
+                    if quote.author == self.account {
+                        quote.author = "you".to_string();
+                    } else if let Some(name) = phone_to_name.get(&quote.author) {
+                        quote.author = name.clone();
                     }
                 }
             }
@@ -4254,13 +4282,30 @@ mod tests {
     }
 
     #[test]
-    fn contact_list_resolves_reaction_senders() {
+    fn contact_list_resolves_reactions_and_quotes() {
         let mut app = test_app();
         app.get_or_create_conversation("+1", "+1", false);
 
-        // Simulate DB-loaded reaction with raw phone number as sender
-        let ts_ms = 1000i64;
-        app.conversations.get_mut("+1").unwrap().messages.push(DisplayMessage {
+        // Simulate DB-loaded messages: one from a contact (+2=Bob), one from
+        // a non-contact (+3=Charlie, known only from sender_id on a message)
+        let conv = app.conversations.get_mut("+1").unwrap();
+        conv.messages.push(DisplayMessage {
+            sender: "Charlie".to_string(),
+            body: "hey".to_string(),
+            timestamp: chrono::Utc::now(),
+            is_system: false,
+            image_lines: None,
+            image_path: None,
+            status: None,
+            timestamp_ms: 900,
+            reactions: Vec::new(),
+            mention_ranges: Vec::new(),
+            quote: None,
+            is_edited: false,
+            is_deleted: false,
+            sender_id: "+3".to_string(), // Charlie's phone — not in contacts
+        });
+        conv.messages.push(DisplayMessage {
             sender: "Alice".to_string(),
             body: "hello".to_string(),
             timestamp: chrono::Utc::now(),
@@ -4268,27 +4313,53 @@ mod tests {
             image_lines: None,
             image_path: None,
             status: None,
-            timestamp_ms: ts_ms,
+            timestamp_ms: 1000,
             reactions: vec![
-                Reaction { emoji: "\u{1f44d}".to_string(), sender: "+2".to_string() },
-                Reaction { emoji: "\u{2764}".to_string(), sender: "+10000000000".to_string() },
+                Reaction { emoji: "\u{1f44d}".to_string(), sender: "+2".to_string() },       // contact
+                Reaction { emoji: "\u{2764}".to_string(), sender: "+10000000000".to_string() }, // own account
+                Reaction { emoji: "\u{1f602}".to_string(), sender: "+3".to_string() },        // non-contact
             ],
             mention_ranges: Vec::new(),
-            quote: None,
+            // Quote from own account (should become "you")
+            quote: Some(Quote { author: "+10000000000".to_string(), body: "quoted".to_string(), timestamp_ms: 500 }),
             is_edited: false,
             is_deleted: false,
             sender_id: "+1".to_string(),
         });
+        // A message with a quote from a non-contact
+        conv.messages.push(DisplayMessage {
+            sender: "you".to_string(),
+            body: "reply".to_string(),
+            timestamp: chrono::Utc::now(),
+            is_system: false,
+            image_lines: None,
+            image_path: None,
+            status: None,
+            timestamp_ms: 1100,
+            reactions: Vec::new(),
+            mention_ranges: Vec::new(),
+            quote: Some(Quote { author: "+3".to_string(), body: "hey".to_string(), timestamp_ms: 900 }),
+            is_edited: false,
+            is_deleted: false,
+            sender_id: "+10000000000".to_string(),
+        });
 
-        // Contact list arrives — should resolve +2 to "Bob" and own account to "you"
+        // Contact list arrives — only +2 is a formal contact
         app.handle_signal_event(SignalEvent::ContactList(vec![
             Contact { number: "+1".to_string(), name: Some("Alice".to_string()), uuid: None },
             Contact { number: "+2".to_string(), name: Some("Bob".to_string()), uuid: None },
         ]));
 
-        let reactions = &app.conversations["+1"].messages[0].reactions;
-        assert_eq!(reactions[0].sender, "Bob");
-        assert_eq!(reactions[1].sender, "you");
+        let msgs = &app.conversations["+1"].messages;
+
+        // Reactions resolved: +2→Bob (contact), own→you, +3→Charlie (from sender_id)
+        assert_eq!(msgs[1].reactions[0].sender, "Bob");
+        assert_eq!(msgs[1].reactions[1].sender, "you");
+        assert_eq!(msgs[1].reactions[2].sender, "Charlie");
+
+        // Quote authors resolved: own→you, +3→Charlie (from sender_id)
+        assert_eq!(msgs[1].quote.as_ref().unwrap().author, "you");
+        assert_eq!(msgs[2].quote.as_ref().unwrap().author, "Charlie");
     }
 
     // --- @Mention tests ---
