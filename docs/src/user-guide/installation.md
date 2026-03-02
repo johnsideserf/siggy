@@ -55,8 +55,9 @@ signal-tui requires [signal-cli](https://github.com/AsamK/signal-cli) as its mes
 
    On Windows, point to `signal-cli.bat` if it isn't in your `PATH`.
 
-3. **Java runtime** -- signal-cli requires Java 21+. Make sure `java` is available
-   in your shell.
+3. **Java runtime** -- signal-cli 0.14+ requires Java 25+. Make sure `java` is
+   available in your shell. On Linux, the install script uses the native signal-cli
+   build which does not require Java.
 
 ## Supported platforms
 

@@ -21,16 +21,25 @@ On Windows, use the full path to `signal-cli.bat`.
 block characters. Try a modern terminal emulator like Windows Terminal, iTerm2,
 Kitty, or Alacritty.
 
-## "Java not found" errors
+## "Java not found" or class version errors
 
-**Symptom:** signal-cli fails to start with Java-related errors.
+**Symptom:** signal-cli fails to start with Java-related errors, or you see
+`UnsupportedClassVersionError` mentioning "class file version 69.0".
 
-**Fix:** signal-cli requires Java 21+. Install a JDK and make sure `java` is on
-your `PATH`:
+**Fix:** signal-cli 0.14+ requires Java 25+. Install a compatible JDK:
 
 ```sh
-java -version
+# Windows
+winget install EclipseAdoptium.Temurin.25.JDK
+
+# macOS
+brew install --cask temurin@25
+
+# Or download from https://adoptium.net/
 ```
+
+Verify with `java -version` -- you should see version 25 or higher. On Linux,
+the install script uses the native signal-cli build which does not require Java.
 
 ## Messages not appearing
 

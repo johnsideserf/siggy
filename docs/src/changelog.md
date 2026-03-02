@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.6.1
+
+### Bug fixes
+
+- **j/k scroll fixed** -- viewport no longer gets stuck when scrolling with
+  `j`/`k`. The root cause was the message window expanding in lockstep with
+  scroll offset, keeping the viewport position constant (#84)
+- **J/K navigation in short conversations** -- `J`/`K` message jumping now
+  works even when all messages fit the viewport (no scroll offset needed) (#84)
+- **Edit preserves quotes** -- editing a quoted message no longer strips the
+  original quote on remote clients. The wire-format phone number is now
+  preserved through display name resolution (#84)
+- **Contact names no longer revert to phone numbers** -- conversations would
+  permanently show phone numbers in the sidebar when messages arrived before
+  the contact list synced. Fixed by preventing phone-number fallback names
+  from overwriting real display names in the database (#84)
+- **Contact name recovery on startup** -- 1:1 conversations still named as
+  phone numbers (e.g. when signal-cli's contact list has no cached profile
+  name) now recover the correct name from stored message sender fields (#86)
+- **Reaction sender names after reload** -- reaction senders no longer revert
+  to phone numbers after restarting the app (#80)
+- **Non-contact name resolution** -- display names for non-contacts in
+  reactions and quotes are now resolved correctly (#83)
+- **Mention placeholders in quotes** -- U+FFFC placeholder characters from
+  @mentions are now stripped from quoted text (#79)
+
+### Improvements
+
+- **Loading screen** -- a loading indicator now appears during startup while
+  contacts and groups sync from signal-cli (#81, #82)
+- **Install scripts updated** -- Windows and macOS install scripts now
+  reference Java 25+ (required by signal-cli 0.14). The Windows script
+  checks the actual Java version before installing signal-cli (#87)
+
+---
+
 ## v0.6.0
 
 ### Reply, edit, and delete messages
