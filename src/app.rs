@@ -1121,6 +1121,22 @@ impl App {
 
         self.conversation_order = order;
         self.muted_conversations = self.db.load_muted()?;
+
+        // Fix 1:1 conversations still named as phone numbers: scan message senders
+        // for a real display name (from source_name in previous sessions).
+        for conv in self.conversations.values_mut() {
+            if !conv.is_group && conv.name == conv.id && conv.name.starts_with('+') {
+                // Find the most recent non-"you" sender with a real name
+                if let Some(name) = conv.messages.iter().rev()
+                    .find(|m| m.sender != "you" && m.sender != conv.id && !m.sender.starts_with('+'))
+                    .map(|m| m.sender.clone())
+                {
+                    db_warn(self.db.upsert_conversation(&conv.id, &name, false), "upsert_conversation");
+                    conv.name = name;
+                }
+            }
+        }
+
         Ok(())
     }
 
