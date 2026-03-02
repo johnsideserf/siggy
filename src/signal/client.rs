@@ -827,11 +827,12 @@ fn parse_data_message(
         })
         .unwrap_or_default();
 
-    // Parse quoted reply
+    // Parse quoted reply (strip U+FFFC mention placeholders from quote text)
     let quote = data.get("quote").and_then(|q| {
         let q_ts = q.get("id").and_then(|v| v.as_i64())?;
         let q_author = q.get("authorNumber").and_then(|v| v.as_str())?.to_string();
-        let q_body = q.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let q_body = q.get("text").and_then(|v| v.as_str()).unwrap_or("")
+            .replace('\u{FFFC}', "").to_string();
         Some((q_ts, q_author, q_body))
     });
 
@@ -949,11 +950,12 @@ fn parse_sent_sync(
         })
         .unwrap_or_default();
 
-    // Parse quoted reply
+    // Parse quoted reply (strip U+FFFC mention placeholders from quote text)
     let quote = sent.get("quote").and_then(|q| {
         let q_ts = q.get("id").and_then(|v| v.as_i64())?;
         let q_author = q.get("authorNumber").and_then(|v| v.as_str())?.to_string();
-        let q_body = q.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let q_body = q.get("text").and_then(|v| v.as_str()).unwrap_or("")
+            .replace('\u{FFFC}', "").to_string();
         Some((q_ts, q_author, q_body))
     });
 
