@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.5.0
+
+### Message reactions
+
+- **Emoji reactions** -- react to any message with `r` in Normal mode to
+  open the reaction picker. Navigate with `h`/`l` or `1`-`8`, press
+  Enter to send. Reactions display below messages as compact emoji
+  badges (e.g. `👍 2 ❤️ 1`) with an optional verbose mode showing
+  sender names (closes #16)
+- **Reaction sync** -- incoming reactions, sync reactions from other
+  devices, and reaction removals are all handled in real time
+- **Persistence** -- reactions are stored in the database (migration v4)
+  and restored on startup
+
+### @mentions
+
+- **Mention autocomplete** -- type `@` in group chats to open a member
+  autocomplete popup. Filter by name, press Tab to insert the mention.
+  Works in 1:1 chats too (with the conversation partner)
+- **Mention display** -- incoming mentions are highlighted in cyan+bold
+  in the chat area
+
+### Visible message selection
+
+- **Focus highlight** -- when scrolling in Normal mode, the focused
+  message gets a subtle dark background highlight so you can see exactly
+  which message reactions and copy will target
+- **`J`/`K` navigation** -- Shift+j and Shift+k jump between actual
+  messages, skipping date separators and system messages
+
+### Startup error handling
+
+- **stderr capture** -- signal-cli startup errors (missing Java, bad
+  config, etc.) are now captured and displayed in a TUI error screen
+  instead of silently failing
+
+### Internal
+
+- Major refactoring across four PRs (#45-#48): extracted shared key
+  handlers, data-driven settings system, split `parse_receive_event`
+  into sub-functions, modernized test helpers, added persistent debug
+  log and pending_requests TTL
+
+---
+
 ## v0.4.0
 
 ### Contact list

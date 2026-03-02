@@ -22,8 +22,18 @@ changes in the status bar.
 | Key | Action |
 |---|---|
 | `j` / `k` | Scroll down / up 1 line |
+| `J` / `K` | Jump to previous / next message |
 | `Ctrl+D` / `Ctrl+U` | Scroll down / up half page |
 | `g` / `G` | Scroll to top / bottom |
+
+### Actions
+
+| Key | Action |
+|---|---|
+| `y` | Copy message body to clipboard |
+| `Y` | Copy full line (`[HH:MM] <sender> body`) to clipboard |
+| `r` | Open reaction picker on focused message |
+| `@` | Mention autocomplete (in Insert mode) |
 
 ### Cursor movement
 

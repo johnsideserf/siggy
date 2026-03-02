@@ -92,6 +92,10 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 - **Unread tracking** -- Unread counts in sidebar with "new messages" separator in chat
 - **Notifications** -- Terminal bell on new messages (configurable per direct/group, per-chat mute)
 - **Contact resolution** -- Names from your Signal address book; groups auto-populated on startup
+- **Message reactions** -- React with `r` in Normal mode; emoji picker with badge display (`👍 2 ❤️ 1`)
+- **@mentions** -- Type `@` in group chats to mention members with autocomplete
+- **Message selection** -- Focused message highlight when scrolling; `J`/`K` to jump between messages
+- **Read receipts** -- Status symbols on outgoing messages (Sending → Sent → Delivered → Read → Viewed)
 - **Setup wizard** -- First-run onboarding with QR code device linking
 - **Vim keybindings** -- Modal editing (Normal/Insert) with full cursor movement
 - **Command autocomplete** -- Tab-completion popup for slash commands
@@ -109,6 +113,7 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 | `/sidebar` | `/sb` | Toggle sidebar visibility |
 | `/bell [type]` | `/notify` | Toggle notifications (`direct`, `group`, or both) |
 | `/mute` | | Mute/unmute current conversation |
+| `/contacts` | `/c` | Browse synced contacts |
 | `/settings` | | Open settings overlay |
 | `/help` | `/h` | Show help overlay |
 | `/quit` | `/q` | Exit signal-tui |
@@ -137,6 +142,7 @@ Press `Esc` to enter Normal mode.
 | Key | Action |
 |---|---|
 | `j` / `k` | Scroll down / up 1 line |
+| `J` / `K` | Jump to previous / next message |
 | `Ctrl+D` / `Ctrl+U` | Scroll down / up half page |
 | `g` / `G` | Scroll to top / bottom |
 | `h` / `l` | Move cursor left / right |
@@ -144,6 +150,8 @@ Press `Esc` to enter Normal mode.
 | `0` / `$` | Start / end of line |
 | `x` | Delete character at cursor |
 | `D` | Delete from cursor to end |
+| `y` / `Y` | Copy message body / full line |
+| `r` | React to focused message |
 | `i` | Enter Insert mode |
 | `a` | Enter Insert mode (cursor right 1) |
 | `I` / `A` | Enter Insert mode at start / end of line |

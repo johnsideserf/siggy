@@ -23,22 +23,29 @@
 - [x] Input history (Up/Down to recall previous messages)
 - [x] Incognito mode (`--incognito`)
 - [x] Demo mode (`--demo`)
+- [x] Delivery/read receipt display (status symbols on outgoing messages)
+- [x] Contact list overlay (`/contacts`)
+- [x] Copy to clipboard (`y`/`Y` in Normal mode)
+- [x] Full timestamp on scroll (status bar shows date+time of focused message)
+- [x] Message reactions (emoji picker, badge display, full lifecycle with DB persistence)
+- [x] @mention autocomplete (type `@` in group or 1:1 chats)
+- [x] Visible message selection (focus highlight, `J`/`K` message-level navigation)
+- [x] Startup error handling (signal-cli stderr captured in TUI error screen)
 
 ## Up next
 
-- [ ] **Delivery/read receipt display** -- receipts are already parsed but
-  silently discarded. Show checkmark indicators next to messages.
 - [ ] **Send attachments** -- only receiving works today. Add a `/send-file <path>`
   command.
+- [ ] **Message search** -- full-text search across conversations.
 
 ## Future
 
-- [ ] Message search
 - [ ] Multi-line message input (Shift+Enter for newlines)
 - [ ] Message history pagination (scroll-up to load older messages)
 - [ ] Correct group typing indicators (per-sender-to-group mapping)
-- [ ] Message reactions (emoji badges with counts)
 - [ ] Message deletion and editing
 - [ ] Group management (create, add/remove members, member list)
 - [ ] Scroll position memory per conversation
 - [ ] Configurable keybindings
+- [ ] Reply to specific messages (quote reply)
+- [ ] Forward messages

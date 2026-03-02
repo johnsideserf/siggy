@@ -71,6 +71,33 @@ Uses an in-memory database instead of on-disk SQLite. No messages, conversations
 or read markers are written to disk. The status bar shows a bold magenta
 **incognito** indicator. When you exit, everything is gone.
 
+## Message reactions
+
+React to any message with `r` in Normal mode to open the emoji picker. Navigate
+with `h`/`l` or press `1`-`8` to jump directly, then Enter to send.
+
+Reactions display below messages as compact badges:
+
+```
+👍 2  ❤️ 1
+```
+
+Enable "Verbose reactions" in `/settings` to show sender names instead of counts.
+Reactions sync across devices and persist in the database.
+
+## @mentions
+
+In group chats, type `@` to open a member autocomplete popup. Filter by name and
+press Tab to insert the mention. Works in 1:1 chats too (with the conversation
+partner). Incoming mentions are highlighted in cyan+bold.
+
+## Visible message selection
+
+When scrolling in Normal mode, the focused message gets a subtle dark background
+highlight. This makes it clear which message `r` (react) and `y`/`Y` (copy) will
+target. Use `J`/`K` (Shift+j/k) to jump between messages, skipping date
+separators and system messages.
+
 ## Demo mode
 
 ```sh

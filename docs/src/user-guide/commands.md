@@ -11,6 +11,7 @@ All commands start with `/`. Type `/` in Insert mode to open the autocomplete po
 | `/sidebar` | `/sb` | | Toggle sidebar visibility |
 | `/bell` | `/notify` | `[type]` | Toggle notifications (`direct`, `group`, or both) |
 | `/mute` | | | Mute/unmute current conversation |
+| `/contacts` | `/c` | | Browse synced contacts |
 | `/settings` | | | Open settings overlay |
 | `/help` | `/h` | | Show help overlay |
 | `/quit` | `/q` | | Exit signal-tui |

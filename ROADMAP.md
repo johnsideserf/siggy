@@ -19,8 +19,6 @@
 - [x] Sync request at startup to refresh data from primary device
 - [x] Inline image preview for attachments (halfblock rendering)
 
-## Up Next
-
 - [x] **New message notifications**
   - Terminal bell + unread count in terminal title
   - Separate toggles for direct and group messages (config + `/bell` command)
@@ -43,25 +41,39 @@
 - [x] **Full timestamp on scroll**
   - Status bar shows full date+time of focused message when scrolling
 
+- [x] **Message reactions**
+  - Emoji picker (`r` in Normal mode) with quick-react bar
+  - Compact badge display (`👍 2 ❤️ 1`) with optional verbose mode
+  - Full lifecycle: receive, sync, remove, persist (DB migration v4)
+
+- [x] **@mention autocomplete**
+  - Type `@` in group chats to mention members; also works in 1:1 chats
+  - Incoming mentions highlighted in cyan+bold
+
+- [x] **Visible message selection**
+  - Dark background highlight on focused message when scrolling
+  - `J`/`K` to jump between messages (skips separators and system messages)
+
+- [x] **Startup error handling**
+  - signal-cli stderr captured and displayed in TUI error screen
+
+## Up Next
+
 - [ ] **Send attachments**
   - Only receiving works today
   - Add `/send-file <path>` command
 
+- [ ] **Message search**
+  - Full-text search across conversations
+
 ## Future
 
-- [ ] Message search
 - [ ] Multi-line message input (Shift+Enter for newlines)
 - [ ] Message history pagination (scroll-up to load older messages)
 - [ ] Correct group typing indicators (per-sender-to-group mapping)
-- [ ] **Message reactions (emoji reactions)**
-  - Parse `dataMessage.reaction` from signal-cli (emoji, targetAuthor, targetTimestamp, isRemove)
-  - Display reactions below the target message as compact emoji badges (e.g. `👍 2  ❤️ 1`)
-  - Aggregate duplicate emoji from different senders into counts
-  - Handle reaction removal (`isRemove: true`) by decrementing or removing the badge
-  - Store reactions in DB (new `reactions` table keyed by message + sender)
-  - Re-render reaction badges on startup from DB
-  - Stretch: allow sending reactions via a command (e.g. `/react 👍`)
 - [ ] Message deletion and editing
 - [ ] Group management (create, add/remove members, member list)
 - [ ] Scroll position memory per conversation
 - [ ] Configurable keybindings
+- [ ] Reply to specific messages (quote reply)
+- [ ] Forward messages
