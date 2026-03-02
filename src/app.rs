@@ -2041,9 +2041,17 @@ impl App {
             }
         }
 
-        // Send read receipt for incoming messages in the active conversation
-        if is_active && !msg.is_outgoing {
-            self.queue_single_read_receipt(&sender_id, msg_ts_ms);
+        // Active conversation: send read receipt and advance read marker
+        if is_active {
+            if !msg.is_outgoing {
+                self.queue_single_read_receipt(&sender_id, msg_ts_ms);
+            }
+            if let Some(conv) = self.conversations.get(&conv_id) {
+                self.last_read_index.insert(conv_id.clone(), conv.messages.len());
+            }
+            if let Ok(Some(rowid)) = self.db.last_message_rowid(&conv_id) {
+                db_warn(self.db.save_read_marker(&conv_id, rowid), "save_read_marker");
+            }
         }
     }
 
@@ -4990,5 +4998,56 @@ mod tests {
         assert!(conv.messages[0].is_system);
         assert_eq!(conv.messages[0].body, "Missed voice call");
         assert!(conv.messages[0].sender.is_empty());
+    }
+
+    #[test]
+    fn unread_bar_clears_on_active_incoming_message() {
+        let mut app = test_app();
+
+        // Deliver a message while conversation is NOT active → creates unread
+        let msg1 = SignalMessage {
+            source: "+15551234567".to_string(),
+            source_name: Some("Alice".to_string()),
+            timestamp: chrono::Utc::now(),
+            body: Some("first".to_string()),
+            attachments: vec![],
+            group_id: None,
+            group_name: None,
+            is_outgoing: false,
+            destination: None,
+            mentions: vec![],
+            quote: None,
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg1));
+
+        // Conversation exists with 1 message, last_read_index should be 0 (unread)
+        assert_eq!(app.conversations["+15551234567"].messages.len(), 1);
+        let read_idx = app.last_read_index.get("+15551234567").copied().unwrap_or(0);
+        assert_eq!(read_idx, 0);
+
+        // Now make it the active conversation
+        app.active_conversation = Some("+15551234567".to_string());
+
+        // Deliver another message while conversation IS active
+        let msg2 = SignalMessage {
+            source: "+15551234567".to_string(),
+            source_name: Some("Alice".to_string()),
+            timestamp: chrono::Utc::now(),
+            body: Some("second".to_string()),
+            attachments: vec![],
+            group_id: None,
+            group_name: None,
+            is_outgoing: false,
+            destination: None,
+            mentions: vec![],
+            quote: None,
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg2));
+
+        // last_read_index should now equal messages.len() → no unread bar
+        let total = app.conversations["+15551234567"].messages.len();
+        let read_idx = app.last_read_index["+15551234567"];
+        assert_eq!(total, 2);
+        assert_eq!(read_idx, total);
     }
 }
