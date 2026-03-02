@@ -2369,8 +2369,9 @@ impl App {
         name: &str,
         is_group: bool,
     ) -> &mut Conversation {
-        db_warn(self.db.upsert_conversation(id, name, is_group), "upsert_conversation");
         if !self.conversations.contains_key(id) {
+            // New conversation — always persist
+            db_warn(self.db.upsert_conversation(id, name, is_group), "upsert_conversation");
             self.conversations.insert(
                 id.to_string(),
                 Conversation {
@@ -2382,6 +2383,15 @@ impl App {
                 },
             );
             self.conversation_order.push(id.to_string());
+        } else if name != id {
+            // Existing conversation — only update if we have a real display name
+            // (not a phone-number fallback where name == id). This prevents
+            // messages arriving before ContactList from overwriting a good name.
+            let conv = self.conversations.get_mut(id).unwrap();
+            if conv.name != name {
+                conv.name = name.to_string();
+                db_warn(self.db.upsert_conversation(id, name, is_group), "upsert_conversation");
+            }
         }
         self.conversations.get_mut(id).unwrap()
     }
