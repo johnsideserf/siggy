@@ -2009,6 +2009,9 @@ impl App {
                 }
             }
         }
+        // Re-resolve reaction senders: DB stores phone numbers but display
+        // needs contact names (or "you" for own reactions).
+        self.resolve_reaction_senders();
     }
 
     fn handle_group_list(&mut self, groups: Vec<Group>) {
@@ -2028,6 +2031,30 @@ impl App {
             if !group.name.is_empty() && conv.name != group.name {
                 conv.name = group.name.clone();
                 db_warn(self.db.upsert_conversation(&group.id, &group.name, true), "upsert_conversation");
+            }
+        }
+        // Re-resolve reaction senders with any new names from group members.
+        self.resolve_reaction_senders();
+    }
+
+    /// Re-resolve reaction sender names across all conversations.
+    /// Called after contact_names is populated (e.g. after ContactList/GroupList
+    /// arrives) so that reactions loaded from DB with raw phone numbers get
+    /// display names.
+    fn resolve_reaction_senders(&mut self) {
+        for conv in self.conversations.values_mut() {
+            for msg in &mut conv.messages {
+                for reaction in &mut msg.reactions {
+                    // Skip already-resolved names (non-phone-number strings)
+                    if reaction.sender == "you" {
+                        continue;
+                    }
+                    if reaction.sender == self.account {
+                        reaction.sender = "you".to_string();
+                    } else if let Some(name) = self.contact_names.get(&reaction.sender) {
+                        reaction.sender = name.clone();
+                    }
+                }
             }
         }
     }
@@ -4220,6 +4247,44 @@ mod tests {
         // But it was persisted to DB
         let db_reactions = app.db.load_reactions("+1").unwrap();
         assert_eq!(db_reactions.len(), 1);
+    }
+
+    #[test]
+    fn contact_list_resolves_reaction_senders() {
+        let mut app = test_app();
+        app.get_or_create_conversation("+1", "+1", false);
+
+        // Simulate DB-loaded reaction with raw phone number as sender
+        let ts_ms = 1000i64;
+        app.conversations.get_mut("+1").unwrap().messages.push(DisplayMessage {
+            sender: "Alice".to_string(),
+            body: "hello".to_string(),
+            timestamp: chrono::Utc::now(),
+            is_system: false,
+            image_lines: None,
+            image_path: None,
+            status: None,
+            timestamp_ms: ts_ms,
+            reactions: vec![
+                Reaction { emoji: "\u{1f44d}".to_string(), sender: "+2".to_string() },
+                Reaction { emoji: "\u{2764}".to_string(), sender: "+10000000000".to_string() },
+            ],
+            mention_ranges: Vec::new(),
+            quote: None,
+            is_edited: false,
+            is_deleted: false,
+            sender_id: "+1".to_string(),
+        });
+
+        // Contact list arrives — should resolve +2 to "Bob" and own account to "you"
+        app.handle_signal_event(SignalEvent::ContactList(vec![
+            Contact { number: "+1".to_string(), name: Some("Alice".to_string()), uuid: None },
+            Contact { number: "+2".to_string(), name: Some("Bob".to_string()), uuid: None },
+        ]));
+
+        let reactions = &app.conversations["+1"].messages[0].reactions;
+        assert_eq!(reactions[0].sender, "Bob");
+        assert_eq!(reactions[1].sender, "you");
     }
 
     // --- @Mention tests ---
