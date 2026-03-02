@@ -45,8 +45,9 @@ pub enum AutocompleteMode {
 pub struct Quote {
     pub author: String,
     pub body: String,
-    #[allow(dead_code)]
     pub timestamp_ms: i64,
+    /// Original phone number / account ID for wire protocol (not resolved to display name)
+    pub author_id: String,
 }
 
 /// A single displayed message in a conversation
@@ -309,6 +310,9 @@ pub enum SendRequest {
         edit_timestamp: i64,
         local_ts_ms: i64,
         mentions: Vec<(usize, String)>,
+        quote_timestamp: Option<i64>,
+        quote_author: Option<String>,
+        quote_body: Option<String>,
     },
     RemoteDelete {
         recipient: String,
@@ -1721,7 +1725,7 @@ impl App {
             let author_display = self.contact_names.get(author_phone)
                 .cloned()
                 .unwrap_or_else(|| if *author_phone == self.account { "you".to_string() } else { author_phone.clone() });
-            (Quote { author: author_display, body: body.clone(), timestamp_ms: *ts }, author_phone.clone(), body.clone(), *ts)
+            (Quote { author: author_display, body: body.clone(), timestamp_ms: *ts, author_id: author_phone.clone() }, author_phone.clone(), body.clone(), *ts)
         });
         let display_quote = msg_quote.as_ref().map(|(q, _, _, _)| q.clone());
         let wire_quote_author = msg_quote.as_ref().map(|(_, a, _, _)| a.clone());
@@ -2403,6 +2407,11 @@ impl App {
                 // Handle editing flow: update in-memory + DB + send edit RPC
                 if let Some((edit_ts, edit_conv_id)) = self.editing_message.take() {
                     if !text.is_empty() {
+                        // Extract original quote fields (immutable borrow) before mutating
+                        let original_quote = self.conversations.get(&edit_conv_id)
+                            .and_then(|conv| conv.messages.iter().rev().find(|m| m.timestamp_ms == edit_ts && m.sender == "you"))
+                            .and_then(|msg| msg.quote.as_ref())
+                            .map(|q| (q.timestamp_ms, q.author_id.clone(), q.body.clone()));
                         if let Some(conv) = self.conversations.get_mut(&edit_conv_id) {
                             if let Some(msg) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == edit_ts && m.sender == "you") {
                                 msg.body = text.clone();
@@ -2423,6 +2432,9 @@ impl App {
                                 edit_timestamp: edit_ts,
                                 local_ts_ms: now.timestamp_millis(),
                                 mentions: wire_mentions,
+                                quote_timestamp: original_quote.as_ref().map(|(ts, _, _)| *ts),
+                                quote_author: original_quote.as_ref().map(|(_, a, _)| a.clone()),
+                                quote_body: original_quote.map(|(_, _, b)| b),
                             });
                         }
                     }
@@ -2473,7 +2485,7 @@ impl App {
                         let author_display = self.contact_names.get(author_phone)
                             .cloned()
                             .unwrap_or_else(|| if *author_phone == self.account { "you".to_string() } else { author_phone.clone() });
-                        Quote { author: author_display, body: body.clone(), timestamp_ms: *ts }
+                        Quote { author: author_display, body: body.clone(), timestamp_ms: *ts, author_id: author_phone.clone() }
                     });
                     let quote_timestamp = self.reply_target.as_ref().map(|(_, _, ts)| *ts);
                     let quote_author = self.reply_target.as_ref().map(|(phone, _, _)| phone.clone());
@@ -4329,7 +4341,7 @@ mod tests {
             ],
             mention_ranges: Vec::new(),
             // Quote from own account (should become "you")
-            quote: Some(Quote { author: "+10000000000".to_string(), body: "quoted".to_string(), timestamp_ms: 500 }),
+            quote: Some(Quote { author: "+10000000000".to_string(), body: "quoted".to_string(), timestamp_ms: 500, author_id: "+10000000000".to_string() }),
             is_edited: false,
             is_deleted: false,
             sender_id: "+1".to_string(),
@@ -4346,7 +4358,7 @@ mod tests {
             timestamp_ms: 1100,
             reactions: Vec::new(),
             mention_ranges: Vec::new(),
-            quote: Some(Quote { author: "+3".to_string(), body: "hey".to_string(), timestamp_ms: 900 }),
+            quote: Some(Quote { author: "+3".to_string(), body: "hey".to_string(), timestamp_ms: 900, author_id: "+3".to_string() }),
             is_edited: false,
             is_deleted: false,
             sender_id: "+10000000000".to_string(),

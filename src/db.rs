@@ -213,6 +213,7 @@ impl Database {
                         .with_timezone(&chrono::Utc);
                     let quote = match (quote_author, quote_body, quote_ts_ms) {
                         (Some(author), Some(body), Some(ts)) => Some(crate::app::Quote {
+                            author_id: author.clone(),
                             author,
                             body: body.replace('\u{FFFC}', ""),
                             timestamp_ms: ts,

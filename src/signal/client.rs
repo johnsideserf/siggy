@@ -241,6 +241,7 @@ impl SignalClient {
         is_group: bool,
         edit_timestamp: i64,
         mentions: &[(usize, String)],
+        quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
         let id = Uuid::new_v4().to_string();
 
@@ -273,6 +274,12 @@ impl SignalClient {
                 "mention".to_string(),
                 serde_json::Value::Array(mention_arr),
             );
+        }
+
+        if let Some((author, timestamp, body_text)) = quote {
+            params.as_object_mut().unwrap().insert("quoteTimestamp".to_string(), serde_json::json!(timestamp));
+            params.as_object_mut().unwrap().insert("quoteAuthor".to_string(), serde_json::json!(author));
+            params.as_object_mut().unwrap().insert("quoteMessage".to_string(), serde_json::json!(body_text));
         }
 
         let request = JsonRpcRequest {

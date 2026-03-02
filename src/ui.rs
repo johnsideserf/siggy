@@ -18,7 +18,7 @@ use crate::input::COMMANDS;
 // Layout constants
 const SIDEBAR_AUTO_HIDE_WIDTH: u16 = 60;
 const MIN_CHAT_WIDTH: u16 = 30;
-const MSG_WINDOW_MULTIPLIER: usize = 3;
+const MSG_WINDOW_MULTIPLIER: usize = 10;
 
 // Popup dimensions
 const SETTINGS_POPUP_WIDTH: u16 = 42;
@@ -573,9 +573,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let available_height = inner.height as usize;
     let total = messages.len();
 
-    // Build lines from a generous window covering the viewport at the current scroll position.
-    // Always include messages up to `total`; scroll_offset controls the paragraph scroll instead.
-    let start = total.saturating_sub(available_height * MSG_WINDOW_MULTIPLIER + app.scroll_offset);
+    // Build lines from a fixed window of recent messages.
+    // scroll_offset is NOT included here — it controls the Paragraph scroll position instead.
+    // Including it would expand the window by 1 message per scroll increment, growing
+    // content_height and base_scroll in lockstep, keeping scroll_y constant (viewport stuck).
+    let start = total.saturating_sub(available_height * MSG_WINDOW_MULTIPLIER);
     let visible = &messages[start..total];
 
     // Get last_read_index for unread marker

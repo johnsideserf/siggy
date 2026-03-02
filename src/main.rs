@@ -482,8 +482,12 @@ async fn dispatch_send(
                 app.status_message = format!("reaction error: {e}");
             }
         }
-        SendRequest::Edit { recipient, body, is_group, edit_timestamp, local_ts_ms, mentions } => {
-            match signal_client.send_edit_message(&recipient, &body, is_group, edit_timestamp, &mentions).await {
+        SendRequest::Edit { recipient, body, is_group, edit_timestamp, local_ts_ms, mentions, quote_timestamp, quote_author, quote_body } => {
+            let quote = match (quote_author, quote_timestamp, quote_body) {
+                (Some(author), Some(ts), Some(body_text)) => Some((author, ts, body_text)),
+                _ => None,
+            };
+            match signal_client.send_edit_message(&recipient, &body, is_group, edit_timestamp, &mentions, quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str()))).await {
                 Ok(rpc_id) => {
                     debug_log::logf(format_args!("edit: to={recipient} ts={edit_timestamp}"));
                     app.pending_sends.insert(rpc_id, (recipient.to_string(), local_ts_ms));
