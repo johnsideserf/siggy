@@ -471,6 +471,41 @@ impl SignalClient {
         Ok(())
     }
 
+    /// Send a read receipt to a single recipient for one or more message timestamps.
+    /// Fire-and-forget — no useful result is expected from signal-cli.
+    pub async fn send_read_receipt(
+        &self,
+        recipient: &str,
+        timestamps: &[i64],
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("sendReceipt".to_string(), Instant::now()));
+        }
+
+        let params = serde_json::json!({
+            "recipient": [recipient],
+            "type": "read",
+            "targetTimestamp": timestamps,
+            "account": self.account,
+        });
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendReceipt".to_string(),
+            id,
+            params: Some(params),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send read receipt to signal-cli stdin")?;
+        Ok(())
+    }
+
     /// Returns accumulated stderr output from the signal-cli process.
     pub fn stderr_output(&self) -> String {
         self.stderr_buffer.lock().map(|buf| buf.clone()).unwrap_or_default()
@@ -561,7 +596,7 @@ fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&st
                 .collect();
             Some(SignalEvent::GroupList(groups))
         }
-        "sendReaction" | "remoteDelete" | "sendTypingIndicator" => None, // fire-and-forget, no action needed
+        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" => None, // fire-and-forget, no action needed
         _ => None,
     }
 }

@@ -501,6 +501,11 @@ async fn dispatch_send(
         SendRequest::Typing { recipient, is_group, stop } => {
             let _ = signal_client.send_typing(&recipient, is_group, stop).await;
         }
+        SendRequest::ReadReceipt { recipient, timestamps } => {
+            if let Err(e) = signal_client.send_read_receipt(&recipient, &timestamps).await {
+                crate::debug_log::logf(format_args!("read receipt error: {e}"));
+            }
+        }
     }
 }
 
@@ -521,6 +526,7 @@ async fn run_app(
     app.color_receipts = config.color_receipts;
     app.nerd_fonts = config.nerd_fonts;
     app.reaction_verbose = config.reaction_verbose;
+    app.send_read_receipts = config.send_read_receipts;
     app.load_from_db()?;
     app.set_connected();
 
@@ -598,6 +604,16 @@ async fn run_app(
                 }
                 Err(_) => break, // Empty, no more events
             }
+        }
+
+        // Dispatch queued read receipts
+        for (recipient, timestamps) in std::mem::take(&mut app.pending_read_receipts) {
+            dispatch_send(
+                signal_client,
+                &mut app,
+                SendRequest::ReadReceipt { recipient, timestamps },
+            )
+            .await;
         }
 
         // Expire stale typing indicators
