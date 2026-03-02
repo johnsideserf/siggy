@@ -749,6 +749,7 @@ fn populate_demo_data(app: &mut App) {
             timestamp_ms: time.timestamp_millis(),
             reactions: Vec::new(),
             mention_ranges: Vec::new(),
+            style_ranges: Vec::new(),
             quote: None,
             is_edited: false,
             is_deleted: false,

@@ -231,6 +231,7 @@ impl Database {
                         timestamp_ms,
                         reactions: Vec::new(),
                         mention_ranges: Vec::new(),
+                        style_ranges: Vec::new(),
                         quote,
                         is_edited,
                         is_deleted,

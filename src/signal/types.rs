@@ -125,6 +125,8 @@ pub struct SignalMessage {
     pub destination: Option<String>,
     /// Body range mentions from signal-cli (for resolving U+FFFC placeholders)
     pub mentions: Vec<Mention>,
+    /// Text style ranges from signal-cli (bold, italic, etc.)
+    pub text_styles: Vec<TextStyle>,
     /// Quoted reply context: (timestamp_ms, author_phone, body)
     pub quote: Option<(i64, String, String)>,
 }
@@ -174,6 +176,24 @@ pub struct Mention {
     pub start: usize,  // UTF-16 offset in body
     pub length: usize,  // Always 1 (U+FFFC)
     pub uuid: String,   // ACI UUID of mentioned user
+}
+
+/// A text style range from signal-cli's textStyles/bodyRanges array.
+#[derive(Debug, Clone)]
+pub struct TextStyle {
+    pub start: usize,  // UTF-16 offset in body
+    pub length: usize, // UTF-16 length
+    pub style: StyleType,
+}
+
+/// Type of text styling applied to a range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StyleType {
+    Bold,
+    Italic,
+    Strikethrough,
+    Monospace,
+    Spoiler,
 }
 
 /// Contact info from signal-cli

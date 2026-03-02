@@ -9,7 +9,7 @@ use crate::db::Database;
 use crate::image_render;
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
-use crate::signal::types::{Contact, Group, Mention, MessageStatus, Reaction, SignalEvent, SignalMessage};
+use crate::signal::types::{Contact, Group, Mention, MessageStatus, Reaction, SignalEvent, SignalMessage, StyleType, TextStyle};
 
 /// Log a database error via debug_log (no-op when --debug is off).
 fn db_warn<T>(result: Result<T, impl std::fmt::Display>, context: &str) {
@@ -76,6 +76,8 @@ pub struct DisplayMessage {
     pub reactions: Vec<Reaction>,
     /// Byte ranges of @mentions in body (for styling)
     pub mention_ranges: Vec<(usize, usize)>,
+    /// Byte ranges + style type for text styling (bold, italic, etc.)
+    pub style_ranges: Vec<(usize, usize, StyleType)>,
     /// Quoted reply context
     pub quote: Option<Quote>,
     /// Whether this message has been edited
@@ -1934,6 +1936,11 @@ impl App {
             self.resolve_mentions(body, &msg.mentions)
         });
 
+        // Resolve text styles (UTF-16 → byte offsets, accounting for mention replacements)
+        let resolved_styles = resolved_body.as_ref().map(|(resolved, _)| {
+            self.resolve_text_styles(resolved, &msg.text_styles, &msg.mentions)
+        }).unwrap_or_default();
+
         // Resolve quote from wire format
         let msg_quote = msg.quote.as_ref().map(|(ts, author_phone, body)| {
             let author_display = self.contact_names.get(author_phone)
@@ -1951,6 +1958,7 @@ impl App {
                             image_lines: Option<Vec<Line<'static>>>,
                             image_path: Option<String>,
                             mention_ranges: Vec<(usize, usize)>,
+                            style_ranges: Vec<(usize, usize, StyleType)>,
                             quote: Option<Quote>| {
             if let Some(conv) = self.conversations.get_mut(&conv_id) {
                 let pos = conv.messages.partition_point(|m| m.timestamp_ms <= msg_ts_ms);
@@ -1965,6 +1973,7 @@ impl App {
                     timestamp_ms: msg_ts_ms,
                     reactions: Vec::new(),
                     mention_ranges,
+                    style_ranges,
                     quote,
                     is_edited: false,
                     is_deleted: false,
@@ -1989,9 +1998,9 @@ impl App {
             );
         };
 
-        // Add text body (with resolved @mentions)
+        // Add text body (with resolved @mentions and text styles)
         if let Some((resolved, ranges)) = resolved_body {
-            push_msg(resolved, None, None, ranges, display_quote);
+            push_msg(resolved, None, None, ranges, resolved_styles, display_quote);
         }
 
         // Add attachment notices
@@ -2021,10 +2030,11 @@ impl App {
                     rendered,
                     att.local_path.clone(),
                     Vec::new(),
+                    Vec::new(),
                     None,
                 );
             } else {
-                push_msg(format!("[attachment: {label}]{path_info}"), None, None, Vec::new(), None);
+                push_msg(format!("[attachment: {label}]{path_info}"), None, None, Vec::new(), Vec::new(), None);
             }
         }
 
@@ -2081,6 +2091,7 @@ impl App {
                 timestamp_ms,
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -2528,6 +2539,84 @@ impl App {
         (resolved, ranges)
     }
 
+    /// Convert text style ranges from UTF-16 offsets (on the original body) to byte offsets
+    /// on the resolved body (after mention replacement). Mentions may change the body length,
+    /// so we need to account for the offset shift caused by mention replacements.
+    fn resolve_text_styles(
+        &self,
+        resolved_body: &str,
+        text_styles: &[TextStyle],
+        mentions: &[Mention],
+    ) -> Vec<(usize, usize, StyleType)> {
+        if text_styles.is_empty() {
+            return Vec::new();
+        }
+
+        // Calculate how mention replacements shift UTF-16 offsets.
+        // Build a sorted list of (original_utf16_start, original_utf16_len, replacement_utf16_len)
+        let mut mention_shifts: Vec<(usize, i64)> = Vec::new(); // (original_start, cumulative_shift_after)
+        if !mentions.is_empty() {
+            let mut sorted_mentions: Vec<&Mention> = mentions.iter().collect();
+            sorted_mentions.sort_by_key(|m| m.start);
+            let mut cumulative: i64 = 0;
+            for m in &sorted_mentions {
+                let name = self
+                    .uuid_to_name
+                    .get(&m.uuid)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let short = if m.uuid.len() > 8 { &m.uuid[..8] } else { &m.uuid };
+                        short.to_string()
+                    });
+                let replacement_utf16_len = format!("@{name}").encode_utf16().count() as i64;
+                let original_len = m.length as i64;
+                cumulative += replacement_utf16_len - original_len;
+                mention_shifts.push((m.start + m.length, cumulative));
+            }
+        }
+
+        // For a given original UTF-16 offset, compute the shifted offset after mention replacements
+        let shift_offset = |orig: usize| -> usize {
+            let mut shift: i64 = 0;
+            for &(boundary, cum_shift) in &mention_shifts {
+                if orig >= boundary {
+                    shift = cum_shift;
+                } else {
+                    break;
+                }
+            }
+            (orig as i64 + shift) as usize
+        };
+
+        // Build UTF-16 to byte offset mapping for the resolved body
+        let mut utf16_to_byte: Vec<usize> = Vec::new();
+        let mut byte_pos = 0;
+        for ch in resolved_body.chars() {
+            for _ in 0..ch.len_utf16() {
+                utf16_to_byte.push(byte_pos);
+            }
+            byte_pos += ch.len_utf8();
+        }
+        utf16_to_byte.push(byte_pos); // sentinel
+
+        let body_byte_len = resolved_body.len();
+
+        text_styles
+            .iter()
+            .filter_map(|ts| {
+                let shifted_start = shift_offset(ts.start);
+                let shifted_end = shift_offset(ts.start + ts.length);
+                let byte_start = utf16_to_byte.get(shifted_start).copied().unwrap_or(body_byte_len);
+                let byte_end = utf16_to_byte.get(shifted_end).copied().unwrap_or(body_byte_len);
+                if byte_start < byte_end && byte_end <= body_byte_len {
+                    Some((byte_start, byte_end, ts.style))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Prepare outgoing mentions: replace @Name with U+FFFC and compute UTF-16 offsets.
     /// Returns (wire_body, mentions_for_rpc).
     fn prepare_outgoing_mentions(&self, text: &str) -> (String, Vec<(usize, String)>) {
@@ -2844,6 +2933,7 @@ impl App {
                             timestamp_ms: local_ts_ms,
                             reactions: Vec::new(),
                             mention_ranges,
+                            style_ranges: Vec::new(),
                             quote,
                             is_edited: false,
                             is_deleted: false,
@@ -3547,7 +3637,7 @@ fn file_uri_to_path(uri: &str) -> String {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::signal::types::{Contact, Group, SignalEvent, SignalMessage};
+    use crate::signal::types::{Contact, Group, Mention, SignalEvent, SignalMessage, StyleType, TextStyle};
 
     fn test_app() -> App {
         let db = Database::open_in_memory().unwrap();
@@ -3610,6 +3700,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -3639,6 +3730,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -3676,6 +3768,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -3707,6 +3800,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -3739,6 +3833,7 @@ mod tests {
                 is_outgoing: false,
                 destination: None,
                 mentions: vec![],
+                text_styles: vec![],
                 quote: None,
             };
             app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -4220,6 +4315,7 @@ mod tests {
                 timestamp_ms: ts_ms,
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -4269,6 +4365,7 @@ mod tests {
                 timestamp_ms: ts_ms,
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -4309,6 +4406,7 @@ mod tests {
                 timestamp_ms: local_ts,
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -4349,6 +4447,7 @@ mod tests {
                 timestamp_ms: local_ts,
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -4383,6 +4482,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -4412,6 +4512,7 @@ mod tests {
                 timestamp_ms: local_ts,
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -4465,6 +4566,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -4502,6 +4604,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -4547,6 +4650,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -4596,6 +4700,7 @@ mod tests {
                 timestamp_ms: ts_ms,
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -4661,6 +4766,7 @@ mod tests {
             timestamp_ms: 900,
             reactions: Vec::new(),
             mention_ranges: Vec::new(),
+            style_ranges: Vec::new(),
             quote: None,
             is_edited: false,
             is_deleted: false,
@@ -4681,6 +4787,7 @@ mod tests {
                 Reaction { emoji: "\u{1f602}".to_string(), sender: "+3".to_string() },        // non-contact
             ],
             mention_ranges: Vec::new(),
+            style_ranges: Vec::new(),
             // Quote from own account (should become "you")
             quote: Some(Quote { author: "+10000000000".to_string(), body: "quoted".to_string(), timestamp_ms: 500, author_id: "+10000000000".to_string() }),
             is_edited: false,
@@ -4699,6 +4806,7 @@ mod tests {
             timestamp_ms: 1100,
             reactions: Vec::new(),
             mention_ranges: Vec::new(),
+            style_ranges: Vec::new(),
             quote: Some(Quote { author: "+3".to_string(), body: "hey".to_string(), timestamp_ms: 900, author_id: "+3".to_string() }),
             is_edited: false,
             is_deleted: false,
@@ -4920,6 +5028,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![Mention { start: 0, length: 1, uuid: "uuid-bob".to_string() }],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
@@ -5086,6 +5195,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg1));
@@ -5110,6 +5220,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg2));
@@ -5137,6 +5248,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg("one", 1000)));
@@ -5172,6 +5284,7 @@ mod tests {
             is_outgoing: false,
             destination: None,
             mentions: vec![],
+            text_styles: vec![],
             quote: None,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg("one", 1000)));
@@ -5191,5 +5304,77 @@ mod tests {
         });
         assert_eq!(app.last_read_index["+15551234567"], 3);
         assert_eq!(app.conversations["+15551234567"].unread, 0);
+    }
+
+    // --- Text style resolution tests ---
+
+    #[test]
+    fn text_style_ranges_resolved_to_byte_offsets() {
+        let app = test_app();
+
+        // ASCII body: "hello bold world"
+        // "bold" is at UTF-16 offset 6, length 4
+        let body = "hello bold world";
+        let styles = vec![
+            TextStyle { start: 6, length: 4, style: StyleType::Bold },
+            TextStyle { start: 11, length: 5, style: StyleType::Italic },
+        ];
+        let resolved = app.resolve_text_styles(body, &styles, &[]);
+
+        // In pure ASCII, UTF-16 offsets == byte offsets
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(resolved[0], (6, 10, StyleType::Bold));      // "bold"
+        assert_eq!(resolved[1], (11, 16, StyleType::Italic));    // "world"
+    }
+
+    #[test]
+    fn text_style_ranges_with_multibyte_chars() {
+        let app = test_app();
+
+        // Body with multi-byte chars: "Hi \u{1F600} bold" (emoji is 4 bytes UTF-8, 2 units UTF-16)
+        // UTF-16: H(1) i(1) ' '(1) \u{1F600}(2) ' '(1) b(1) o(1) l(1) d(1) = offsets
+        // "bold" starts at UTF-16 offset 6, length 4
+        let body = "Hi \u{1F600} bold";
+        let styles = vec![
+            TextStyle { start: 6, length: 4, style: StyleType::Bold },
+        ];
+        let resolved = app.resolve_text_styles(body, &styles, &[]);
+
+        // "Hi " = 3 bytes, emoji = 4 bytes, " " = 1 byte => "bold" starts at byte 8
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].0, 8);  // byte start of "bold"
+        assert_eq!(resolved[0].1, 12); // byte end of "bold"
+        assert_eq!(resolved[0].2, StyleType::Bold);
+    }
+
+    #[test]
+    fn text_style_ranges_with_mentions() {
+        let mut app = test_app();
+        app.uuid_to_name.insert("uuid-bob".to_string(), "Bob".to_string());
+
+        // Original body: "\u{FFFC} is bold"
+        // After mention resolution: "@Bob is bold"
+        // Mention at UTF-16 offset 0, length 1 => replaced with "@Bob" (4 chars)
+        // "bold" is at original UTF-16 offset 5, length 4
+        // After resolution shift: offset 5 + 3 (replacement grew by 3) = 8
+        let resolved_body = "@Bob is bold";
+        let mentions = vec![Mention { start: 0, length: 1, uuid: "uuid-bob".to_string() }];
+        let styles = vec![
+            TextStyle { start: 5, length: 4, style: StyleType::Strikethrough },
+        ];
+        let resolved = app.resolve_text_styles(resolved_body, &styles, &mentions);
+
+        assert_eq!(resolved.len(), 1);
+        // "bold" in "@Bob is bold" starts at byte 8
+        assert_eq!(resolved[0].0, 8);
+        assert_eq!(resolved[0].1, 12);
+        assert_eq!(resolved[0].2, StyleType::Strikethrough);
+    }
+
+    #[test]
+    fn text_style_ranges_empty_styles() {
+        let app = test_app();
+        let resolved = app.resolve_text_styles("hello world", &[], &[]);
+        assert!(resolved.is_empty());
     }
 }

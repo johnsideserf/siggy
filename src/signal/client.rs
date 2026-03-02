@@ -959,6 +959,8 @@ fn parse_data_message(
         })
         .unwrap_or_default();
 
+    let text_styles = parse_text_styles(data);
+
     // Parse quoted reply (strip U+FFFC mention placeholders from quote text)
     let quote = data.get("quote").and_then(|q| {
         let q_ts = q.get("id").and_then(|v| v.as_i64())?;
@@ -979,6 +981,7 @@ fn parse_data_message(
         is_outgoing: false,
         destination: None,
         mentions,
+        text_styles,
         quote,
     }))
 }
@@ -1143,6 +1146,8 @@ fn parse_sent_sync(
         })
         .unwrap_or_default();
 
+    let text_styles = parse_text_styles(sent);
+
     // Parse quoted reply (strip U+FFFC mention placeholders from quote text)
     let quote = sent.get("quote").and_then(|q| {
         let q_ts = q.get("id").and_then(|v| v.as_i64())?;
@@ -1163,6 +1168,7 @@ fn parse_sent_sync(
         is_outgoing: true,
         destination,
         mentions,
+        text_styles,
         quote,
     }))
 }
@@ -1434,6 +1440,36 @@ fn format_expiration(seconds: i64) -> String {
     };
     let plural = if n == 1 { "" } else { "s" };
     format!("Disappearing messages set to {n} {unit}{plural}")
+}
+
+/// Parse text styles from a data message's textStyles array (or bodyRanges style entries).
+fn parse_text_styles(data: &serde_json::Value) -> Vec<TextStyle> {
+    // Try textStyles array first, then fall back to bodyRanges entries with "style" field
+    let arr = data
+        .get("textStyles")
+        .and_then(|v| v.as_array())
+        .or_else(|| data.get("bodyRanges").and_then(|v| v.as_array()));
+
+    arr.map(|items| {
+        items
+            .iter()
+            .filter_map(|r| {
+                let start = r.get("start").and_then(|v| v.as_u64())? as usize;
+                let length = r.get("length").and_then(|v| v.as_u64())? as usize;
+                let style_str = r.get("style").and_then(|v| v.as_str())?;
+                let style = match style_str {
+                    "BOLD" => StyleType::Bold,
+                    "ITALIC" => StyleType::Italic,
+                    "STRIKETHROUGH" => StyleType::Strikethrough,
+                    "MONOSPACE" => StyleType::Monospace,
+                    "SPOILER" => StyleType::Spoiler,
+                    _ => return None,
+                };
+                Some(TextStyle { start, length, style })
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -2420,6 +2456,103 @@ mod tests {
                 assert!(msg.attachments.is_empty());
             }
             _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+    }
+
+    // --- Text style parsing tests ---
+
+    #[test]
+    fn parse_text_styles_basic() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "sourceName": "Alice",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "message": "hello bold world",
+                        "textStyles": [
+                            {"start": 6, "length": 4, "style": "BOLD"},
+                            {"start": 11, "length": 5, "style": "ITALIC"}
+                        ]
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert_eq!(msg.text_styles.len(), 2);
+                assert_eq!(msg.text_styles[0].start, 6);
+                assert_eq!(msg.text_styles[0].length, 4);
+                assert_eq!(msg.text_styles[0].style, StyleType::Bold);
+                assert_eq!(msg.text_styles[1].start, 11);
+                assert_eq!(msg.text_styles[1].length, 5);
+                assert_eq!(msg.text_styles[1].style, StyleType::Italic);
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_text_styles_empty_or_missing() {
+        // No textStyles array at all
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "message": "plain text"
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert!(msg.text_styles.is_empty());
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+
+        // Empty textStyles array
+        let resp2 = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "message": "plain text",
+                        "textStyles": []
+                    }
+                }
+            })),
+        };
+        let event2 = parse_signal_event(&resp2, std::path::Path::new("/tmp")).unwrap();
+        match event2 {
+            SignalEvent::MessageReceived(msg) => {
+                assert!(msg.text_styles.is_empty());
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event2),
         }
     }
 }

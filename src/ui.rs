@@ -11,7 +11,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AutocompleteMode, InputMode, VisibleImage, QUICK_REACTIONS, SETTINGS};
-use crate::signal::types::{MessageStatus, Reaction};
+use crate::signal::types::{MessageStatus, Reaction, StyleType};
 use crate::image_render::ImageProtocol;
 use crate::input::COMMANDS;
 
@@ -230,7 +230,11 @@ fn collect_link_regions(buf: &Buffer, area: Rect) -> Vec<LinkRegion> {
 /// Returns `(spans, Option<hidden_url>)`. For attachment bodies like
 /// `[image: label](file:///path)`, the bracket text is the visible link and
 /// the URI inside parens is returned separately (not displayed).
-fn styled_uri_spans(body: &str, mention_ranges: &[(usize, usize)]) -> (Vec<Span<'static>>, Option<String>) {
+fn styled_uri_spans(
+    body: &str,
+    mention_ranges: &[(usize, usize)],
+    style_ranges: &[(usize, usize, StyleType)],
+) -> (Vec<Span<'static>>, Option<String>) {
     let link_style = Style::default()
         .fg(Color::Blue)
         .add_modifier(Modifier::UNDERLINED);
@@ -307,18 +311,97 @@ fn styled_uri_spans(body: &str, mention_ranges: &[(usize, usize)]) -> (Vec<Span<
     // Sort regions by start position
     regions.sort_by_key(|r| r.0);
 
-    // Build spans by interleaving plain text and styled regions
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut pos = 0;
-    for (start, end, style) in &regions {
-        if *start > pos {
-            spans.push(Span::raw(body[pos..*start].to_string()));
+    // If no text styles, use the simple path
+    if style_ranges.is_empty() {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut pos = 0;
+        for (start, end, style) in &regions {
+            if *start > pos {
+                spans.push(Span::raw(body[pos..*start].to_string()));
+            }
+            spans.push(Span::styled(body[*start..*end].to_string(), *style));
+            pos = *end;
         }
-        spans.push(Span::styled(body[*start..*end].to_string(), *style));
-        pos = *end;
+        if pos < body.len() {
+            spans.push(Span::raw(body[pos..].to_string()));
+        }
+        return (spans, None);
     }
-    if pos < body.len() {
-        spans.push(Span::raw(body[pos..].to_string()));
+
+    // With text styles: collect all boundary points and build segments where
+    // the active set of styles is constant
+    let mut boundaries: Vec<usize> = Vec::new();
+    boundaries.push(0);
+    boundaries.push(body.len());
+    for &(start, end, _) in &regions {
+        boundaries.push(start);
+        boundaries.push(end);
+    }
+    for &(start, end, _) in style_ranges {
+        if start <= body.len() {
+            boundaries.push(start);
+        }
+        if end <= body.len() {
+            boundaries.push(end);
+        }
+    }
+    boundaries.sort();
+    boundaries.dedup();
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for window in boundaries.windows(2) {
+        let seg_start = window[0];
+        let seg_end = window[1];
+        if seg_start >= seg_end || seg_start >= body.len() {
+            continue;
+        }
+        let seg_end = seg_end.min(body.len());
+
+        // Determine base style from mention/URI regions
+        let mut style = Style::default();
+        for &(rs, re, ref_style) in &regions {
+            if seg_start >= rs && seg_end <= re {
+                style = ref_style;
+                break;
+            }
+        }
+
+        // Check for spoiler first — if any spoiler range covers this segment,
+        // replace the text with block characters
+        let mut is_spoiler = false;
+        for &(ss, se, st) in style_ranges {
+            if st == StyleType::Spoiler && seg_start >= ss && seg_end <= se {
+                is_spoiler = true;
+                break;
+            }
+        }
+
+        let segment_text = &body[seg_start..seg_end];
+        if is_spoiler {
+            // Replace each character with a block character
+            let block_text: String = segment_text.chars().map(|_| '\u{2588}').collect();
+            let spoiler_style = style.fg(Color::DarkGray);
+            spans.push(Span::styled(block_text, spoiler_style));
+        } else {
+            // Apply text style modifiers
+            for &(ss, se, st) in style_ranges {
+                if seg_start >= ss && seg_end <= se {
+                    match st {
+                        StyleType::Bold => style = style.add_modifier(Modifier::BOLD),
+                        StyleType::Italic => style = style.add_modifier(Modifier::ITALIC),
+                        StyleType::Strikethrough => style = style.add_modifier(Modifier::CROSSED_OUT),
+                        StyleType::Monospace => style = style.fg(Color::DarkGray),
+                        StyleType::Spoiler => {} // handled above
+                    }
+                }
+            }
+
+            if style == Style::default() {
+                spans.push(Span::raw(segment_text.to_string()));
+            } else {
+                spans.push(Span::styled(segment_text.to_string(), style));
+            }
+        }
     }
 
     (spans, None)
@@ -693,7 +776,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 ));
             } else {
                 // Style URIs and @mentions
-                let (body_spans, hidden_url) = styled_uri_spans(&msg.body, &msg.mention_ranges);
+                let (body_spans, hidden_url) = styled_uri_spans(&msg.body, &msg.mention_ranges, &msg.style_ranges);
                 if let Some(url) = hidden_url {
                     // Collect display text for link_url_map lookup
                     let display_text: String = body_spans.iter().map(|s| s.content.as_ref()).collect();
