@@ -498,6 +498,9 @@ async fn dispatch_send(
                 app.status_message = format!("delete error: {e}");
             }
         }
+        SendRequest::Typing { recipient, is_group, stop } => {
+            let _ = signal_client.send_typing(&recipient, is_group, stop).await;
+        }
     }
 }
 
@@ -599,6 +602,15 @@ async fn run_app(
 
         // Expire stale typing indicators
         app.cleanup_typing();
+
+        // Check if our outgoing typing indicator has timed out
+        if let Some(typing_stop) = app.check_typing_timeout() {
+            dispatch_send(signal_client, &mut app, typing_stop).await;
+        }
+        // Drain pending typing stop from conversation switches
+        if let Some(typing_stop) = app.pending_typing_stop.take() {
+            dispatch_send(signal_client, &mut app, typing_stop).await;
+        }
 
         // Terminal bell on new messages in background conversations
         if app.pending_bell {

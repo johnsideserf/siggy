@@ -255,6 +255,12 @@ pub struct App {
     pub search_results: Vec<SearchResult>,
     /// Cursor position in search results
     pub search_index: usize,
+    /// Whether we've sent a typing-started indicator for the current input
+    pub typing_sent: bool,
+    /// When the last keypress happened (for typing timeout)
+    pub typing_last_keypress: Option<Instant>,
+    /// Queued typing-stop request from conversation switches (drained by main loop)
+    pub pending_typing_stop: Option<SendRequest>,
 }
 
 /// A search result entry.
@@ -302,6 +308,11 @@ pub enum SendRequest {
         recipient: String,
         is_group: bool,
         target_timestamp: i64,
+    },
+    Typing {
+        recipient: String,
+        is_group: bool,
+        stop: bool,
     },
 }
 
@@ -1028,6 +1039,9 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
             search_index: 0,
+            typing_sent: false,
+            typing_last_keypress: None,
+            pending_typing_stop: None,
         }
     }
 
@@ -1112,6 +1126,49 @@ impl App {
         let now = Instant::now();
         self.typing_indicators
             .retain(|_, ts| now.duration_since(*ts).as_secs() < 5);
+    }
+
+    /// Build a Typing SendRequest for the active conversation, or None if no conversation is active.
+    fn build_typing_request(&self, stop: bool) -> Option<SendRequest> {
+        let conv_id = self.active_conversation.as_ref()?;
+        let is_group = self
+            .conversations
+            .get(conv_id)
+            .map(|c| c.is_group)
+            .unwrap_or(false);
+        Some(SendRequest::Typing {
+            recipient: conv_id.clone(),
+            is_group,
+            stop,
+        })
+    }
+
+    /// Check if the typing indicator has timed out (5 seconds since last keypress).
+    /// Returns a typing-stop SendRequest if so, and resets state.
+    pub fn check_typing_timeout(&mut self) -> Option<SendRequest> {
+        if !self.typing_sent {
+            return None;
+        }
+        let elapsed = self
+            .typing_last_keypress
+            .map(|t| t.elapsed() > std::time::Duration::from_secs(5))
+            .unwrap_or(false);
+        if elapsed {
+            self.typing_sent = false;
+            self.typing_last_keypress = None;
+            return self.build_typing_request(true);
+        }
+        None
+    }
+
+    /// Reset typing state and queue a stop request if we were typing.
+    /// Call this before switching conversations.
+    fn reset_typing_with_stop(&mut self) {
+        if self.typing_sent {
+            self.pending_typing_stop = self.build_typing_request(true);
+        }
+        self.typing_sent = false;
+        self.typing_last_keypress = None;
     }
 
     /// Handle global keys that work in both Normal and Insert mode.
@@ -1407,7 +1464,7 @@ impl App {
     }
 
     /// Handle Insert mode key.
-    /// Returns `Some(SendRequest)` if Enter triggers a message send (via handle_input).
+    /// Returns `Some(SendRequest)` if a message send or typing indicator should be dispatched.
     pub fn handle_insert_key(&mut self, modifiers: KeyModifiers, code: KeyCode) -> Option<SendRequest> {
         match (modifiers, code) {
             (_, KeyCode::Esc) => {
@@ -1415,9 +1472,29 @@ impl App {
                 self.autocomplete_visible = false;
                 self.reply_target = None;
                 self.editing_message = None;
+                // Send typing stop if we had an active typing indicator
+                if self.typing_sent {
+                    self.typing_sent = false;
+                    self.typing_last_keypress = None;
+                    return self.build_typing_request(true);
+                }
                 None
             }
-            (_, KeyCode::Enter) => self.handle_input(),
+            (_, KeyCode::Enter) => {
+                // Sending a message implicitly stops typing — just reset state
+                let was_typing = self.typing_sent;
+                self.typing_sent = false;
+                self.typing_last_keypress = None;
+                let result = self.handle_input();
+                if result.is_some() {
+                    result
+                } else if was_typing {
+                    // Empty/command input — send explicit typing stop
+                    self.build_typing_request(true)
+                } else {
+                    None
+                }
+            }
             _ => {
                 let needs_ac_update = matches!(
                     code,
@@ -1426,6 +1503,26 @@ impl App {
                 self.apply_input_edit(code);
                 if needs_ac_update {
                     self.update_autocomplete();
+                }
+                // Send typing indicator for text input (not commands)
+                if matches!(code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete) {
+                    self.typing_last_keypress = Some(Instant::now());
+                    // Send typing stop if buffer is now empty
+                    if self.input_buffer.is_empty() && self.typing_sent {
+                        self.typing_sent = false;
+                        self.typing_last_keypress = None;
+                        return self.build_typing_request(true);
+                    }
+                    // Send typing start if not already sent, buffer is non-empty,
+                    // input is not a command, and there's an active conversation
+                    if !self.typing_sent
+                        && !self.input_buffer.is_empty()
+                        && !self.input_buffer.starts_with('/')
+                        && self.active_conversation.is_some()
+                    {
+                        self.typing_sent = true;
+                        return self.build_typing_request(false);
+                    }
                 }
                 None
             }
@@ -2305,6 +2402,7 @@ impl App {
                 self.scroll_offset = 0;
                 self.focused_msg_index = None;
                 self.pending_attachment = None;
+                self.reset_typing_with_stop();
                 self.update_status();
             }
             InputAction::Quit => {
@@ -2713,6 +2811,7 @@ impl App {
     fn join_conversation(&mut self, target: &str) {
         self.mark_read();
         self.pending_attachment = None;
+        self.reset_typing_with_stop();
 
         // Try exact match first
         if self.conversations.contains_key(target) {
@@ -2763,6 +2862,7 @@ impl App {
         }
         self.mark_read();
         self.pending_attachment = None;
+        self.reset_typing_with_stop();
         let idx = self
             .active_conversation
             .as_ref()
@@ -2785,6 +2885,7 @@ impl App {
         }
         self.mark_read();
         self.pending_attachment = None;
+        self.reset_typing_with_stop();
         let len = self.conversation_order.len();
         let idx = self
             .active_conversation

@@ -428,6 +428,49 @@ impl SignalClient {
         Ok(())
     }
 
+    pub async fn send_typing(
+        &self,
+        recipient: &str,
+        is_group: bool,
+        stop: bool,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("sendTypingIndicator".to_string(), Instant::now()));
+        }
+
+        let mut params = if is_group {
+            serde_json::json!({
+                "groupId": recipient,
+                "account": self.account,
+            })
+        } else {
+            serde_json::json!({
+                "recipient": [recipient],
+                "account": self.account,
+            })
+        };
+
+        if stop {
+            params.as_object_mut().unwrap().insert("stop".to_string(), serde_json::json!(true));
+        }
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendTypingIndicator".to_string(),
+            id,
+            params: Some(params),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send typing indicator to signal-cli stdin")?;
+        Ok(())
+    }
+
     /// Returns accumulated stderr output from the signal-cli process.
     pub fn stderr_output(&self) -> String {
         self.stderr_buffer.lock().map(|buf| buf.clone()).unwrap_or_default()
@@ -518,7 +561,7 @@ fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&st
                 .collect();
             Some(SignalEvent::GroupList(groups))
         }
-        "sendReaction" | "remoteDelete" => None, // applied optimistically, no action needed
+        "sendReaction" | "remoteDelete" | "sendTypingIndicator" => None, // fire-and-forget, no action needed
         _ => None,
     }
 }
