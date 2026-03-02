@@ -119,6 +119,17 @@ impl Database {
             )?;
         }
 
+        if version < 5 {
+            self.conn.execute_batch(
+                "
+                BEGIN;
+                CREATE INDEX IF NOT EXISTS idx_messages_conv_ts_ms ON messages(conversation_id, timestamp_ms);
+                UPDATE schema_version SET version = 5;
+                COMMIT;
+                ",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -157,7 +168,7 @@ impl Database {
             let mut msg_stmt = self.conn.prepare(
                 "SELECT sender, timestamp, body, is_system, status, timestamp_ms FROM messages
                  WHERE conversation_id = ?1
-                 ORDER BY rowid DESC LIMIT ?2",
+                 ORDER BY timestamp_ms DESC, rowid DESC LIMIT ?2",
             )?;
 
             let mut messages: Vec<DisplayMessage> = msg_stmt

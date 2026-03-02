@@ -1227,13 +1227,14 @@ impl App {
             self.resolve_mentions(body, &msg.mentions)
         });
 
-        // Helper: push a DisplayMessage and persist to DB
+        // Helper: insert a DisplayMessage in timestamp order and persist to DB
         let mut push_msg = |body: String,
                             image_lines: Option<Vec<Line<'static>>>,
                             image_path: Option<String>,
                             mention_ranges: Vec<(usize, usize)>| {
             if let Some(conv) = self.conversations.get_mut(&conv_id) {
-                conv.messages.push(DisplayMessage {
+                let pos = conv.messages.partition_point(|m| m.timestamp_ms <= msg_ts_ms);
+                conv.messages.insert(pos, DisplayMessage {
                     sender: sender_display.clone(),
                     timestamp: msg.timestamp,
                     body: body.clone(),
@@ -1245,6 +1246,12 @@ impl App {
                     reactions: Vec::new(),
                     mention_ranges,
                 });
+                // Bump last_read_index if we inserted before the read marker
+                if let Some(read_idx) = self.last_read_index.get_mut(&conv_id) {
+                    if pos <= *read_idx {
+                        *read_idx += 1;
+                    }
+                }
             }
             db_warn(
                 self.db.insert_message(
