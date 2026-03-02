@@ -261,6 +261,10 @@ pub struct App {
     pub typing_last_keypress: Option<Instant>,
     /// Queued typing-stop request from conversation switches (drained by main loop)
     pub pending_typing_stop: Option<SendRequest>,
+    /// Send read receipts to message senders when viewing conversations
+    pub send_read_receipts: bool,
+    /// Queued read receipts to dispatch: (recipient_phone, timestamps)
+    pub pending_read_receipts: Vec<(String, Vec<i64>)>,
 }
 
 /// A search result entry.
@@ -313,6 +317,10 @@ pub enum SendRequest {
         recipient: String,
         is_group: bool,
         stop: bool,
+    },
+    ReadReceipt {
+        recipient: String,
+        timestamps: Vec<i64>,
     },
 }
 
@@ -387,6 +395,13 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reaction_verbose,
         set: |a, v| a.reaction_verbose = v,
         save: Some(|c, v| c.reaction_verbose = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Send read receipts",
+        get: |a| a.send_read_receipts,
+        set: |a, v| a.send_read_receipts = v,
+        save: Some(|c, v| c.send_read_receipts = v),
         on_toggle: None,
     },
 ];
@@ -1042,6 +1057,8 @@ impl App {
             typing_sent: false,
             typing_last_keypress: None,
             pending_typing_stop: None,
+            send_read_receipts: true,
+            pending_read_receipts: Vec::new(),
         }
     }
 
@@ -1119,6 +1136,52 @@ impl App {
                 db_warn(self.db.save_read_marker(&conv_id, rowid), "save_read_marker");
             }
         }
+    }
+
+    /// Queue read receipts for unread incoming messages in a conversation.
+    /// Messages from `start_index` onward are considered unread.
+    /// Groups timestamps by sender and appends to `pending_read_receipts`.
+    fn queue_read_receipts_for_conv(&mut self, conv_id: &str, start_index: usize) {
+        if !self.send_read_receipts {
+            return;
+        }
+        let conv = match self.conversations.get(conv_id) {
+            Some(c) => c,
+            None => return,
+        };
+        // Collect timestamps grouped by sender phone number
+        let mut by_sender: HashMap<String, Vec<i64>> = HashMap::new();
+        for msg in conv.messages.iter().skip(start_index) {
+            // Only incoming messages: status is None, not system, has a real sender_id
+            if msg.status.is_some() || msg.is_system || msg.sender_id.is_empty() {
+                continue;
+            }
+            // Skip messages from ourselves (shouldn't happen for incoming, but guard)
+            if msg.sender_id == self.account {
+                continue;
+            }
+            by_sender
+                .entry(msg.sender_id.clone())
+                .or_default()
+                .push(msg.timestamp_ms);
+        }
+        for (recipient, timestamps) in by_sender {
+            if !timestamps.is_empty() {
+                self.pending_read_receipts.push((recipient, timestamps));
+            }
+        }
+    }
+
+    /// Queue a read receipt for a single incoming message (when it arrives in the active conversation).
+    fn queue_single_read_receipt(&mut self, sender_id: &str, timestamp_ms: i64) {
+        if !self.send_read_receipts {
+            return;
+        }
+        if sender_id.is_empty() || sender_id == self.account {
+            return;
+        }
+        self.pending_read_receipts
+            .push((sender_id.to_string(), vec![timestamp_ms]));
     }
 
     /// Remove typing indicators older than 5 seconds
@@ -1750,6 +1813,11 @@ impl App {
             if type_enabled && !self.muted_conversations.contains(&conv_id) {
                 self.pending_bell = true;
             }
+        }
+
+        // Send read receipt for incoming messages in the active conversation
+        if is_active && !msg.is_outgoing {
+            self.queue_single_read_receipt(&sender_id, msg_ts_ms);
         }
     }
 
@@ -2815,6 +2883,8 @@ impl App {
 
         // Try exact match first
         if self.conversations.contains_key(target) {
+            let read_from = self.last_read_index.get(target).copied().unwrap_or(0);
+            self.queue_read_receipts_for_conv(target, read_from);
             self.active_conversation = Some(target.to_string());
             if let Some(conv) = self.conversations.get_mut(target) {
                 conv.unread = 0;
@@ -2834,6 +2904,8 @@ impl App {
             .map(|(id, _)| id.clone());
 
         if let Some(id) = found_id {
+            let read_from = self.last_read_index.get(&id).copied().unwrap_or(0);
+            self.queue_read_receipts_for_conv(&id, read_from);
             self.active_conversation = Some(id.clone());
             self.scroll_offset = 0;
             self.focused_msg_index = None;
@@ -2870,6 +2942,8 @@ impl App {
             .map(|i| (i + 1) % self.conversation_order.len())
             .unwrap_or(0);
         let new_id = self.conversation_order[idx].clone();
+        let read_from = self.last_read_index.get(&new_id).copied().unwrap_or(0);
+        self.queue_read_receipts_for_conv(&new_id, read_from);
         self.active_conversation = Some(new_id.clone());
         if let Some(conv) = self.conversations.get_mut(&new_id) {
             conv.unread = 0;
@@ -2894,6 +2968,8 @@ impl App {
             .map(|i| if i == 0 { len - 1 } else { i - 1 })
             .unwrap_or(0);
         let new_id = self.conversation_order[idx].clone();
+        let read_from = self.last_read_index.get(&new_id).copied().unwrap_or(0);
+        self.queue_read_receipts_for_conv(&new_id, read_from);
         self.active_conversation = Some(new_id.clone());
         if let Some(conv) = self.conversations.get_mut(&new_id) {
             conv.unread = 0;

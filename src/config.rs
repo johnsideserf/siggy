@@ -47,6 +47,10 @@ pub struct Config {
     /// Show verbose reaction display (usernames instead of counts)
     #[serde(default)]
     pub reaction_verbose: bool,
+
+    /// Send read receipts to message senders when viewing conversations
+    #[serde(default = "default_true")]
+    pub send_read_receipts: bool,
 }
 
 fn default_true() -> bool {
@@ -77,6 +81,7 @@ impl Default for Config {
             color_receipts: true,
             nerd_fonts: false,
             reaction_verbose: false,
+            send_read_receipts: true,
         }
     }
 }
