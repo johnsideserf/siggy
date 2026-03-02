@@ -219,6 +219,9 @@ async fn run_main_flow(
         }
     }
 
+    // Show loading screen while signal-cli starts up
+    draw_loading_screen(terminal, "Starting signal-cli...")?;
+
     // Spawn signal-cli backend
     let signal_result = SignalClient::spawn(config).await;
     let mut signal_client = match signal_result {
@@ -310,6 +313,50 @@ async fn show_error_screen(
             }
         }
     }
+}
+
+/// Draw a simple loading screen with the app name and a status message.
+fn draw_loading_screen(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    status: &str,
+) -> Result<()> {
+    let status = status.to_string();
+    terminal.draw(|frame| {
+        let area = frame.area();
+
+        let [_, center, _] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(5),
+            Constraint::Min(1),
+        ])
+        .flex(Flex::Center)
+        .areas(area);
+
+        let [_, inner, _] = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(30),
+            Constraint::Min(1),
+        ])
+        .flex(Flex::Center)
+        .areas(center);
+
+        let lines = vec![
+            Line::from(Span::styled(
+                "signal-tui",
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                status.clone(),
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+
+        let paragraph = Paragraph::new(lines)
+            .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(paragraph, inner);
+    })?;
+    Ok(())
 }
 
 /// Convert a ratatui Color to a crossterm Color for direct terminal output.
@@ -531,6 +578,7 @@ async fn run_app(
     app.set_connected();
 
     // Ask primary device to sync contacts/groups, then fetch them (best-effort)
+    draw_loading_screen(terminal, "Syncing contacts...")?;
     let _ = signal_client.send_sync_request().await;
     let _ = signal_client.list_contacts().await;
     let _ = signal_client.list_groups().await;
