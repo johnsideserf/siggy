@@ -902,10 +902,19 @@ fn parse_data_message(
     let timestamp = DateTime::from_timestamp_millis(timestamp_ms)
         .unwrap_or_default();
 
+    // Synthesize body for sticker messages
+    let sticker_body = data.get("sticker").map(|sticker| {
+        match sticker.get("emoji").and_then(|v| v.as_str()) {
+            Some(emoji) => format!("[Sticker: {}]", emoji),
+            None => "[Sticker]".to_string(),
+        }
+    });
+
     let body = data
         .get("message")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or(sticker_body);
 
     let group_id = data
         .get("groupInfo")
@@ -1071,10 +1080,19 @@ fn parse_sent_sync(
 
     let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
 
+    // Synthesize body for sticker messages
+    let sticker_body = sent.get("sticker").map(|sticker| {
+        match sticker.get("emoji").and_then(|v| v.as_str()) {
+            Some(emoji) => format!("[Sticker: {}]", emoji),
+            None => "[Sticker]".to_string(),
+        }
+    });
+
     let body = sent
         .get("message")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or(sticker_body);
 
     let group_id = sent
         .get("groupInfo")
@@ -2182,5 +2200,111 @@ mod tests {
         };
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp"));
         assert!(event.is_none());
+    }
+
+    // --- Sticker message tests ---
+
+    #[test]
+    fn parse_sticker_message_with_emoji() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "sourceName": "Alice",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "sticker": {
+                            "packId": "abc123",
+                            "stickerId": 5,
+                            "emoji": "\u{1F602}"
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert_eq!(msg.body.as_deref(), Some("[Sticker: \u{1F602}]"));
+                assert!(!msg.is_outgoing);
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_sticker_message_without_emoji() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "sourceName": "Alice",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "sticker": {
+                            "packId": "abc123",
+                            "stickerId": 5
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert_eq!(msg.body.as_deref(), Some("[Sticker]"));
+                assert!(!msg.is_outgoing);
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_sticker_sync() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "timestamp": 1700000000000_i64,
+                    "syncMessage": {
+                        "sentMessage": {
+                            "timestamp": 1700000000000_i64,
+                            "destinationNumber": "+15559876543",
+                            "sticker": {
+                                "packId": "abc123",
+                                "stickerId": 5,
+                                "emoji": "\u{1F602}"
+                            }
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert_eq!(msg.body.as_deref(), Some("[Sticker: \u{1F602}]"));
+                assert!(msg.is_outgoing);
+                assert_eq!(msg.destination.as_deref(), Some("+15559876543"));
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
     }
 }
