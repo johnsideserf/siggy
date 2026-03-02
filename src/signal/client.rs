@@ -910,7 +910,7 @@ fn parse_data_message(
         }
     });
 
-    let body = data
+    let mut body = data
         .get("message")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -928,7 +928,7 @@ fn parse_data_message(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let attachments = data
+    let mut attachments = data
         .get("attachments")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -937,6 +937,12 @@ fn parse_data_message(
                 .collect()
         })
         .unwrap_or_default();
+
+    // View-once messages: replace content with placeholder
+    if data.get("viewOnce").and_then(|v| v.as_bool()).unwrap_or(false) {
+        body = Some("[View-once message]".to_string());
+        attachments = Vec::new();
+    }
 
     let mentions = data
         .get("bodyRanges")
@@ -1088,7 +1094,7 @@ fn parse_sent_sync(
         }
     });
 
-    let body = sent
+    let mut body = sent
         .get("message")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
@@ -1106,7 +1112,7 @@ fn parse_sent_sync(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let attachments = sent
+    let mut attachments = sent
         .get("attachments")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -1115,6 +1121,12 @@ fn parse_sent_sync(
                 .collect()
         })
         .unwrap_or_default();
+
+    // View-once messages: replace content with placeholder
+    if sent.get("viewOnce").and_then(|v| v.as_bool()).unwrap_or(false) {
+        body = Some("[View-once message]".to_string());
+        attachments = Vec::new();
+    }
 
     let mentions = sent
         .get("bodyRanges")
@@ -2303,6 +2315,109 @@ mod tests {
                 assert_eq!(msg.body.as_deref(), Some("[Sticker: \u{1F602}]"));
                 assert!(msg.is_outgoing);
                 assert_eq!(msg.destination.as_deref(), Some("+15559876543"));
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+    }
+
+    // --- View-once message tests ---
+
+    #[test]
+    fn parse_view_once_message() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "sourceName": "Alice",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "message": "secret text",
+                        "viewOnce": true,
+                        "attachments": [
+                            {"contentType": "image/jpeg", "filename": "photo.jpg", "size": 12345}
+                        ]
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert_eq!(msg.body.as_deref(), Some("[View-once message]"));
+                assert!(msg.attachments.is_empty());
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_view_once_false_passes_through() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "sourceName": "Alice",
+                    "timestamp": 1700000000000_i64,
+                    "dataMessage": {
+                        "timestamp": 1700000000000_i64,
+                        "message": "normal text",
+                        "viewOnce": false
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert_eq!(msg.body.as_deref(), Some("normal text"));
+            }
+            _ => panic!("Expected MessageReceived, got {:?}", event),
+        }
+    }
+
+    #[test]
+    fn parse_view_once_sync() {
+        let resp = JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            id: None,
+            result: None,
+            error: None,
+            method: Some("receive".to_string()),
+            params: Some(json!({
+                "envelope": {
+                    "sourceNumber": "+15551234567",
+                    "timestamp": 1700000000000_i64,
+                    "syncMessage": {
+                        "sentMessage": {
+                            "timestamp": 1700000000000_i64,
+                            "destinationNumber": "+15559876543",
+                            "message": "secret outgoing",
+                            "viewOnce": true,
+                            "attachments": [
+                                {"contentType": "image/png", "filename": "secret.png", "size": 999}
+                            ]
+                        }
+                    }
+                }
+            })),
+        };
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::MessageReceived(msg) => {
+                assert!(msg.is_outgoing);
+                assert_eq!(msg.body.as_deref(), Some("[View-once message]"));
+                assert!(msg.attachments.is_empty());
             }
             _ => panic!("Expected MessageReceived, got {:?}", event),
         }
