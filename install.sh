@@ -105,7 +105,7 @@ else
     echo ""
     echo "  Or download manually from:"
     echo "  https://github.com/AsamK/signal-cli/releases"
-    echo "  (Requires Java 21+)"
+    echo "  (Requires Java 25+)"
     echo ""
   fi
 fi

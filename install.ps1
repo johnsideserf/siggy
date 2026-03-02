@@ -61,10 +61,22 @@ if ($SignalCli) {
 } else {
     Info "signal-cli not found"
 
-    # Check for Java
+    # Check for Java 25+ (signal-cli 0.14+ requires class file version 69)
     $Java = Get-Command java -ErrorAction SilentlyContinue
+    $JavaOk = $false
     if ($Java) {
-        Info "Java found, installing signal-cli..."
+        $JavaVer = & java -version 2>&1 | Select-Object -First 1
+        if ($JavaVer -match '"(\d+)') {
+            $JavaMajor = [int]$Matches[1]
+            if ($JavaMajor -ge 25) {
+                $JavaOk = $true
+            } else {
+                Info "Java $JavaMajor found, but signal-cli requires Java 25+"
+            }
+        }
+    }
+    if ($JavaOk) {
+        Info "Java 25+ found, installing signal-cli..."
 
         try {
             $ScliRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/$SignalCliRepo/releases/latest"
@@ -98,9 +110,11 @@ if ($SignalCli) {
         Info "Installed signal-cli to $ScliDir"
     } else {
         Write-Host ""
-        Info "signal-cli requires Java 21+. Install Java from:"
+        Info "signal-cli requires Java 25+. Install Java from:"
         Write-Host ""
-        Write-Host "  https://adoptium.net/"
+        Write-Host "  winget install EclipseAdoptium.Temurin.25.JDK"
+        Write-Host ""
+        Write-Host "  Or download from: https://adoptium.net/"
         Write-Host ""
         Info "Then re-run this script to install signal-cli."
         Write-Host ""
