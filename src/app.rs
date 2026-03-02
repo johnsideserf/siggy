@@ -2447,7 +2447,7 @@ impl App {
                 if filter_lower.is_empty()
                     || group.name.to_lowercase().contains(&filter_lower)
                 {
-                    candidates.push((display, group.name.clone()));
+                    candidates.push((display, group.id.clone()));
                 }
             }
 
@@ -2455,7 +2455,7 @@ impl App {
             for conv_id in &self.conversation_order {
                 if let Some(conv) = self.conversations.get(conv_id) {
                     let already_listed = candidates.iter().any(|(_, val)| {
-                        val == conv_id || val == &conv.name
+                        val == conv_id
                     });
                     if !already_listed {
                         let display = if conv.is_group {
@@ -2467,7 +2467,7 @@ impl App {
                             || conv.name.to_lowercase().contains(&filter_lower)
                             || conv_id.to_lowercase().contains(&filter_lower)
                         {
-                            candidates.push((display, if conv.is_group { conv.name.clone() } else { conv_id.clone() }));
+                            candidates.push((display, conv_id.clone()));
                         }
                     }
                 }
@@ -3334,8 +3334,8 @@ mod tests {
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
         app.apply_autocomplete();
-        assert_eq!(app.input_buffer, "/join Family");
-        assert_eq!(app.input_cursor, 12);
+        assert_eq!(app.input_buffer, "/join g1");
+        assert_eq!(app.input_cursor, 8);
     }
 
     #[test]
