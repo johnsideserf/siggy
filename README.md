@@ -93,6 +93,10 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 - **Notifications** -- Terminal bell on new messages (configurable per direct/group, per-chat mute)
 - **Contact resolution** -- Names from your Signal address book; groups auto-populated on startup
 - **Message reactions** -- React with `r` in Normal mode; emoji picker with badge display (`👍 2 ❤️ 1`)
+- **Reply / quote** -- Press `q` on a focused message to reply with quoted context
+- **Edit messages** -- Press `e` to edit your own sent messages
+- **Delete messages** -- Press `d` to delete locally or remotely (for your own messages)
+- **Message search** -- `/search <query>` with `n`/`N` to jump between results
 - **@mentions** -- Type `@` in group chats to mention members with autocomplete
 - **Message selection** -- Focused message highlight when scrolling; `J`/`K` to jump between messages
 - **Read receipts** -- Status symbols on outgoing messages (Sending → Sent → Delivered → Read → Viewed)
@@ -110,6 +114,8 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 |---|---|---|
 | `/join <name>` | `/j` | Switch to a conversation by contact name, number, or group |
 | `/part` | `/p` | Leave current conversation |
+| `/attach` | `/a` | Open file browser to attach a file |
+| `/search <query>` | `/s` | Search messages in current (or all) conversations |
 | `/sidebar` | `/sb` | Toggle sidebar visibility |
 | `/bell [type]` | `/notify` | Toggle notifications (`direct`, `group`, or both) |
 | `/mute` | | Mute/unmute current conversation |
@@ -152,6 +158,10 @@ Press `Esc` to enter Normal mode.
 | `D` | Delete from cursor to end |
 | `y` / `Y` | Copy message body / full line |
 | `r` | React to focused message |
+| `q` | Reply / quote focused message |
+| `e` | Edit own sent message |
+| `d` | Delete message (local or remote) |
+| `n` / `N` | Jump to next / previous search match |
 | `i` | Enter Insert mode |
 | `a` | Enter Insert mode (cursor right 1) |
 | `I` / `A` | Enter Insert mode at start / end of line |

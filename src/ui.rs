@@ -776,7 +776,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut scroll_y = base_scroll - app.scroll_offset;
 
     // Determine the focused message for highlight and full-timestamp display in Normal mode.
-    if app.mode == InputMode::Normal && app.scroll_offset > 0 {
+    // Check focused_msg_index too so J/K navigation works even when content fits the viewport
+    // (base_scroll == 0 clamps scroll_offset to 0, but J/K focus should persist).
+    if app.mode == InputMode::Normal && (app.scroll_offset > 0 || app.focused_msg_index.is_some()) {
         if let Some(fi) = app.focused_msg_index {
             // J/K already set focused_msg_index — ensure it's visible by adjusting scroll.
             let iw = inner_width.max(1);
@@ -1477,10 +1479,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("/join <name>", "Switch to a conversation"),
         ("/part", "Leave current conversation"),
         ("/attach", "Attach a file"),
+        ("/search <query>", "Search messages"),
         ("/sidebar", "Toggle sidebar visibility"),
         ("/bell [type]", "Toggle notifications"),
         ("/mute", "Mute/unmute conversation"),
-        ("/search <query>", "Search messages"),
         ("/contacts", "Browse contacts"),
         ("/settings", "Open settings"),
         ("/quit", "Exit signal-tui"),
@@ -1511,6 +1513,9 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         ("x / D", "Delete char / to end"),
         ("y / Y", "Copy message / full line"),
         ("r", "React to focused message"),
+        ("q", "Reply / quote message"),
+        ("e", "Edit own message"),
+        ("d", "Delete message"),
         ("n / N", "Next / prev search match"),
         ("/", "Start command input"),
     ];

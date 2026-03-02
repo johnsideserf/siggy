@@ -1263,10 +1263,12 @@ impl App {
             }
             (_, KeyCode::PageUp) => {
                 self.scroll_offset = self.scroll_offset.saturating_add(5);
+                self.focused_msg_index = None;
                 true
             }
             (_, KeyCode::PageDown) => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(5);
+                self.focused_msg_index = None;
                 true
             }
             _ => false,
@@ -1316,12 +1318,15 @@ impl App {
     /// Handle Normal mode key. Returns true if consumed.
     pub fn handle_normal_key(&mut self, modifiers: KeyModifiers, code: KeyCode) {
         match (modifiers, code) {
-            // Scrolling
+            // Scrolling (line-by-line: clear focused_msg_index so the draw
+            // function re-derives it from the viewport position each frame)
             (_, KeyCode::Char('j')) => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                self.focused_msg_index = None;
             }
             (_, KeyCode::Char('k')) => {
                 self.scroll_offset = self.scroll_offset.saturating_add(1);
+                self.focused_msg_index = None;
             }
             // Message-level navigation (skip separators and system messages)
             (_, KeyCode::Char('J')) => {
@@ -1332,9 +1337,11 @@ impl App {
             }
             (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
                 self.scroll_offset = self.scroll_offset.saturating_sub(10);
+                self.focused_msg_index = None;
             }
             (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
                 self.scroll_offset = self.scroll_offset.saturating_add(10);
+                self.focused_msg_index = None;
             }
             (_, KeyCode::Char('g')) => {
                 if let Some(ref id) = self.active_conversation {
@@ -1342,6 +1349,7 @@ impl App {
                         self.scroll_offset = conv.messages.len();
                     }
                 }
+                self.focused_msg_index = None;
             }
             (_, KeyCode::Char('G')) => {
                 self.scroll_offset = 0;
