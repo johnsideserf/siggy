@@ -622,6 +622,7 @@ async fn run_app(
     let mut app = App::new(config.account.clone(), db);
     app.notify_direct = config.notify_direct;
     app.notify_group = config.notify_group;
+    app.desktop_notifications = config.desktop_notifications;
     app.inline_images = config.inline_images;
     app.native_images = config.native_images;
     app.incognito = incognito;

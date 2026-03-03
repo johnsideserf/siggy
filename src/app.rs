@@ -20,6 +20,27 @@ fn db_warn<T>(result: Result<T, impl std::fmt::Display>, context: &str) {
     }
 }
 
+/// Fire an OS-level desktop notification (runs on a blocking thread to avoid stalling async).
+fn show_desktop_notification(sender: &str, body: &str, is_group: bool, group_name: Option<&str>) {
+    let title = if is_group {
+        match group_name {
+            Some(gn) => format!("{} — {}", gn, sender),
+            None => sender.to_string(),
+        }
+    } else {
+        sender.to_string()
+    };
+    let preview: String = body.chars().take(100).collect();
+
+    tokio::task::spawn_blocking(move || {
+        let _ = notify_rust::Notification::new()
+            .summary(&title)
+            .body(&preview)
+            .timeout(notify_rust::Timeout::Milliseconds(5000))
+            .show();
+    });
+}
+
 /// An image visible on screen, for native protocol overlay rendering.
 pub struct VisibleImage {
     pub x: u16,
@@ -181,6 +202,8 @@ pub struct App {
     pub notify_direct: bool,
     /// Terminal bell for group messages in background conversations
     pub notify_group: bool,
+    /// OS-level desktop notifications for incoming messages
+    pub desktop_notifications: bool,
     /// Conversations muted from notifications
     pub muted_conversations: HashSet<String>,
     /// Conversations blocked via signal-cli
@@ -455,6 +478,13 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notify_group,
         set: |a, v| a.notify_group = v,
         save: Some(|c, v| c.notify_group = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Desktop notifications",
+        get: |a| a.desktop_notifications,
+        set: |a, v| a.desktop_notifications = v,
+        save: Some(|c, v| c.desktop_notifications = v),
         on_toggle: None,
     },
     SettingDef {
@@ -1707,6 +1737,7 @@ impl App {
             pending_bell: false,
             notify_direct: true,
             notify_group: true,
+            desktop_notifications: false,
             muted_conversations: HashSet::new(),
             blocked_conversations: HashSet::new(),
             autocomplete_visible: false,
@@ -2644,9 +2675,26 @@ impl App {
                 c.unread += 1;
             }
             let conv_accepted = self.conversations.get(&conv_id).map(|c| c.accepted).unwrap_or(true);
+            let not_muted_or_blocked = conv_accepted
+                && !self.muted_conversations.contains(&conv_id)
+                && !self.blocked_conversations.contains(&conv_id);
             let type_enabled = if is_group { self.notify_group } else { self.notify_direct };
-            if type_enabled && conv_accepted && !self.muted_conversations.contains(&conv_id) && !self.blocked_conversations.contains(&conv_id) {
+            if type_enabled && not_muted_or_blocked {
                 self.pending_bell = true;
+            }
+            if self.desktop_notifications && not_muted_or_blocked {
+                let notif_body = msg.body.as_deref().unwrap_or("");
+                let notif_group = if is_group {
+                    self.conversations.get(&conv_id).map(|c| c.name.clone())
+                } else {
+                    None
+                };
+                show_desktop_notification(
+                    &sender_display,
+                    notif_body,
+                    is_group,
+                    notif_group.as_deref(),
+                );
             }
         }
 

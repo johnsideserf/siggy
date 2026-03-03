@@ -24,6 +24,10 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub notify_group: bool,
 
+    /// OS-level desktop notifications for incoming messages
+    #[serde(default)]
+    pub desktop_notifications: bool,
+
     /// Show inline halfblock image previews in chat
     #[serde(default = "default_true")]
     pub inline_images: bool,
@@ -87,6 +91,7 @@ impl Default for Config {
             download_dir: default_download_dir(),
             notify_direct: true,
             notify_group: true,
+            desktop_notifications: false,
             inline_images: true,
             native_images: false,
             show_receipts: true,
