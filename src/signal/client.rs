@@ -78,13 +78,14 @@ impl SignalClient {
                         });
 
                         let event = if let Some(method) = pending_method {
-                            if resp.error.is_some() {
-                                crate::debug_log::logf(format_args!("rpc error: method={method} error={:?}", resp.error));
-                                // RPC error — emit SendFailed for send requests
+                            if let Some(ref err) = resp.error {
+                                crate::debug_log::logf(format_args!("rpc error: method={method} error={err:?}"));
+                                // RPC error — emit SendFailed for send requests,
+                                // surface other errors to the status bar
                                 if method == "send" {
                                     rpc_id.map(|id| SignalEvent::SendFailed { rpc_id: id })
                                 } else {
-                                    None
+                                    Some(SignalEvent::Error(format!("{method}: {}", err.message)))
                                 }
                             } else {
                                 resp.result
@@ -353,7 +354,7 @@ impl SignalClient {
 
         let params = if is_group {
             serde_json::json!({
-                "groupId": [recipient],
+                "groupId": recipient,
                 "targetAuthor": target_author,
                 "targetTimestamp": target_timestamp,
                 "account": self.account,
@@ -397,7 +398,7 @@ impl SignalClient {
 
         let params = if is_group {
             serde_json::json!({
-                "groupId": [recipient],
+                "groupId": recipient,
                 "targetAuthor": target_author,
                 "targetTimestamp": target_timestamp,
                 "account": self.account,
