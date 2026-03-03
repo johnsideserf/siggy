@@ -714,14 +714,15 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::{fixture, rstest};
 
-    fn test_db() -> Database {
+    #[fixture]
+    fn db() -> Database {
         Database::open_in_memory().unwrap()
     }
 
-    #[test]
-    fn migration_creates_tables() {
-        let db = test_db();
+    #[rstest]
+    fn migration_creates_tables(db: Database) {
         // Should be able to query conversations table
         let count: i64 = db.conn.query_row(
             "SELECT COUNT(*) FROM conversations", [], |row| row.get(0),
@@ -729,9 +730,8 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn upsert_and_load_conversations() {
-        let db = test_db();
+    #[rstest]
+    fn upsert_and_load_conversations(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.upsert_conversation("g1", "Family", true).unwrap();
 
@@ -739,9 +739,8 @@ mod tests {
         assert_eq!(convs.len(), 2);
     }
 
-    #[test]
-    fn name_update_on_conflict() {
-        let db = test_db();
+    #[rstest]
+    fn name_update_on_conflict(db: Database) {
         db.upsert_conversation("+1", "Unknown", false).unwrap();
         db.upsert_conversation("+1", "Alice", false).unwrap();
 
@@ -750,9 +749,8 @@ mod tests {
         assert_eq!(convs[0].name, "Alice");
     }
 
-    #[test]
-    fn insert_and_load_messages() {
-        let db = test_db();
+    #[rstest]
+    fn insert_and_load_messages(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 0).unwrap();
         db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi!", false, None, 0).unwrap();
@@ -763,9 +761,8 @@ mod tests {
         assert_eq!(convs[0].messages[1].body, "hi!");
     }
 
-    #[test]
-    fn unread_count_with_read_markers() {
-        let db = test_db();
+    #[rstest]
+    fn unread_count_with_read_markers(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         let r1 = db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "msg1", false, None, 0).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "msg2", false, None, 0).unwrap();
@@ -776,9 +773,8 @@ mod tests {
         assert_eq!(db.unread_count("+1").unwrap(), 2);
     }
 
-    #[test]
-    fn system_messages_excluded_from_unread() {
-        let db = test_db();
+    #[rstest]
+    fn system_messages_excluded_from_unread(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.insert_message("+1", "", "2025-01-01T00:00:00Z", "system msg", true, None, 0).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "real msg", false, None, 0).unwrap();
@@ -787,9 +783,8 @@ mod tests {
         assert_eq!(db.unread_count("+1").unwrap(), 1);
     }
 
-    #[test]
-    fn conversation_order() {
-        let db = test_db();
+    #[rstest]
+    fn conversation_order(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.upsert_conversation("+2", "Bob", false).unwrap();
         // Alice gets an older message, Bob gets a newer one
@@ -802,25 +797,38 @@ mod tests {
         assert_eq!(order[1], "+1");
     }
 
-    #[test]
-    fn mute_round_trip() {
-        let db = test_db();
+    // --- Boolean flag round-trips: muted + blocked share identical structure ---
+
+    #[rstest]
+    #[case("muted",
+        Database::set_muted as fn(&Database, &str, bool) -> anyhow::Result<()>,
+        Database::load_muted as fn(&Database) -> anyhow::Result<std::collections::HashSet<String>>
+    )]
+    #[case("blocked",
+        Database::set_blocked as fn(&Database, &str, bool) -> anyhow::Result<()>,
+        Database::load_blocked as fn(&Database) -> anyhow::Result<std::collections::HashSet<String>>
+    )]
+    fn boolean_flag_round_trip(
+        db: Database,
+        #[case] _label: &str,
+        #[case] setter: fn(&Database, &str, bool) -> anyhow::Result<()>,
+        #[case] loader: fn(&Database) -> anyhow::Result<std::collections::HashSet<String>>,
+    ) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.upsert_conversation("+2", "Bob", false).unwrap();
 
-        db.set_muted("+1", true).unwrap();
-        let muted = db.load_muted().unwrap();
-        assert!(muted.contains("+1"));
-        assert!(!muted.contains("+2"));
+        setter(&db, "+1", true).unwrap();
+        let set = loader(&db).unwrap();
+        assert!(set.contains("+1"));
+        assert!(!set.contains("+2"));
 
-        db.set_muted("+1", false).unwrap();
-        let muted = db.load_muted().unwrap();
-        assert!(!muted.contains("+1"));
+        setter(&db, "+1", false).unwrap();
+        let set = loader(&db).unwrap();
+        assert!(!set.contains("+1"));
     }
 
-    #[test]
-    fn last_message_rowid() {
-        let db = test_db();
+    #[rstest]
+    fn last_message_rowid(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
 
         assert_eq!(db.last_message_rowid("+1").unwrap(), None);
@@ -831,9 +839,8 @@ mod tests {
         assert_eq!(db.last_message_rowid("+1").unwrap(), Some(r2));
     }
 
-    #[test]
-    fn max_rowid_up_to_timestamp() {
-        let db = test_db();
+    #[rstest]
+    fn max_rowid_up_to_timestamp(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
 
         // No messages → None
@@ -856,9 +863,8 @@ mod tests {
         assert_eq!(db.max_rowid_up_to_timestamp("+1", 2500).unwrap(), Some(r2));
     }
 
-    #[test]
-    fn migration_v4_creates_reactions_table() {
-        let db = test_db();
+    #[rstest]
+    fn migration_v4_creates_reactions_table(db: Database) {
         // Should be able to query reactions table
         let count: i64 = db.conn.query_row(
             "SELECT COUNT(*) FROM reactions", [], |row| row.get(0),
@@ -866,9 +872,8 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn upsert_reaction_insert_and_replace() {
-        let db = test_db();
+    #[rstest]
+    fn upsert_reaction_insert_and_replace(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
 
@@ -885,9 +890,8 @@ mod tests {
         assert_eq!(reactions[0].2, "❤️");
     }
 
-    #[test]
-    fn remove_reaction() {
-        let db = test_db();
+    #[rstest]
+    fn remove_reaction(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
 
         db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
@@ -897,9 +901,8 @@ mod tests {
         assert_eq!(db.load_reactions("+1").unwrap().len(), 0);
     }
 
-    #[test]
-    fn load_reactions_attaches_to_messages() {
-        let db = test_db();
+    #[rstest]
+    fn load_reactions_attaches_to_messages(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
         db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi", false, None, 2000).unwrap();
@@ -914,9 +917,8 @@ mod tests {
         assert_eq!(convs[0].messages[1].reactions[0].emoji, "❤️");
     }
 
-    #[test]
-    fn search_messages_in_conversation() {
-        let db = test_db();
+    #[rstest]
+    fn search_messages_in_conversation(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello world", false, None, 1000).unwrap();
         db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi there", false, None, 2000).unwrap();
@@ -930,9 +932,8 @@ mod tests {
         assert_eq!(results[1].1, "hello world");
     }
 
-    #[test]
-    fn search_messages_excludes_system_and_deleted() {
-        let db = test_db();
+    #[rstest]
+    fn search_messages_excludes_system_and_deleted(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.insert_message("+1", "", "2025-01-01T00:00:00Z", "system hello", true, None, 1000).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "real hello", false, None, 2000).unwrap();
@@ -942,17 +943,15 @@ mod tests {
         assert_eq!(results[0].1, "real hello");
     }
 
-    #[test]
-    fn migration_v8_defaults_accepted_to_1() {
-        let db = test_db();
+    #[rstest]
+    fn migration_v8_defaults_accepted_to_1(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         let convs = db.load_conversations(100).unwrap();
         assert!(convs[0].accepted);
     }
 
-    #[test]
-    fn update_accepted_round_trip() {
-        let db = test_db();
+    #[rstest]
+    fn update_accepted_round_trip(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.update_accepted("+1", false).unwrap();
         let convs = db.load_conversations(100).unwrap();
@@ -963,9 +962,8 @@ mod tests {
         assert!(convs[0].accepted);
     }
 
-    #[test]
-    fn delete_conversation_removes_all_data() {
-        let db = test_db();
+    #[rstest]
+    fn delete_conversation_removes_all_data(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
         db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
@@ -978,33 +976,15 @@ mod tests {
         assert_eq!(db.load_reactions("+1").unwrap().len(), 0);
     }
 
-    #[test]
-    fn migration_v9_defaults_blocked_to_0() {
-        let db = test_db();
+    #[rstest]
+    fn migration_v9_defaults_blocked_to_0(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         let blocked = db.load_blocked().unwrap();
         assert!(!blocked.contains("+1"));
     }
 
-    #[test]
-    fn blocked_round_trip() {
-        let db = test_db();
-        db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.upsert_conversation("+2", "Bob", false).unwrap();
-
-        db.set_blocked("+1", true).unwrap();
-        let blocked = db.load_blocked().unwrap();
-        assert!(blocked.contains("+1"));
-        assert!(!blocked.contains("+2"));
-
-        db.set_blocked("+1", false).unwrap();
-        let blocked = db.load_blocked().unwrap();
-        assert!(!blocked.contains("+1"));
-    }
-
-    #[test]
-    fn search_all_messages_across_conversations() {
-        let db = test_db();
+    #[rstest]
+    fn search_all_messages_across_conversations(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.upsert_conversation("+2", "Bob", false).unwrap();
         db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello from alice", false, None, 1000).unwrap();
