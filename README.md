@@ -76,7 +76,11 @@ signal_cli_path = "signal-cli"
 download_dir = "/home/user/signal-downloads"
 notify_direct = true
 notify_group = true
+desktop_notifications = false
 inline_images = true
+mouse_enabled = true
+send_read_receipts = true
+theme = "Default"
 ```
 
 All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via PATH), and `download_dir` defaults to `~/signal-downloads/`. On Windows, use the full path to `signal-cli.bat` if it isn't in your PATH.
@@ -90,7 +94,7 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 - **Message sync** -- Messages sent from your phone appear in the TUI
 - **Persistence** -- SQLite message storage with WAL mode; conversations and read markers survive restarts
 - **Unread tracking** -- Unread counts in sidebar with "new messages" separator in chat
-- **Notifications** -- Terminal bell on new messages (configurable per direct/group, per-chat mute)
+- **Notifications** -- Terminal bell on new messages (configurable per direct/group, per-chat mute) and OS-level desktop notifications
 - **Contact resolution** -- Names from your Signal address book; groups auto-populated on startup
 - **Message reactions** -- React with `r` in Normal mode; emoji picker with badge display (`👍 2 ❤️ 1`)
 - **Reply / quote** -- Press `q` on a focused message to reply with quoted context
@@ -100,6 +104,12 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 - **@mentions** -- Type `@` in group chats to mention members with autocomplete
 - **Message selection** -- Focused message highlight when scrolling; `J`/`K` to jump between messages
 - **Read receipts** -- Status symbols on outgoing messages (Sending → Sent → Delivered → Read → Viewed)
+- **Disappearing messages** -- Honors Signal's disappearing message timers; set per-conversation with `/disappearing`
+- **Group management** -- Create groups, add/remove members, rename, leave via `/group`
+- **Message requests** -- Accept or delete messages from unknown senders
+- **Block / unblock** -- Block contacts or groups with `/block` and `/unblock`
+- **Mouse support** -- Click sidebar conversations, scroll messages, click to position cursor
+- **Color themes** -- Selectable themes via `/theme` or `/settings`
 - **Setup wizard** -- First-run onboarding with QR code device linking
 - **Vim keybindings** -- Modal editing (Normal/Insert) with full cursor movement
 - **Command autocomplete** -- Tab-completion popup for slash commands
@@ -119,6 +129,11 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 | `/sidebar` | `/sb` | Toggle sidebar visibility |
 | `/bell [type]` | `/notify` | Toggle notifications (`direct`, `group`, or both) |
 | `/mute` | | Mute/unmute current conversation |
+| `/block` | | Block current contact or group |
+| `/unblock` | | Unblock current contact or group |
+| `/disappearing <dur>` | `/dm` | Set disappearing message timer (`off`, `30s`, `5m`, `1h`, `1d`, `1w`) |
+| `/group` | `/g` | Open group management menu |
+| `/theme` | `/t` | Open theme picker |
 | `/contacts` | `/c` | Browse synced contacts |
 | `/settings` | | Open settings overlay |
 | `/help` | `/h` | Show help overlay |

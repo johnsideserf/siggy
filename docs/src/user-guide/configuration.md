@@ -25,8 +25,16 @@ signal_cli_path = "signal-cli"
 download_dir = "/home/user/signal-downloads"
 notify_direct = true
 notify_group = true
+desktop_notifications = false
 inline_images = true
+native_images = false
+show_receipts = true
+color_receipts = true
+nerd_fonts = false
+reaction_verbose = false
 send_read_receipts = true
+mouse_enabled = true
+theme = "Default"
 ```
 
 ### Field reference
@@ -38,8 +46,16 @@ send_read_receipts = true
 | `download_dir` | string | `~/signal-downloads/` | Directory for downloaded attachments |
 | `notify_direct` | bool | `true` | Terminal bell on new direct messages |
 | `notify_group` | bool | `true` | Terminal bell on new group messages |
+| `desktop_notifications` | bool | `false` | OS-level desktop notifications for incoming messages |
 | `inline_images` | bool | `true` | Render image attachments as halfblock art |
+| `native_images` | bool | `false` | Use native terminal image protocols (Kitty/iTerm2) |
+| `show_receipts` | bool | `true` | Show delivery/read receipt status symbols |
+| `color_receipts` | bool | `true` | Colored receipt status symbols (vs monochrome) |
+| `nerd_fonts` | bool | `false` | Use Nerd Font glyphs for status symbols |
+| `reaction_verbose` | bool | `false` | Show reaction sender names instead of counts |
 | `send_read_receipts` | bool | `true` | Send read receipts when viewing conversations |
+| `mouse_enabled` | bool | `true` | Enable mouse support (click sidebar, scroll, etc.) |
+| `theme` | string | `"Default"` | Color theme name |
 
 ## CLI flags
 
@@ -56,12 +72,14 @@ CLI flags override config file values for the current session:
 Press `/settings` inside the app to open the settings overlay. This provides
 toggles for runtime settings:
 
-- Notification toggles (direct / group)
+- Notification toggles (direct / group / desktop)
 - Sidebar visibility
-- Inline image previews
+- Inline image previews / native images
 - Show read receipts / receipt colors / nerd font icons
 - Verbose reactions
 - Send read receipts
+- Mouse support
+- Theme selector
 
 Changes made in the settings overlay are saved to the config file when you
 close the overlay, and persist across sessions.

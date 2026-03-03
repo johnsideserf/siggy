@@ -9,10 +9,15 @@ All commands start with `/`. Type `/` in Insert mode to open the autocomplete po
 | `/join` | `/j` | `<name>` | Switch to a conversation by contact name, number, or group |
 | `/part` | `/p` | | Leave current conversation |
 | `/search` | `/s` | `<query>` | Search messages across all conversations |
-| `/attach` | | | Open file browser to attach a file |
+| `/attach` | `/a` | | Open file browser to attach a file |
 | `/sidebar` | `/sb` | | Toggle sidebar visibility |
 | `/bell` | `/notify` | `[type]` | Toggle notifications (`direct`, `group`, or both) |
 | `/mute` | | | Mute/unmute current conversation |
+| `/block` | | | Block current contact or group |
+| `/unblock` | | | Unblock current contact or group |
+| `/disappearing` | `/dm` | `<duration>` | Set disappearing message timer (`off`, `30s`, `5m`, `1h`, `1d`, `1w`) |
+| `/group` | `/g` | | Open group management menu |
+| `/theme` | `/t` | | Open theme picker |
 | `/contacts` | `/c` | | Browse synced contacts |
 | `/settings` | | | Open settings overlay |
 | `/help` | `/h` | | Show help overlay |
@@ -73,6 +78,35 @@ complete the selection.
 This opens a file browser. Navigate with `j`/`k`, Enter to select a file or
 enter a directory, Backspace to go up. The selected file attaches to your next
 message.
+
+**Block the current conversation:**
+```
+/block
+```
+
+**Set disappearing messages to 1 day:**
+```
+/disappearing 1d
+```
+
+**Disable disappearing messages:**
+```
+/dm off
+```
+
+**Open group management:**
+```
+/group
+```
+
+This opens a menu with options to view members, add/remove members, rename the
+group, create a new group, or leave. Only available in group conversations
+(except create, which works anywhere).
+
+**Switch color theme:**
+```
+/theme
+```
 
 ## Messaging a new contact
 

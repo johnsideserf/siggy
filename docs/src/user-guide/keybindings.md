@@ -80,6 +80,17 @@ Insert mode is the default on startup. You can type messages and commands direct
 | `Left` / `Right` | Move cursor |
 | `Home` / `End` | Jump to start / end of line |
 
+## Mouse
+
+Mouse support is enabled by default (toggle in `/settings`).
+
+| Action | Effect |
+|---|---|
+| Click sidebar conversation | Switch to that conversation |
+| Scroll wheel in chat | Scroll messages up/down |
+| Click in input bar | Position cursor |
+| Scroll wheel in overlays | Navigate list items |
+
 ## Input history
 
 In Insert mode, press `Up` and `Down` to cycle through previously sent messages
