@@ -1,53 +1,5 @@
 # Changelog
 
-## v0.7.0
-
-### Text styling
-
-- **Rich text rendering** -- messages with Signal formatting now display with
-  proper styling: **bold**, *italic*, ~~strikethrough~~, `monospace`, and spoiler
-  text. Spoiler content is hidden behind block characters (closes #66)
-
-### Sticker messages
-
-- **Sticker display** -- incoming stickers are now shown as `[Sticker: emoji]`
-  in the chat area instead of being silently dropped (closes #67)
-
-### View-once messages
-
-- **View-once handling** -- view-once messages display as `[View-once message]`
-  with attachments suppressed, respecting the ephemeral intent (closes #68)
-
-### Cross-device read sync
-
-- **Read state sync** -- when you read messages on your phone or another linked
-  device, signal-tui marks those conversations as read and updates unread counts
-  automatically (closes #71)
-
-### System messages
-
-- **Missed calls** -- missed voice and video calls now show as system messages
-- **Safety number changes** -- a warning appears when a contact's safety number
-  changes
-- **Group updates** -- group metadata changes (member adds/removes) display as
-  system messages
-- **Disappearing message timer** -- changes to the expiration timer show a
-  human-readable message (e.g. "Disappearing messages set to 1 day")
-
-### Message action menu
-
-- **Enter key menu** -- press Enter in Normal mode on a focused message to open
-  a contextual action menu. Available actions (shown with key hints): Reply (q),
-  Edit (e), React (r), Copy (y), Delete (d). Navigate with j/k, press Enter to
-  execute, or use the shortcut key directly (closes #85)
-
-### Bug fixes
-
-- **"New messages" bar** -- the unread separator no longer persists after viewing
-  a conversation with new messages (#90)
-
----
-
 ## v0.6.1
 
 ### Bug fixes
@@ -260,7 +212,7 @@
   restored on reload (stale "Sending" messages are promoted to "Sent")
 - **Nerd Font icons** -- optional Nerd Font glyphs available via
   `/settings` > "Nerd Font icons"
-- **Configurable** -- three new settings toggles: "Show read receipts" (on/off),
+- **Configurable** -- three new settings toggles: "Read receipts" (on/off),
   "Receipt colors" (colored/monochrome), "Nerd Font icons" (unicode/nerd)
 
 ### Debug logging

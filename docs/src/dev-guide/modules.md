@@ -43,9 +43,8 @@ original method (e.g., mapping a response ID back to `listContacts`).
 
 Shared types for signal-cli communication:
 
-- `SignalEvent` -- enum of all events the backend can produce (messages, receipts, typing, read sync, system messages)
-- `SignalMessage` -- a message with source, timestamp, body, attachments, group info, text styles
-- `TextStyle` / `StyleType` -- text formatting ranges (bold, italic, strikethrough, monospace, spoiler)
+- `SignalEvent` -- enum of all events the backend can produce
+- `SignalMessage` -- a message with source, timestamp, body, attachments, group info
 - `Attachment` -- file metadata (content type, filename, local path)
 - `JsonRpcRequest` / `JsonRpcResponse` -- JSON-RPC protocol structs
 - `Contact` / `Group` -- address book and group info

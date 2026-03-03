@@ -328,7 +328,7 @@ impl Database {
         status: Option<MessageStatus>,
         timestamp_ms: i64,
     ) -> Result<i64> {
-        self.insert_message_full(conv_id, sender, timestamp, body, is_system, status, timestamp_ms, "", None, None, None)
+        self.insert_message_full(conv_id, sender, timestamp, body, is_system, status, timestamp_ms, "", None, None, None, 0, 0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -345,12 +345,14 @@ impl Database {
         quote_author: Option<&str>,
         quote_body: Option<&str>,
         quote_ts_ms: Option<i64>,
+        expires_in_seconds: i64,
+        expiration_start_ms: i64,
     ) -> Result<i64> {
         let status_i32 = status.map(|s| s.to_i32()).unwrap_or(0);
         self.conn.execute(
-            "INSERT INTO messages (conversation_id, sender, timestamp, body, is_system, status, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![conv_id, sender, timestamp, body, is_system as i32, status_i32, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms],
+            "INSERT INTO messages (conversation_id, sender, timestamp, body, is_system, status, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![conv_id, sender, timestamp, body, is_system as i32, status_i32, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -614,17 +616,6 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn load_expiration_timers(&self) -> Result<std::collections::HashMap<String, i64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, expiration_timer FROM conversations WHERE expiration_timer > 0",
-        )?;
-        let rows: Vec<(String, i64)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(rows.into_iter().collect())
-    }
-
     pub fn delete_expired_messages(&self, now_ms: i64) -> Result<usize> {
         let deleted = self.conn.execute(
             "DELETE FROM messages WHERE expires_in_seconds > 0
@@ -635,31 +626,6 @@ impl Database {
         Ok(deleted)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_message_with_expiry(
-        &self,
-        conv_id: &str,
-        sender: &str,
-        timestamp: &str,
-        body: &str,
-        is_system: bool,
-        status: Option<MessageStatus>,
-        timestamp_ms: i64,
-        sender_id: &str,
-        quote_author: Option<&str>,
-        quote_body: Option<&str>,
-        quote_ts_ms: Option<i64>,
-        expires_in_seconds: i64,
-        expiration_start_ms: i64,
-    ) -> Result<i64> {
-        let status_i32 = status.map(|s| s.to_i32()).unwrap_or(0);
-        self.conn.execute(
-            "INSERT INTO messages (conversation_id, sender, timestamp, body, is_system, status, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![conv_id, sender, timestamp, body, is_system as i32, status_i32, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
 }
 
 #[cfg(test)]

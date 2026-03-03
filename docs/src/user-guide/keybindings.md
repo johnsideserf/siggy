@@ -32,7 +32,6 @@ changes in the status bar.
 |---|---|
 | `y` | Copy message body to clipboard |
 | `Y` | Copy full line (`[HH:MM] <sender> body`) to clipboard |
-| `Enter` | Open action menu on focused message |
 | `r` | Open reaction picker on focused message |
 | `q` | Reply to focused message (quote reply) |
 | `e` | Edit own outgoing message |

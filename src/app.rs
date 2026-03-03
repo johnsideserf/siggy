@@ -1964,12 +1964,10 @@ impl App {
         };
 
         // Keep conversation's expiration_timer in sync with incoming messages
-        if msg_expires_in > 0 {
-            if let Some(conv) = self.conversations.get_mut(&conv_id) {
-                if conv.expiration_timer != msg_expires_in {
-                    conv.expiration_timer = msg_expires_in;
-                    db_warn(self.db.update_expiration_timer(&conv_id, msg_expires_in), "update_expiration_timer");
-                }
+        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+            if conv.expiration_timer != msg_expires_in {
+                conv.expiration_timer = msg_expires_in;
+                db_warn(self.db.update_expiration_timer(&conv_id, msg_expires_in), "update_expiration_timer");
             }
         }
 
@@ -2031,7 +2029,7 @@ impl App {
                 }
             }
             db_warn(
-                self.db.insert_message_with_expiry(
+                self.db.insert_message_full(
                     &conv_id, &sender_display, &ts_rfc3339, &body, false, msg_status, msg_ts_ms,
                     &sender_id,
                     wire_quote_author.as_deref(),
@@ -3027,7 +3025,7 @@ impl App {
                             expiration_start_ms: out_expiry_start,
                         });
                     }
-                    db_warn(self.db.insert_message_with_expiry(
+                    db_warn(self.db.insert_message_full(
                         &conv_id,
                         "you",
                         &now.to_rfc3339(),

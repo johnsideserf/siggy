@@ -518,18 +518,13 @@ async fn dispatch_send(
             };
             if let Err(e) = result {
                 app.status_message = format!("expiration error: {e}");
+            } else if seconds == 0 {
+                app.status_message = "Disappearing messages disabled".to_string();
             } else {
-                let label = if seconds == 0 {
-                    "Disappearing messages disabled".to_string()
-                } else {
-                    let (n, unit) = if seconds < 60 { (seconds, "s") }
-                        else if seconds < 3600 { (seconds / 60, "m") }
-                        else if seconds < 86400 { (seconds / 3600, "h") }
-                        else if seconds < 604800 { (seconds / 86400, "d") }
-                        else { (seconds / 604800, "w") };
-                    format!("Disappearing messages set to {n}{unit}")
-                };
-                app.status_message = label;
+                app.status_message = format!(
+                    "Disappearing messages set to {}",
+                    input::format_compact_duration(seconds),
+                );
             }
         }
     }

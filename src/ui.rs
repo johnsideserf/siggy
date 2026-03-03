@@ -13,7 +13,7 @@ use ratatui::{
 use crate::app::{App, AutocompleteMode, InputMode, VisibleImage, QUICK_REACTIONS, SETTINGS};
 use crate::signal::types::{MessageStatus, Reaction, StyleType};
 use crate::image_render::ImageProtocol;
-use crate::input::COMMANDS;
+use crate::input::{COMMANDS, format_compact_duration};
 
 // Layout constants
 const SIDEBAR_AUTO_HIDE_WIDTH: u16 = 60;
@@ -74,21 +74,6 @@ fn truncate(s: &str, max_width: usize) -> String {
         let mut truncated: String = s.chars().take(max_width - 1).collect();
         truncated.push('…');
         truncated
-    }
-}
-
-/// Format seconds as a compact duration: "30s", "5m", "1h", "1d", "1w".
-fn format_compact_duration(seconds: i64) -> String {
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        format!("{}m", seconds / 60)
-    } else if seconds < 86400 {
-        format!("{}h", seconds / 3600)
-    } else if seconds < 604800 {
-        format!("{}d", seconds / 86400)
-    } else {
-        format!("{}w", seconds / 604800)
     }
 }
 

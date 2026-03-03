@@ -111,6 +111,21 @@ pub fn parse_input(input: &str) -> InputAction {
 }
 
 
+/// Format seconds as a compact duration: "30s", "5m", "1h", "1d", "1w".
+pub fn format_compact_duration(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{}h", seconds / 3600)
+    } else if seconds < 604800 {
+        format!("{}d", seconds / 86400)
+    } else {
+        format!("{}w", seconds / 604800)
+    }
+}
+
 /// Parse a human-readable duration string into seconds.
 /// Returns Ok(seconds) or Err(message) for invalid input.
 pub fn parse_duration_to_seconds(s: &str) -> Result<i64, String> {
