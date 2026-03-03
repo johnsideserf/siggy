@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage, QUICK_REACTIONS, SETTINGS};
+use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
 use crate::signal::types::{MessageStatus, Reaction, StyleType};
 use crate::image_render::ImageProtocol;
 use crate::input::{COMMANDS, format_compact_duration};
@@ -512,6 +512,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_theme_picker(frame, app, size);
     }
 
+    // Pin duration picker overlay
+    if app.show_pin_duration {
+        draw_pin_duration_picker(frame, app, size);
+    }
+
     // Collect link regions from the rendered buffer for OSC 8 injection
     let area = frame.area();
     app.link_regions = collect_link_regions(frame.buffer_mut(), area, app.theme.link);
@@ -683,19 +688,21 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         None => None,
     };
 
-    // Find the most recently pinned message for the banner
-    let pinned_banner: Option<(String, String)> = messages_ref.and_then(|msgs| {
-        msgs.iter()
-            .rev()
-            .find(|m| m.is_pinned && !m.is_deleted)
-            .map(|m| {
-                let sender = m.sender.clone();
+    // Build pinned message banner text
+    let pinned_banner_text: Option<String> = messages_ref.and_then(|msgs| {
+        let pinned: Vec<_> = msgs.iter().filter(|m| m.is_pinned && !m.is_deleted).collect();
+        match pinned.len() {
+            0 => None,
+            1 => {
+                let m = pinned[0];
                 let body: String = m.body.chars().take(80).collect();
-                (sender, body)
-            })
+                Some(format!("\u{1f4cc} {}: {body}", m.sender))
+            }
+            n => Some(format!("\u{1f4cc} {n} pinned messages")),
+        }
     });
 
-    let (banner_area, inner) = if pinned_banner.is_some() && full_inner.height > 2 {
+    let (banner_area, inner) = if pinned_banner_text.is_some() && full_inner.height > 2 {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -705,11 +712,10 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         (None, full_inner)
     };
 
-    if let Some((ref pin_sender, ref pin_body)) = pinned_banner {
+    if let Some(ref pin_text) = pinned_banner_text {
         if let Some(banner) = banner_area {
-            let pin_text = format!("\u{1f4cc} {pin_sender}: {pin_body}");
             let pin_line = Line::from(Span::styled(
-                truncate(&pin_text, banner.width as usize),
+                truncate(pin_text, banner.width as usize),
                 Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
             ));
             frame.render_widget(Paragraph::new(pin_line), banner);
@@ -2662,6 +2668,40 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  j/k navigate  |  Enter apply  |  Esc cancel",
+        Style::default().fg(theme.fg_muted),
+    )));
+
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
+}
+
+fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let item_count = PIN_DURATIONS.len();
+    let popup_height = item_count as u16 + 4; // borders + footer
+
+    let (popup_area, block) = centered_popup(
+        frame, area, 24, popup_height, " Pin Duration ", theme,
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, (_seconds, label)) in PIN_DURATIONS.iter().enumerate() {
+        let style = if i == app.pin_duration_index {
+            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        let marker = if i == app.pin_duration_index { ">" } else { " " };
+        lines.push(Line::from(Span::styled(
+            format!(" {marker} {label}"),
+            style,
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " j/k  Enter  Esc",
         Style::default().fg(theme.fg_muted),
     )));
 

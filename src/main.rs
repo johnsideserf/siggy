@@ -598,8 +598,8 @@ async fn dispatch_send(
                 app.status_message = format!("unblock error: {e}");
             }
         }
-        SendRequest::Pin { recipient, is_group, target_author, target_timestamp } => {
-            if let Err(e) = signal_client.send_pin_message(&recipient, is_group, &target_author, target_timestamp).await {
+        SendRequest::Pin { recipient, is_group, target_author, target_timestamp, pin_duration } => {
+            if let Err(e) = signal_client.send_pin_message(&recipient, is_group, &target_author, target_timestamp, pin_duration).await {
                 app.status_message = format!("pin error: {e}");
             }
         }

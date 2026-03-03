@@ -92,6 +92,14 @@ pub struct Quote {
     pub author_id: String,
 }
 
+/// Context saved when the pin duration picker is open (remembers which message is being pinned).
+pub struct PinPending {
+    pub conv_id: String,
+    pub is_group: bool,
+    pub target_author: String,
+    pub target_timestamp: i64,
+}
+
 /// A single displayed message in a conversation
 #[derive(Debug, Clone)]
 pub struct DisplayMessage {
@@ -360,6 +368,12 @@ pub struct App {
     pub theme_index: usize,
     /// All available themes (built-in + custom)
     pub available_themes: Vec<Theme>,
+    /// Pin duration picker overlay visible
+    pub show_pin_duration: bool,
+    /// Cursor position in pin duration picker
+    pub pin_duration_index: usize,
+    /// Pending pin context while duration picker is open
+    pub pin_pending: Option<PinPending>,
 }
 
 /// A search result entry.
@@ -373,6 +387,13 @@ pub struct SearchResult {
 }
 
 pub const QUICK_REACTIONS: &[&str] = &["\u{1f44d}", "\u{1f44e}", "\u{2764}\u{fe0f}", "\u{1f602}", "\u{1f62e}", "\u{1f622}", "\u{1f64f}", "\u{1f525}"];
+
+pub const PIN_DURATIONS: &[(i64, &str)] = &[
+    (-1, "Forever"),
+    (86400, "24 hours"),
+    (604800, "7 days"),
+    (2592000, "30 days"),
+];
 
 /// A request from the UI to the main loop to send something.
 pub enum SendRequest {
@@ -461,6 +482,7 @@ pub enum SendRequest {
         is_group: bool,
         target_author: String,
         target_timestamp: i64,
+        pin_duration: i64,
     },
     Unpin {
         recipient: String,
@@ -1841,6 +1863,9 @@ impl App {
             show_theme_picker: false,
             theme_index: 0,
             available_themes: theme::all_themes(),
+            show_pin_duration: false,
+            pin_duration_index: 0,
+            pin_pending: None,
         }
     }
 
@@ -2082,6 +2107,10 @@ impl App {
     /// command triggers a message send. Returns `None` otherwise.
     /// Returns `Ok(true)` if the key was consumed by an overlay.
     pub fn handle_overlay_key(&mut self, code: KeyCode) -> (bool, Option<SendRequest>) {
+        if self.show_pin_duration {
+            let send = self.handle_pin_duration_key(code);
+            return (true, send);
+        }
         if self.show_action_menu {
             let send = self.handle_action_menu_key(code);
             return (true, send);
@@ -3040,18 +3069,23 @@ impl App {
             author_phone
         };
 
-        // Optimistically toggle
-        if let Some(conv) = self.conversations.get_mut(&conv_id) {
-            if let Some(m) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == target_timestamp) {
-                m.is_pinned = !was_pinned;
-            }
-        }
-        db_warn(
-            self.db.set_message_pinned(&conv_id, target_timestamp, !was_pinned),
-            "set_message_pinned",
-        );
-
         if was_pinned {
+            // Unpin immediately — no duration needed
+            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                if let Some(m) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == target_timestamp) {
+                    m.is_pinned = false;
+                }
+            }
+            db_warn(
+                self.db.set_message_pinned(&conv_id, target_timestamp, false),
+                "set_message_pinned",
+            );
+            self.scroll_offset = 0;
+            self.focused_msg_index = None;
+            let body = "you unpinned a message";
+            let now = Utc::now();
+            let now_ms = now.timestamp_millis();
+            self.handle_system_message(&conv_id, body, now, now_ms);
             Some(SendRequest::Unpin {
                 recipient: conv_id,
                 is_group,
@@ -3059,12 +3093,68 @@ impl App {
                 target_timestamp,
             })
         } else {
-            Some(SendRequest::Pin {
-                recipient: conv_id,
+            // Open pin duration picker
+            self.pin_pending = Some(PinPending {
+                conv_id,
                 is_group,
                 target_author,
                 target_timestamp,
-            })
+            });
+            self.show_pin_duration = true;
+            self.pin_duration_index = 0;
+            None
+        }
+    }
+
+    /// Handle a key press while the pin duration picker overlay is open.
+    pub fn handle_pin_duration_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.pin_duration_index < PIN_DURATIONS.len() - 1 {
+                    self.pin_duration_index += 1;
+                }
+                None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.pin_duration_index = self.pin_duration_index.saturating_sub(1);
+                None
+            }
+            KeyCode::Enter => {
+                let duration = PIN_DURATIONS[self.pin_duration_index].0;
+                self.show_pin_duration = false;
+                let pending = self.pin_pending.take()?;
+
+                // Optimistically pin
+                if let Some(conv) = self.conversations.get_mut(&pending.conv_id) {
+                    if let Some(m) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == pending.target_timestamp) {
+                        m.is_pinned = true;
+                    }
+                }
+                db_warn(
+                    self.db.set_message_pinned(&pending.conv_id, pending.target_timestamp, true),
+                    "set_message_pinned",
+                );
+                self.scroll_offset = 0;
+                self.focused_msg_index = None;
+                let body = "you pinned a message";
+                let now = Utc::now();
+                let now_ms = now.timestamp_millis();
+                self.handle_system_message(&pending.conv_id, body, now, now_ms);
+
+                Some(SendRequest::Pin {
+                    recipient: pending.conv_id,
+                    is_group: pending.is_group,
+                    target_author: pending.target_author,
+                    target_timestamp: pending.target_timestamp,
+                    pin_duration: duration,
+                })
+            }
+            KeyCode::Esc => {
+                self.show_pin_duration = false;
+                self.pin_pending = None;
+                None
+            }
+            _ => None,
         }
     }
 
@@ -4519,6 +4609,7 @@ impl App {
             || self.group_menu_state.is_some()
             || self.show_message_request
             || self.show_theme_picker
+            || self.show_pin_duration
             || self.autocomplete_visible
     }
 
@@ -7014,6 +7105,10 @@ mod tests {
         app.autocomplete_visible = true;
         assert!(app.has_overlay());
         app.autocomplete_visible = false;
+
+        app.show_pin_duration = true;
+        assert!(app.has_overlay());
+        app.show_pin_duration = false;
 
         assert!(!app.has_overlay());
     }

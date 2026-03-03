@@ -345,6 +345,7 @@ impl SignalClient {
         is_group: bool,
         target_author: &str,
         target_timestamp: i64,
+        pin_duration: i64,
     ) -> Result<()> {
         let id = Uuid::new_v4().to_string();
 
@@ -357,6 +358,7 @@ impl SignalClient {
                 "groupId": recipient,
                 "targetAuthor": target_author,
                 "targetTimestamp": target_timestamp,
+                "pinDuration": pin_duration,
                 "account": self.account,
             })
         } else {
@@ -364,6 +366,7 @@ impl SignalClient {
                 "recipient": [recipient],
                 "targetAuthor": target_author,
                 "targetTimestamp": target_timestamp,
+                "pinDuration": pin_duration,
                 "account": self.account,
             })
         };
@@ -401,6 +404,7 @@ impl SignalClient {
                 "groupId": recipient,
                 "targetAuthor": target_author,
                 "targetTimestamp": target_timestamp,
+                "pinDuration": -1,
                 "account": self.account,
             })
         } else {
@@ -408,6 +412,7 @@ impl SignalClient {
                 "recipient": [recipient],
                 "targetAuthor": target_author,
                 "targetTimestamp": target_timestamp,
+                "pinDuration": -1,
                 "account": self.account,
             })
         };
