@@ -14,6 +14,7 @@ use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage,
 use crate::signal::types::{MessageStatus, Reaction, StyleType};
 use crate::image_render::ImageProtocol;
 use crate::input::{COMMANDS, format_compact_duration};
+use crate::theme::Theme;
 
 // Layout constants
 const SIDEBAR_AUTO_HIDE_WIDTH: u16 = 60;
@@ -33,37 +34,27 @@ const GROUP_MENU_POPUP_WIDTH: u16 = 40;
 const GROUP_MEMBER_MAX_VISIBLE: usize = 15;
 
 /// Map a MessageStatus to its display symbol and color.
-fn status_symbol(status: MessageStatus, nerd_fonts: bool, color: bool) -> (&'static str, Color) {
+fn status_symbol(status: MessageStatus, nerd_fonts: bool, color: bool, theme: &Theme) -> (&'static str, Color) {
     let (unicode_sym, nerd_sym, colored) = match status {
-        MessageStatus::Failed   => ("\u{2717}", "\u{f055c}", Color::Red),       // ✗ / 󰅜
-        MessageStatus::Sending  => ("\u{25cc}", "\u{f0996}", Color::DarkGray),  // ◌ / 󰦖
-        MessageStatus::Sent     => ("\u{25cb}", "\u{f0954}", Color::DarkGray),  // ○ / 󰥔
-        MessageStatus::Delivered=> ("\u{2713}", "\u{f012c}", Color::White),     // ✓ / 󰄬
-        MessageStatus::Read     => ("\u{25cf}", "\u{f012d}", Color::Green),     // ● / 󰄭
-        MessageStatus::Viewed   => ("\u{25c9}", "\u{f0208}", Color::Cyan),     // ◉ / 󰈈
+        MessageStatus::Failed   => ("\u{2717}", "\u{f055c}", theme.receipt_failed),
+        MessageStatus::Sending  => ("\u{25cc}", "\u{f0996}", theme.receipt_sending),
+        MessageStatus::Sent     => ("\u{25cb}", "\u{f0954}", theme.receipt_sent),
+        MessageStatus::Delivered=> ("\u{2713}", "\u{f012c}", theme.receipt_delivered),
+        MessageStatus::Read     => ("\u{25cf}", "\u{f012d}", theme.receipt_read),
+        MessageStatus::Viewed   => ("\u{25c9}", "\u{f0208}", theme.receipt_viewed),
     };
     let sym = if nerd_fonts { nerd_sym } else { unicode_sym };
-    let fg = if color { colored } else { Color::DarkGray };
+    let fg = if color { colored } else { theme.fg_muted };
     (sym, fg)
 }
 
-/// Hash a sender name to one of ~8 distinct colors. "you" always gets Green.
-fn sender_color(name: &str) -> Color {
+/// Hash a sender name to one of ~8 distinct colors. "you" always gets sender_self.
+fn sender_color(name: &str, theme: &Theme) -> Color {
     if name == "you" {
-        return Color::Green;
+        return theme.sender_self;
     }
     let hash: u32 = name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    const COLORS: [Color; 8] = [
-        Color::Cyan,
-        Color::Magenta,
-        Color::Yellow,
-        Color::Blue,
-        Color::LightRed,
-        Color::LightGreen,
-        Color::LightCyan,
-        Color::LightMagenta,
-    ];
-    COLORS[(hash as usize) % COLORS.len()]
+    theme.sender_palette[(hash as usize) % theme.sender_palette.len()]
 }
 
 /// Truncate a string to fit within `max_width`, appending `…` if truncated.
@@ -94,6 +85,7 @@ fn build_separator(label: &str, width: usize, style: Style) -> Line<'static> {
 /// Preferred width/height are clamped to fit within the terminal.
 fn centered_popup(
     frame: &mut Frame, area: Rect, pref_width: u16, pref_height: u16, title: &str,
+    theme: &Theme,
 ) -> (Rect, Block<'static>) {
     let w = pref_width.min(area.width.saturating_sub(4));
     let h = pref_height.min(area.height.saturating_sub(2));
@@ -104,10 +96,10 @@ fn centered_popup(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme.accent))
         .title(title.to_string())
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .style(Style::default().bg(Color::Black));
+        .title_style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(theme.bg));
     (popup_area, block)
 }
 
@@ -137,14 +129,14 @@ fn extract_url(text: &str) -> String {
     text.to_string()
 }
 
-/// Check if a cell's style matches the link style (Blue fg + UNDERLINED).
-fn is_link_style(style: &Style) -> bool {
-    style.fg == Some(Color::Blue) && style.add_modifier.contains(Modifier::UNDERLINED)
+/// Check if a cell's style matches the link style (link color fg + UNDERLINED).
+fn is_link_style(style: &Style, link_color: Color) -> bool {
+    style.fg == Some(link_color) && style.add_modifier.contains(Modifier::UNDERLINED)
 }
 
 /// Scan a rendered buffer area for consecutive cells with the link style,
 /// and collect them into LinkRegion structs.
-fn collect_link_regions(buf: &Buffer, area: Rect) -> Vec<LinkRegion> {
+fn collect_link_regions(buf: &Buffer, area: Rect, link_color: Color) -> Vec<LinkRegion> {
     let right_edge = area.x.saturating_add(area.width);
     let mut regions = Vec::new();
     let mut wrap_url: Option<String> = None;
@@ -163,7 +155,7 @@ fn collect_link_regions(buf: &Buffer, area: Rect) -> Vec<LinkRegion> {
                 }
             };
 
-            if !is_link_style(&cell.style()) {
+            if !is_link_style(&cell.style(), link_color) {
                 x += 1;
                 continue;
             }
@@ -174,7 +166,7 @@ fn collect_link_regions(buf: &Buffer, area: Rect) -> Vec<LinkRegion> {
 
             while x < right_edge {
                 match buf.cell(Position::new(x, y)) {
-                    Some(c) if is_link_style(&c.style()) => {
+                    Some(c) if is_link_style(&c.style(), link_color) => {
                         let sym = c.symbol();
                         if !sym.is_empty() {
                             text.push_str(sym);
@@ -239,12 +231,13 @@ fn styled_uri_spans(
     body: &str,
     mention_ranges: &[(usize, usize)],
     style_ranges: &[(usize, usize, StyleType)],
+    theme: &Theme,
 ) -> (Vec<Span<'static>>, Option<String>) {
     let link_style = Style::default()
-        .fg(Color::Blue)
+        .fg(theme.link)
         .add_modifier(Modifier::UNDERLINED);
     let mention_style = Style::default()
-        .fg(Color::Cyan)
+        .fg(theme.mention)
         .add_modifier(Modifier::BOLD);
 
     // Attachment/image patterns: extract bracket text as display, URI as hidden metadata
@@ -385,7 +378,7 @@ fn styled_uri_spans(
         if is_spoiler {
             // Replace each character with a block character
             let block_text: String = segment_text.chars().map(|_| '\u{2588}').collect();
-            let spoiler_style = style.fg(Color::DarkGray);
+            let spoiler_style = style.fg(theme.fg_muted);
             spans.push(Span::styled(block_text, spoiler_style));
         } else {
             // Apply text style modifiers
@@ -395,7 +388,7 @@ fn styled_uri_spans(
                         StyleType::Bold => style = style.add_modifier(Modifier::BOLD),
                         StyleType::Italic => style = style.add_modifier(Modifier::ITALIC),
                         StyleType::Strikethrough => style = style.add_modifier(Modifier::CROSSED_OUT),
-                        StyleType::Monospace => style = style.fg(Color::DarkGray),
+                        StyleType::Monospace => style = style.fg(theme.fg_muted),
                         StyleType::Spoiler => {} // handled above
                     }
                 }
@@ -471,7 +464,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Help overlay (overlays everything)
     if app.show_help {
-        draw_help(frame, size);
+        draw_help(frame, app, size);
     }
 
     // Contacts overlay (overlays everything)
@@ -514,9 +507,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_delete_confirm(frame, app, size);
     }
 
+    // Theme picker overlay
+    if app.show_theme_picker {
+        draw_theme_picker(frame, app, size);
+    }
+
     // Collect link regions from the rendered buffer for OSC 8 injection
     let area = frame.area();
-    app.link_regions = collect_link_regions(frame.buffer_mut(), area);
+    app.link_regions = collect_link_regions(frame.buffer_mut(), area, app.theme.link);
 
     // Resolve hidden URLs for attachment links (display text has no URI scheme)
     for link in &mut app.link_regions {
@@ -529,6 +527,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = &app.theme;
     let max_name_width = (area.width as usize).saturating_sub(5); // "• # " + margin
 
     let items: Vec<ListItem> = app
@@ -551,7 +550,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if is_active {
                 spans.push(Span::styled(
                     "▸ ",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::raw("  "));
@@ -559,9 +558,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Unread / message request marker
             if !conv.accepted {
-                spans.push(Span::styled("? ", Style::default().fg(Color::Magenta)));
+                spans.push(Span::styled("? ", Style::default().fg(theme.mention)));
             } else if has_unread && !is_active {
-                spans.push(Span::styled("• ", Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled("• ", Style::default().fg(theme.warning)));
             } else {
                 spans.push(Span::raw("  "));
             }
@@ -570,7 +569,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if conv.is_group {
                 spans.push(Span::styled(
                     "#",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.fg_muted),
                 ));
             }
 
@@ -578,22 +577,22 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             let is_muted = app.muted_conversations.contains(id);
             let name_style = if is_active {
                 Style::default()
-                    .fg(Color::White)
+                    .fg(theme.fg)
                     .add_modifier(Modifier::BOLD)
             } else if has_unread {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(theme.warning)
             } else if is_muted {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.fg_muted)
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(theme.fg_secondary)
             };
             spans.push(Span::styled(name, name_style));
 
             if is_muted {
-                spans.push(Span::styled(" ~", Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(" ~", Style::default().fg(theme.fg_muted)));
             }
             if app.blocked_conversations.contains(id) {
-                spans.push(Span::styled(" x", Style::default().fg(Color::Red)));
+                spans.push(Span::styled(" x", Style::default().fg(theme.error)));
             }
 
             ListItem::new(Line::from(spans))
@@ -604,7 +603,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .borders(Borders::RIGHT)
         .border_type(BorderType::Rounded)
         .title(" Chats ")
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .title_style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD));
     app.mouse_sidebar_inner = Some(block.inner(area));
 
     let sidebar = List::new(items).block(block);
@@ -630,6 +629,7 @@ fn draw_chat_area(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = &app.theme;
     let (title_spans, title_right) = match &app.active_conversation {
         Some(id) => {
             let conv = &app.conversations[id];
@@ -637,7 +637,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut spans = vec![
                 Span::styled(
                     format!("{prefix}{} ", conv.name),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
                 ),
             ];
 
@@ -646,7 +646,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 let timer_label = format_compact_duration(conv.expiration_timer);
                 spans.push(Span::styled(
                     format!("\u{23F1} {timer_label} "),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.fg_muted),
                 ));
             }
 
@@ -660,7 +660,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         None => (vec![Span::styled(
             " signal-tui ".to_string(),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )], String::new()),
     };
 
@@ -672,7 +672,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     if !title_right.is_empty() {
         block = block
             .title_bottom(Line::from(title_right).alignment(Alignment::Right))
-            .title_style(Style::default().fg(Color::Cyan));
+            .title_style(Style::default().fg(theme.accent));
     }
 
     let inner = block.inner(area);
@@ -732,7 +732,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         if prev_date.as_ref() != Some(&date_str) {
             if prev_date.is_some() {
                 let label = format!(" {} ", date_str);
-                lines.push(build_separator(&label, inner_width, Style::default().fg(Color::DarkGray)));
+                lines.push(build_separator(&label, inner_width, Style::default().fg(theme.fg_muted)));
                 line_msg_idx.push(None);
             }
             prev_date = Some(date_str);
@@ -743,7 +743,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(build_separator(
                 " new messages ",
                 inner_width,
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
             ));
             line_msg_idx.push(None);
         }
@@ -751,7 +751,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         if msg.is_system {
             lines.push(Line::from(Span::styled(
                 format!("  {}", msg.body),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.system_msg),
             )));
             line_msg_idx.push(Some(msg_index));
         } else {
@@ -759,16 +759,16 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             if let Some(ref quote) = msg.quote {
                 let quote_body = truncate(&quote.body, 50);
                 lines.push(Line::from(vec![
-                    Span::styled("  \u{2502} ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  \u{2502} ", Style::default().fg(theme.quote)),
                     Span::styled(
                         format!("<{}>", quote.author),
                         Style::default()
-                            .fg(sender_color(&quote.author))
+                            .fg(sender_color(&quote.author, theme))
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!(" {quote_body}"),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(theme.quote),
                     ),
                 ]));
                 line_msg_idx.push(Some(msg_index));
@@ -780,7 +780,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             // Status symbol for outgoing messages (before timestamp)
             if app.show_receipts {
                 if let Some(status) = msg.status {
-                    let (sym, color) = status_symbol(status, app.nerd_fonts, app.color_receipts);
+                    let (sym, color) = status_symbol(status, app.nerd_fonts, app.color_receipts, theme);
                     spans.push(Span::styled(
                         format!("{sym} "),
                         Style::default().fg(color),
@@ -791,18 +791,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             if msg.expires_in_seconds > 0 {
                 spans.push(Span::styled(
                     format!("\u{23F1}[{}] ", time),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.fg_muted),
                 ));
             } else {
                 spans.push(Span::styled(
                     format!("[{}] ", time),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.fg_muted),
                 ));
             }
             spans.push(Span::styled(
                 format!("<{}>", msg.sender),
                 Style::default()
-                    .fg(sender_color(&msg.sender))
+                    .fg(sender_color(&msg.sender, theme))
                     .add_modifier(Modifier::BOLD),
             ));
 
@@ -810,7 +810,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             if msg.is_edited {
                 spans.push(Span::styled(
                     " (edited)",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                    Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
                 ));
             }
 
@@ -818,11 +818,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 // Deleted message body
                 spans.push(Span::styled(
                     " [deleted]",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                    Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
                 ));
             } else {
                 // Style URIs and @mentions
-                let (body_spans, hidden_url) = styled_uri_spans(&msg.body, &msg.mention_ranges, &msg.style_ranges);
+                let (body_spans, hidden_url) = styled_uri_spans(&msg.body, &msg.mention_ranges, &msg.style_ranges, theme);
                 if let Some(url) = hidden_url {
                     // Collect display text for link_url_map lookup
                     let display_text: String = body_spans.iter().map(|s| s.content.as_ref()).collect();
@@ -855,7 +855,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Render reaction summary line (skip for deleted)
             if !msg.is_deleted && !msg.reactions.is_empty() {
-                lines.push(build_reaction_summary(&msg.reactions, app.reaction_verbose));
+                lines.push(build_reaction_summary(&msg.reactions, app.reaction_verbose, theme));
                 line_msg_idx.push(Some(msg_index));
             }
         }
@@ -893,7 +893,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(Span::styled(
                 text,
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(theme.fg_muted)
                     .add_modifier(Modifier::ITALIC),
             )));
             line_msg_idx.push(None);
@@ -1011,7 +1011,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         for (i, line) in lines.iter_mut().enumerate() {
             if line_msg_idx.get(i) == Some(&Some(focused_idx)) {
                 let patched: Vec<Span> = line.spans.drain(..).map(|mut s| {
-                    s.style = s.style.bg(Color::Indexed(236));
+                    s.style = s.style.bg(theme.msg_selected_bg);
                     s
                 }).collect();
                 *line = Line::from(patched);
@@ -1041,7 +1041,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Build a reaction summary line like "    👍 2  ❤️ 1  😂 1"
-fn build_reaction_summary(reactions: &[Reaction], verbose: bool) -> Line<'static> {
+fn build_reaction_summary(reactions: &[Reaction], verbose: bool, theme: &Theme) -> Line<'static> {
     if verbose {
         // Verbose: group by emoji, show sender names
         let mut grouped: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
@@ -1053,7 +1053,7 @@ fn build_reaction_summary(reactions: &[Reaction], verbose: bool) -> Line<'static
             spans.push(Span::raw(format!("{emoji} ")));
             spans.push(Span::styled(
                 senders.join(", "),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted),
             ));
             spans.push(Span::raw("  ".to_string()));
         }
@@ -1069,7 +1069,7 @@ fn build_reaction_summary(reactions: &[Reaction], verbose: bool) -> Line<'static
             spans.push(Span::raw(emoji.clone()));
             spans.push(Span::styled(
                 format!(" {count}  "),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted),
             ));
         }
         Line::from(spans)
@@ -1077,6 +1077,7 @@ fn build_reaction_summary(reactions: &[Reaction], verbose: bool) -> Line<'static
 }
 
 fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let state = match &app.group_menu_state {
         Some(s) => s,
         None => return,
@@ -1094,7 +1095,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 .map(|c| format!(" #{} ", c.name))
                 .unwrap_or_else(|| " Group ".to_string());
             let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, popup_height, &title,
+                frame, area, GROUP_MENU_POPUP_WIDTH, popup_height, &title, theme,
             );
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
@@ -1112,14 +1113,14 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 let pad = content_width.saturating_sub(label_part.chars().count() + hint_width + 2);
                 let padding = " ".repeat(pad);
                 let row_style = if is_selected {
-                    Style::default().bg(Color::DarkGray)
+                    Style::default().bg(theme.bg_selected)
                 } else {
                     Style::default()
                 };
                 let hint_style = if is_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::DarkGray).add_modifier(Modifier::DIM)
+                    Style::default().bg(theme.bg_selected).fg(theme.fg_muted).add_modifier(Modifier::DIM)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(theme.fg_muted)
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{label_part}{padding}"), row_style),
@@ -1129,7 +1130,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  Esc to close",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted),
             )));
             let popup = Paragraph::new(lines);
             frame.render_widget(popup, inner);
@@ -1139,7 +1140,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let pref_height = max_visible as u16 + 5;
             let title = " Members ".to_string();
             let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, pref_height, &title,
+                frame, area, GROUP_MENU_POPUP_WIDTH, pref_height, &title, theme,
             );
             let inner_height = popup_area.height.saturating_sub(2) as usize;
             let footer_lines = 2;
@@ -1153,7 +1154,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             if app.group_menu_filtered.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  No members",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.fg_muted),
                 )));
             } else {
                 let end = (scroll_offset + visible_rows).min(app.group_menu_filtered.len());
@@ -1167,14 +1168,14 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                         format!("  {}", name)
                     };
                     let name_style = if is_selected {
-                        Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+                        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::White)
+                        Style::default().fg(theme.fg)
                     };
                     let phone_style = if is_selected {
-                        Style::default().bg(Color::DarkGray).fg(Color::DarkGray)
+                        Style::default().bg(theme.bg_selected).fg(theme.fg_muted)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(theme.fg_muted)
                     };
                     lines.push(Line::from(vec![
                         Span::styled(display, name_style),
@@ -1188,7 +1189,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  Esc to go back",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted),
             )));
             let popup = Paragraph::new(lines).block(block);
             frame.render_widget(popup, popup_area);
@@ -1209,7 +1210,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 format!(" Remove Member [{}] ", app.group_menu_filter)
             };
             let (popup_area, block) = centered_popup(
-                frame, area, CONTACTS_POPUP_WIDTH, pref_height, &title,
+                frame, area, CONTACTS_POPUP_WIDTH, pref_height, &title, theme,
             );
             let inner_height = popup_area.height.saturating_sub(2) as usize;
             let footer_lines = 2;
@@ -1224,7 +1225,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 let msg = if is_add { "  No contacts to add" } else { "  No members to remove" };
                 lines.push(Line::from(Span::styled(
                     msg,
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme.fg_muted),
                 )));
             } else {
                 let end = (scroll_offset + visible_rows).min(app.group_menu_filtered.len());
@@ -1236,14 +1237,14 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                     let name_max = inner_w.saturating_sub(number_display.len() + 2);
                     let display_name = truncate(name, name_max);
                     let name_style = if is_selected {
-                        Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+                        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::White)
+                        Style::default().fg(theme.fg)
                     };
                     let number_style = if is_selected {
-                        Style::default().bg(Color::DarkGray).fg(Color::Cyan)
+                        Style::default().bg(theme.bg_selected).fg(theme.accent)
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        Style::default().fg(theme.fg_muted)
                     };
                     lines.push(Line::from(vec![
                         Span::styled(format!("  {}", display_name), name_style),
@@ -1257,7 +1258,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  Enter to select \u{00b7} Esc to cancel",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted),
             )));
             let popup = Paragraph::new(lines).block(block);
             frame.render_widget(popup, popup_area);
@@ -1266,7 +1267,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let is_rename = *state == GroupMenuState::Rename;
             let title = if is_rename { " Rename Group " } else { " Create Group " };
             let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, 6, title,
+                frame, area, GROUP_MENU_POPUP_WIDTH, 6, title, theme,
             );
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
@@ -1274,12 +1275,12 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let input_display = format!("  {}\u{2588}", app.group_menu_input);
             lines.push(Line::from(Span::styled(
                 input_display,
-                Style::default().fg(Color::White),
+                Style::default().fg(theme.fg),
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  Enter to confirm \u{00b7} Esc to cancel",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted),
             )));
             let popup = Paragraph::new(lines);
             frame.render_widget(popup, inner);
@@ -1291,19 +1292,19 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or_else(|| "this group".to_string());
             let prompt = format!("Leave #{}?", group_name);
             let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, 5, " Leave Group ",
+                frame, area, GROUP_MENU_POPUP_WIDTH, 5, " Leave Group ", theme,
             );
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
             let mut lines: Vec<Line> = Vec::new();
             lines.push(Line::from(Span::styled(
                 format!("  {}", prompt),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.warning),
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  (y)es / (n)o",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.fg_muted),
             )));
             let popup = Paragraph::new(lines);
             frame.render_widget(popup, inner);
@@ -1312,6 +1313,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_message_request(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let conv_id = match app.active_conversation.as_ref() {
         Some(id) => id,
         None => return,
@@ -1325,25 +1327,25 @@ fn draw_message_request(frame: &mut Frame, app: &App, area: Rect) {
     let name = &conv.name;
     let phone = &conv.id;
 
-    let (popup_area, block) = centered_popup(frame, area, 36, 9, " Message Request ");
+    let (popup_area, block) = centered_popup(frame, area, 36, 9, " Message Request ", theme);
     frame.render_widget(block, popup_area);
 
     let inner = popup_area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 2 });
     let lines = vec![
-        Line::from(Span::styled(name.as_str(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled(phone.as_str(), Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(name.as_str(), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(phone.as_str(), Style::default().fg(theme.fg_muted))),
         Line::from(Span::styled(
             format!("{} message{}", msg_count, if msg_count == 1 { "" } else { "s" }),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("(a)", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-            Span::styled("ccept / ", Style::default().fg(Color::Gray)),
-            Span::styled("(d)", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-            Span::styled("elete", Style::default().fg(Color::Gray)),
+            Span::styled("(a)", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
+            Span::styled("ccept / ", Style::default().fg(theme.fg_secondary)),
+            Span::styled("(d)", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)),
+            Span::styled("elete", Style::default().fg(theme.fg_secondary)),
         ]),
-        Line::from(Span::styled("Esc to go back", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled("Esc to go back", Style::default().fg(theme.fg_muted))),
     ];
 
     let text = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
@@ -1351,22 +1353,22 @@ fn draw_message_request(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let items = app.action_menu_items();
     if items.is_empty() {
         return;
     }
 
     let popup_width: u16 = 30;
-    let popup_height = items.len() as u16 + 4; // borders + hint line + padding
+    let popup_height = items.len() as u16 + 4;
 
     let (popup_area, block) = centered_popup(
-        frame, area, popup_width, popup_height, " Actions ",
+        frame, area, popup_width, popup_height, " Actions ", theme,
     );
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    // Content width inside the block borders
     let content_width = inner.width as usize;
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1378,22 +1380,20 @@ fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) {
             String::new()
         };
 
-        // Build the row: "  {icon}{label}    {hint}"
         let label_part = format!("  {icon}{}", action.label);
-        // Right-align the hint with padding
         let hint_width = action.key_hint.len();
         let pad = content_width.saturating_sub(label_part.chars().count() + hint_width + 2);
         let padding = " ".repeat(pad);
 
         let row_style = if is_selected {
-            Style::default().bg(Color::DarkGray)
+            Style::default().bg(theme.bg_selected)
         } else {
             Style::default()
         };
         let hint_style = if is_selected {
-            Style::default().bg(Color::DarkGray).fg(Color::DarkGray).add_modifier(Modifier::DIM)
+            Style::default().bg(theme.bg_selected).fg(theme.fg_muted).add_modifier(Modifier::DIM)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.fg_muted)
         };
 
         lines.push(Line::from(vec![
@@ -1402,11 +1402,10 @@ fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    // Hint line
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Esc to close",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.fg_muted),
     )));
 
     let popup = Paragraph::new(lines);
@@ -1414,18 +1413,19 @@ fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_reaction_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let emoji_count = QUICK_REACTIONS.len();
     let popup_width = (emoji_count * 4 + 4) as u16;
     let popup_height = 3u16;
 
     let (popup_area, block) = centered_popup(
-        frame, area, popup_width, popup_height, " React ",
+        frame, area, popup_width, popup_height, " React ", theme,
     );
 
     let mut spans = vec![Span::raw(" ".to_string())];
     for (i, emoji) in QUICK_REACTIONS.iter().enumerate() {
         let style = if i == app.reaction_picker_index {
-            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            Style::default().bg(theme.bg_selected).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -1440,11 +1440,12 @@ fn draw_reaction_picker(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let msg = app.selected_message();
     let is_outgoing = msg.is_some_and(|m| m.sender == "you");
 
     let (popup_area, block) = centered_popup(
-        frame, area, 44, 5, " Delete Message ",
+        frame, area, 44, 5, " Delete Message ", theme,
     );
 
     let prompt = if is_outgoing {
@@ -1457,7 +1458,7 @@ fn draw_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             format!("  {prompt}"),
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.fg),
         )),
     ];
     let popup = Paragraph::new(lines).block(block);
@@ -1466,102 +1467,103 @@ fn draw_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the welcome/empty-state screen when no conversation is active.
 fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let mut lines = vec![Line::from("")];
 
     if let Some(ref err) = app.connection_error {
         lines.push(Line::from(Span::styled(
             "  Connection Error",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             format!("  {err}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme.error),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  Run with --setup to reconfigure.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
     } else if app.loading {
         lines.push(Line::from(Span::styled(
             "  signal-tui",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  Loading...",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         )));
     } else if app.conversation_order.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Welcome to signal-tui",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  No conversations yet",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
             "  Messages you send and receive will appear here.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  /join +1234567890  message someone by phone number",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
             "  /contacts          browse your synced contacts",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
             "  /help              see all commands and keybindings",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
     } else {
         lines.push(Line::from(Span::styled(
             "  Welcome to signal-tui",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  Getting started",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             "  Tab / Shift+Tab    cycle through conversations",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
             "  /join <contact>    open a conversation by name or number",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
             "  Esc                switch to Normal mode (vim keys)",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  Useful commands",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             "  /contacts          browse synced contacts",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
             "  /settings          configure preferences",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(Span::styled(
             "  /help              all commands and keybindings",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  Ctrl+\u{2190}/\u{2192} to resize sidebar",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         )));
     }
 
@@ -1599,9 +1601,10 @@ fn find_focused_msg_index(
 }
 
 fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = &app.theme;
     let border_color = match app.mode {
-        InputMode::Insert => Color::Cyan,
-        InputMode::Normal => Color::Yellow,
+        InputMode::Insert => theme.input_insert,
+        InputMode::Normal => theme.input_normal,
     };
 
     let mut block = Block::default()
@@ -1614,12 +1617,12 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         let label = format!(" replying: {}… ", truncate(snippet, 30));
         block = block.title(Line::from(Span::styled(
             label,
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
         )));
     } else if app.editing_message.is_some() {
         block = block.title(Line::from(Span::styled(
             " editing… ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::ITALIC),
+            Style::default().fg(theme.accent_secondary).add_modifier(Modifier::ITALIC),
         )));
     }
 
@@ -1657,7 +1660,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         let input = Paragraph::new(Span::styled(
             placeholder,
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         ))
         .block(block);
         frame.render_widget(input, area);
@@ -1671,11 +1674,11 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         if let Some(ref badge_text) = badge {
             spans.push(Span::styled(
                 badge_text.clone(),
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.mention).add_modifier(Modifier::BOLD),
             ));
         }
-        spans.push(Span::styled(prefix, Style::default().fg(Color::White)));
-        spans.push(Span::styled(visible.to_string(), Style::default().fg(Color::White)));
+        spans.push(Span::styled(prefix, Style::default().fg(theme.fg)));
+        spans.push(Span::styled(visible.to_string(), Style::default().fg(theme.fg)));
 
         let input = Paragraph::new(Line::from(spans)).block(block);
         frame.render_widget(input, area);
@@ -1691,6 +1694,7 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden: bool) {
+    let theme = &app.theme;
     let mut segments: Vec<Span> = Vec::new();
 
     // Mode indicator
@@ -1698,43 +1702,43 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
         InputMode::Normal => {
             segments.push(Span::styled(
                 " [NORMAL] ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.accent_secondary).add_modifier(Modifier::BOLD),
             ));
         }
         InputMode::Insert => {
             segments.push(Span::styled(
                 " [INSERT] ",
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.success).add_modifier(Modifier::BOLD),
             ));
         }
     }
-    segments.push(Span::styled("│ ", Style::default().fg(Color::DarkGray)));
+    segments.push(Span::styled("│ ", Style::default().fg(theme.fg_muted)));
 
     // Connection status dot
     if let Some(ref err) = app.connection_error {
-        segments.push(Span::styled(" ● ", Style::default().fg(Color::Red)));
+        segments.push(Span::styled(" ● ", Style::default().fg(theme.error)));
         let display: String = err.chars().take(60).collect();
         segments.push(Span::styled(
             format!("error: {display}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme.error),
         ));
     } else if app.connected {
-        segments.push(Span::styled(" ● ", Style::default().fg(Color::Green)));
-        segments.push(Span::styled("connected", Style::default().fg(Color::White)));
+        segments.push(Span::styled(" ● ", Style::default().fg(theme.success)));
+        segments.push(Span::styled("connected", Style::default().fg(theme.statusbar_fg)));
         if app.incognito {
-            segments.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+            segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
             segments.push(Span::styled(
                 "incognito",
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.mention).add_modifier(Modifier::BOLD),
             ));
         }
     } else {
-        segments.push(Span::styled(" ● ", Style::default().fg(Color::Red)));
-        segments.push(Span::styled("disconnected", Style::default().fg(Color::White)));
+        segments.push(Span::styled(" ● ", Style::default().fg(theme.error)));
+        segments.push(Span::styled("disconnected", Style::default().fg(theme.statusbar_fg)));
     }
 
     // Pipe separator
-    segments.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+    segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
 
     // Current conversation
     if let Some(ref id) = app.active_conversation {
@@ -1742,61 +1746,62 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
             let prefix = if conv.is_group { "#" } else { "" };
             segments.push(Span::styled(
                 format!("{}{}", prefix, conv.name),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme.accent),
             ));
         }
     } else {
         segments.push(Span::styled(
             "no conversation",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         ));
     }
 
     // Pipe separator + conversation count
     if !app.conversation_order.is_empty() {
-        segments.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
         segments.push(Span::styled(
             format!("{} chats", app.conversation_order.len()),
-            Style::default().fg(Color::Gray),
+            Style::default().fg(theme.fg_secondary),
         ));
     }
 
     // Scroll offset indicator + focused message timestamp
     if app.scroll_offset > 0 {
-        segments.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
         segments.push(Span::styled(
             format!("↑{}", app.scroll_offset),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning),
         ));
         if let Some(ref ts) = app.focused_message_time {
             let local = ts.with_timezone(&chrono::Local);
-            segments.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+            segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
             segments.push(Span::styled(
                 local.format("%a %b %d, %Y %I:%M:%S %p").to_string(),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme.statusbar_fg),
             ));
         }
     }
 
     // Auto-hidden sidebar indicator
     if sidebar_auto_hidden && app.sidebar_visible {
-        segments.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+        segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
         segments.push(Span::styled(
             "[+]",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         ));
     }
 
     // Pad the rest with background
     let status = Paragraph::new(Line::from(segments)).style(
         Style::default()
-            .fg(Color::White)
-            .bg(Color::DarkGray),
+            .fg(theme.statusbar_fg)
+            .bg(theme.statusbar_bg),
     );
     frame.render_widget(status, area);
 }
 
 fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
+    let theme = &app.theme;
     let terminal_width = frame.area().width;
     let mut lines: Vec<Line> = Vec::new();
     let mut max_content_width: usize = 0;
@@ -1819,14 +1824,14 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
                 let is_selected = i == app.autocomplete_index;
                 let style = if is_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Gray)
+                    Style::default().fg(theme.fg_secondary)
                 };
                 let desc_style = if is_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::Cyan)
+                    Style::default().bg(theme.bg_selected).fg(theme.accent)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(theme.fg_muted)
                 };
 
                 lines.push(Line::from(vec![
@@ -1846,14 +1851,14 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
                 let is_selected = i == app.autocomplete_index;
                 let style = if is_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Cyan)
+                    Style::default().fg(theme.accent)
                 };
                 let phone_style = if is_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::DarkGray)
+                    Style::default().bg(theme.bg_selected).fg(theme.fg_muted)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(theme.fg_muted)
                 };
 
                 lines.push(Line::from(vec![
@@ -1872,9 +1877,9 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
                 let is_selected = i == app.autocomplete_index;
                 let style = if is_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::Green).add_modifier(Modifier::BOLD)
+                    Style::default().bg(theme.bg_selected).fg(theme.success).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(theme.success)
                 };
 
                 lines.push(Line::from(vec![
@@ -1902,16 +1907,18 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .style(Style::default().bg(Color::Black));
+        .border_style(Style::default().fg(theme.accent))
+        .style(Style::default().bg(theme.bg));
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, area);
 }
 
 fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let height = SETTINGS_POPUP_HEIGHT + 1; // extra line for theme entry
     let (popup_area, block) = centered_popup(
-        frame, area, SETTINGS_POPUP_WIDTH, SETTINGS_POPUP_HEIGHT, " Settings ",
+        frame, area, SETTINGS_POPUP_WIDTH, height, " Settings ", theme,
     );
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1920,16 +1927,16 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         let checkbox = if enabled { "[x]" } else { "[ ]" };
         let is_selected = i == app.settings_index;
         let style = if is_selected {
-            Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(theme.fg_secondary)
         };
         let check_style = if is_selected {
-            Style::default().bg(Color::DarkGray).fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
         } else if enabled {
-            Style::default().fg(Color::Green)
+            Style::default().fg(theme.success)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.fg_muted)
         };
 
         lines.push(Line::from(vec![
@@ -1937,17 +1944,36 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(def.label.to_string(), style),
         ]));
     }
+
+    // Theme selector entry (index == SETTINGS.len())
+    let is_theme_selected = app.settings_index == SETTINGS.len();
+    let theme_style = if is_theme_selected {
+        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.fg_secondary)
+    };
+    let theme_value_style = if is_theme_selected {
+        Style::default().bg(theme.bg_selected).fg(theme.accent)
+    } else {
+        Style::default().fg(theme.accent)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Theme: ", theme_style),
+        Span::styled(app.theme.name.clone(), theme_value_style),
+    ]));
+
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Esc to close  |  Space to toggle",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.fg_muted),
     )));
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
 }
 
-fn draw_help(frame: &mut Frame, area: Rect) {
+fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     // Help table entries: (key, description)
     let commands: &[(&str, &str)] = &[
         ("/join <name>", "Switch to a conversation"),
@@ -2002,13 +2028,13 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         commands.len() + shortcuts.len() + vim.len() + cli.len() + 7; // headers + footer + spacing
     let pref_height = content_lines as u16 + 2;
 
-    let (popup_area, block) = centered_popup(frame, area, pref_width, pref_height, " Help ");
+    let (popup_area, block) = centered_popup(frame, area, pref_width, pref_height, " Help ", theme);
 
     let header_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(theme.accent_secondary)
         .add_modifier(Modifier::BOLD);
-    let key_style = Style::default().fg(Color::Cyan);
-    let desc_style = Style::default().fg(Color::Gray);
+    let key_style = Style::default().fg(theme.accent);
+    let desc_style = Style::default().fg(theme.fg_secondary);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -2046,7 +2072,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Press any key to close",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.fg_muted),
     )));
 
     let popup = Paragraph::new(lines).block(block);
@@ -2054,6 +2080,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let max_visible = CONTACTS_MAX_VISIBLE.min(app.contacts_filtered.len());
     let pref_height = max_visible as u16 + 5; // +3 border/title +2 footer/filter
 
@@ -2064,7 +2091,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let (popup_area, block) = centered_popup(
-        frame, area, CONTACTS_POPUP_WIDTH, pref_height, &title,
+        frame, area, CONTACTS_POPUP_WIDTH, pref_height, &title, theme,
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
@@ -2083,7 +2110,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     if app.contacts_filtered.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No contacts found",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         )));
     } else {
         let end = (scroll_offset + visible_rows).min(app.contacts_filtered.len());
@@ -2097,7 +2124,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
             // Checkmark for contacts that already have a conversation
             let marker = if has_conversation { " \u{2713}" } else { "  " };
             let marker_style = if has_conversation {
-                Style::default().fg(Color::Green)
+                Style::default().fg(theme.success)
             } else {
                 Style::default()
             };
@@ -2109,21 +2136,21 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
 
             let name_style = if is_selected {
                 Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(Color::White)
+                    .bg(theme.bg_selected)
+                    .fg(theme.fg)
                     .add_modifier(Modifier::BOLD)
             } else if has_conversation {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(theme.fg_secondary)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme.fg)
             };
             let number_style = if is_selected {
-                Style::default().bg(Color::DarkGray).fg(Color::Cyan)
+                Style::default().bg(theme.bg_selected).fg(theme.accent)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.fg_muted)
             };
             let marker_bg = if is_selected {
-                marker_style.bg(Color::DarkGray)
+                marker_style.bg(theme.bg_selected)
             } else {
                 marker_style
             };
@@ -2144,7 +2171,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  j/k navigate  |  Enter select  |  Esc close",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.fg_muted),
     )));
 
     let popup = Paragraph::new(lines).block(block);
@@ -2152,6 +2179,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let max_visible = SEARCH_MAX_VISIBLE.min(app.search_results.len().max(1));
     let pref_height = max_visible as u16 + 5; // +3 border/title +2 footer
 
@@ -2162,7 +2190,7 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let (popup_area, block) = centered_popup(
-        frame, area, SEARCH_POPUP_WIDTH, pref_height, &title,
+        frame, area, SEARCH_POPUP_WIDTH, pref_height, &title, theme,
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
@@ -2187,7 +2215,7 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(Span::styled(
             msg,
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         )));
     } else {
         let end = (scroll_offset + visible_rows).min(app.search_results.len());
@@ -2210,19 +2238,19 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
             let body_snippet = search_snippet(&result.body, &app.search_query, body_max);
 
             let prefix_style = if is_selected {
-                Style::default().bg(Color::DarkGray).fg(Color::Cyan)
+                Style::default().bg(theme.bg_selected).fg(theme.accent)
             } else {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.accent)
             };
             let body_style = if is_selected {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
+                Style::default().bg(theme.bg_selected).fg(theme.fg)
             } else {
-                Style::default().fg(Color::Gray)
+                Style::default().fg(theme.fg_secondary)
             };
 
             // Build spans with highlighted match
             let mut spans = vec![Span::styled(prefix, prefix_style)];
-            spans.extend(highlight_match_spans(&body_snippet, &app.search_query, body_style, is_selected));
+            spans.extend(highlight_match_spans(&body_snippet, &app.search_query, body_style, is_selected, theme));
 
             lines.push(Line::from(spans));
         }
@@ -2242,11 +2270,11 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled(
             count_text,
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning),
         ),
         Span::styled(
             "  j/k nav | Enter jump | n/N cycle | Esc close",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         ),
     ]));
 
@@ -2290,13 +2318,14 @@ fn search_snippet(body: &str, query: &str, max_len: usize) -> String {
     result
 }
 
-/// Build spans with the matching portions highlighted in Yellow.
+/// Build spans with the matching portions highlighted.
 /// Uses character-level case-insensitive matching to avoid byte-boundary issues.
 fn highlight_match_spans<'a>(
     text: &str,
     query: &str,
     base_style: Style,
     is_selected: bool,
+    theme: &Theme,
 ) -> Vec<Span<'a>> {
     if query.is_empty() {
         return vec![Span::styled(text.to_string(), base_style)];
@@ -2304,12 +2333,12 @@ fn highlight_match_spans<'a>(
 
     let match_style = if is_selected {
         Style::default()
-            .bg(Color::DarkGray)
-            .fg(Color::Yellow)
+            .bg(theme.bg_selected)
+            .fg(theme.warning)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(theme.warning)
             .add_modifier(Modifier::BOLD)
     };
 
@@ -2397,6 +2426,7 @@ fn format_file_size(bytes: u64) -> String {
 }
 
 fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
     let visible_count = FILE_BROWSER_MAX_VISIBLE.min(
         if app.file_browser_filtered.is_empty() { 1 } else { app.file_browser_filtered.len() }
     );
@@ -2409,7 +2439,7 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let (popup_area, block) = centered_popup(
-        frame, area, FILE_BROWSER_POPUP_WIDTH, pref_height, &title,
+        frame, area, FILE_BROWSER_POPUP_WIDTH, pref_height, &title, theme,
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize;
@@ -2425,18 +2455,18 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     let dir_truncated = truncate(&dir_display, inner_w.saturating_sub(2));
     lines.push(Line::from(Span::styled(
         format!("  {dir_truncated}"),
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
     )));
 
     if let Some(ref err) = app.file_browser_error {
         lines.push(Line::from(Span::styled(
             format!("  {}", truncate(err, inner_w.saturating_sub(2))),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme.error),
         )));
     } else if app.file_browser_filtered.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Empty directory",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.fg_muted),
         )));
     } else {
         // Scroll the list so the selected item is always visible
@@ -2472,20 +2502,20 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
 
             let name_style = if is_selected {
                 if is_dir {
-                    Style::default().bg(Color::DarkGray).fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
                 }
             } else if is_dir {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme.fg)
             };
 
             let size_style = if is_selected {
-                Style::default().bg(Color::DarkGray).fg(Color::DarkGray)
+                Style::default().bg(theme.bg_selected).fg(theme.fg_muted)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.fg_muted)
             };
 
             // Pad name to align size column
@@ -2507,7 +2537,85 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  j/k nav  Enter open/select  Backspace/- up  Esc cancel",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.fg_muted),
+    )));
+
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
+}
+
+fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let max_visible = 12usize.min(app.available_themes.len());
+    let pref_height = max_visible as u16 + 5; // border + title + footer
+
+    let (popup_area, block) = centered_popup(
+        frame, area, 50, pref_height, " Theme ", theme,
+    );
+
+    let inner_height = popup_area.height.saturating_sub(2) as usize;
+    let footer_lines = 2;
+    let visible_rows = inner_height.saturating_sub(footer_lines);
+
+    // Scroll the list so the selected item is always visible
+    let scroll_offset = if app.theme_index >= visible_rows {
+        app.theme_index - visible_rows + 1
+    } else {
+        0
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    let end = (scroll_offset + visible_rows).min(app.available_themes.len());
+    for (i, t) in app.available_themes[scroll_offset..end].iter().enumerate() {
+        let actual_index = scroll_offset + i;
+        let is_selected = actual_index == app.theme_index;
+        let is_active = t.name == app.theme.name;
+
+        let marker = if is_active { "[*]" } else { "[ ]" };
+        let row_style = if is_selected {
+            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        let marker_style = if is_selected {
+            Style::default().bg(theme.bg_selected).fg(if is_active { theme.success } else { theme.fg_muted })
+        } else {
+            Style::default().fg(if is_active { theme.success } else { theme.fg_muted })
+        };
+
+        // Color swatches: show accent, success, error as colored blocks
+        let swatch_bg = if is_selected { theme.bg_selected } else { theme.bg };
+        let swatch_accent = Span::styled("\u{2588}\u{2588}", Style::default().fg(t.accent).bg(swatch_bg));
+        let swatch_success = Span::styled("\u{2588}\u{2588}", Style::default().fg(t.success).bg(swatch_bg));
+        let swatch_error = Span::styled("\u{2588}\u{2588}", Style::default().fg(t.error).bg(swatch_bg));
+
+        // Pad name to align swatches
+        let name_width = 28;
+        let display_name = truncate(&t.name, name_width);
+        let padded_name = format!("{display_name:width$}", width = name_width);
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {marker} "), marker_style),
+            Span::styled(padded_name, row_style),
+            Span::raw(" "),
+            swatch_accent,
+            Span::raw(" "),
+            swatch_success,
+            Span::raw(" "),
+            swatch_error,
+        ]));
+    }
+
+    // Pad to fill visible rows
+    while lines.len() < visible_rows {
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  j/k navigate  |  Enter apply  |  Esc cancel",
+        Style::default().fg(theme.fg_muted),
     )));
 
     let popup = Paragraph::new(lines).block(block);

@@ -10,6 +10,7 @@ use crate::db::Database;
 use crate::image_render;
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
+use crate::theme::{self, Theme};
 use crate::signal::types::{Contact, Group, Mention, MessageStatus, Reaction, SignalEvent, SignalMessage, StyleType, TextStyle};
 
 /// Log a database error via debug_log (no-op when --debug is off).
@@ -326,6 +327,14 @@ pub struct App {
     pub mouse_input_prefix_len: u16,
     /// Enable mouse support (click sidebar, scroll messages, click links)
     pub mouse_enabled: bool,
+    /// Active color theme
+    pub theme: Theme,
+    /// Theme picker overlay visible
+    pub show_theme_picker: bool,
+    /// Cursor position in theme picker
+    pub theme_index: usize,
+    /// All available themes (built-in + custom)
+    pub available_themes: Vec<Theme>,
 }
 
 /// A search result entry.
@@ -535,6 +544,7 @@ impl App {
         }
         let mut config = crate::config::Config::load(None).unwrap_or_default();
         config.account = self.account.clone();
+        config.theme = self.theme.name.clone();
         for def in SETTINGS {
             if let Some(save_fn) = def.save {
                 save_fn(&mut config, (def.get)(self));
@@ -564,10 +574,12 @@ impl App {
     }
 
     /// Handle a key press while the settings overlay is open.
+    /// The last entry (index == SETTINGS.len()) is the Theme selector.
     pub fn handle_settings_key(&mut self, code: KeyCode) {
+        let max_index = SETTINGS.len(); // toggles 0..len-1, theme at len
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_index < SETTINGS.len() - 1 {
+                if self.settings_index < max_index {
                     self.settings_index += 1;
                 }
             }
@@ -575,11 +587,46 @@ impl App {
                 self.settings_index = self.settings_index.saturating_sub(1);
             }
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
-                self.toggle_setting(self.settings_index);
+                if self.settings_index == SETTINGS.len() {
+                    // Theme entry — open picker
+                    self.show_settings = false;
+                    self.save_settings();
+                    self.show_theme_picker = true;
+                    self.theme_index = self.available_themes.iter()
+                        .position(|t| t.name == self.theme.name)
+                        .unwrap_or(0);
+                } else {
+                    self.toggle_setting(self.settings_index);
+                }
             }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.show_settings = false;
                 self.save_settings();
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle a key press while the theme picker overlay is open.
+    pub fn handle_theme_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.theme_index < self.available_themes.len().saturating_sub(1) {
+                    self.theme_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.theme_index = self.theme_index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                if let Some(selected) = self.available_themes.get(self.theme_index) {
+                    self.theme = selected.clone();
+                    self.save_settings();
+                }
+                self.show_theme_picker = false;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.show_theme_picker = false;
             }
             _ => {}
         }
@@ -1733,6 +1780,10 @@ impl App {
             mouse_input_area: Rect::default(),
             mouse_input_prefix_len: 0,
             mouse_enabled: true,
+            theme: theme::default_theme(),
+            show_theme_picker: false,
+            theme_index: 0,
+            available_themes: theme::all_themes(),
         }
     }
 
@@ -2008,6 +2059,10 @@ impl App {
         }
         if self.show_search {
             self.handle_search_key(code);
+            return (true, None);
+        }
+        if self.show_theme_picker {
+            self.handle_theme_key(code);
             return (true, None);
         }
         if self.show_settings {
@@ -3689,6 +3744,12 @@ impl App {
                 self.contacts_filter.clear();
                 self.refresh_contacts_filter();
             }
+            InputAction::Theme => {
+                self.show_theme_picker = true;
+                self.theme_index = self.available_themes.iter()
+                    .position(|t| t.name == self.theme.name)
+                    .unwrap_or(0);
+            }
             InputAction::Group => {
                 self.group_menu_state = Some(GroupMenuState::Menu);
                 self.group_menu_index = 0;
@@ -4290,6 +4351,7 @@ impl App {
             || self.show_delete_confirm
             || self.group_menu_state.is_some()
             || self.show_message_request
+            || self.show_theme_picker
             || self.autocomplete_visible
     }
 

@@ -20,6 +20,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/settings", alias: "",    args: "",        description: "Open settings" },
     CommandInfo { name: "/disappearing", alias: "/dm", args: "<duration>", description: "Set disappearing timer (off/30s/5m/1h/1d/1w)" },
     CommandInfo { name: "/group",    alias: "/g",  args: "",        description: "Group management" },
+    CommandInfo { name: "/theme",    alias: "/t",  args: "",        description: "Change color theme" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
     CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit signal-tui" },
 ];
@@ -59,6 +60,8 @@ pub enum InputAction {
     SetDisappearing(String),
     /// Open group management menu
     Group,
+    /// Open theme picker
+    Theme,
     /// Unknown command
     Unknown(String),
 }
@@ -117,6 +120,7 @@ pub fn parse_input(input: &str) -> InputAction {
             }
         }
         "/group" | "/g" => InputAction::Group,
+        "/theme" | "/t" => InputAction::Theme,
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
