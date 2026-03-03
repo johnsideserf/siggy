@@ -647,6 +647,10 @@ async fn run_app(
 
     let mut last_expiry_sweep = Instant::now();
 
+    // Re-enable mouse capture — on Windows, spawning cmd.exe subprocesses
+    // (signal-cli.bat, check_account_registered) can reset console input mode flags.
+    execute!(terminal.backend_mut(), EnableMouseCapture)?;
+
     loop {
         // Force full redraw when active conversation changes (clears native image artifacts)
         if app.native_images && app.active_conversation != app.prev_active_conversation {
