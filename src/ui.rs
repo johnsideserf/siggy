@@ -117,6 +117,8 @@ pub struct LinkRegion {
     pub y: u16,
     pub url: String,
     pub text: String,
+    /// Display width in terminal columns (may differ from text.len() for Unicode).
+    pub width: u16,
     /// Background color from the buffer cell, if non-default (e.g. highlight).
     pub bg: Option<Color>,
 }
@@ -211,6 +213,7 @@ fn collect_link_regions(buf: &Buffer, area: Rect) -> Vec<LinkRegion> {
                 y,
                 url,
                 text,
+                width: x - start_x,
                 bg,
             });
         }

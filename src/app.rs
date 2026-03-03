@@ -4295,21 +4295,32 @@ impl App {
 
     /// Handle a mouse event. Returns an optional SendRequest (currently unused but future-proof).
     pub fn handle_mouse_event(&mut self, event: MouseEvent) -> Option<SendRequest> {
-        if !self.mouse_enabled || self.has_overlay() {
+        if !self.mouse_enabled {
             return None;
         }
+
+        // When overlays are open, translate scroll to j/k navigation and Esc on outside click
+        if self.has_overlay() {
+            match event.kind {
+                MouseEventKind::ScrollUp => self.handle_overlay_key(KeyCode::Char('k')),
+                MouseEventKind::ScrollDown => self.handle_overlay_key(KeyCode::Char('j')),
+                _ => (false, None),
+            };
+            return None;
+        }
+
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.handle_left_click(event.column, event.row);
             }
             MouseEventKind::ScrollUp => {
-                if self.is_in_rect(event.column, event.row, self.mouse_messages_area) {
+                if is_in_rect(event.column, event.row, self.mouse_messages_area) {
                     self.scroll_offset = self.scroll_offset.saturating_add(3);
                     self.focused_msg_index = None;
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.is_in_rect(event.column, event.row, self.mouse_messages_area) {
+                if is_in_rect(event.column, event.row, self.mouse_messages_area) {
                     self.scroll_offset = self.scroll_offset.saturating_sub(3);
                     self.focused_msg_index = None;
                 }
@@ -4322,8 +4333,7 @@ impl App {
     fn handle_left_click(&mut self, col: u16, row: u16) {
         // 1. Check link regions first (highest priority — links overlay everything)
         for link in &self.link_regions {
-            let text_len = link.text.len() as u16;
-            if row == link.y && col >= link.x && col < link.x + text_len {
+            if row == link.y && col >= link.x && col < link.x + link.width {
                 let url = link.url.clone();
                 self.open_url(&url);
                 return;
@@ -4332,7 +4342,7 @@ impl App {
 
         // 2. Sidebar click — switch conversation
         if let Some(inner) = self.mouse_sidebar_inner {
-            if self.is_in_rect(col, row, inner) {
+            if is_in_rect(col, row, inner) {
                 let index = (row - inner.y) as usize;
                 if index < self.conversation_order.len() {
                     let conv_id = self.conversation_order[index].clone();
@@ -4343,7 +4353,7 @@ impl App {
         }
 
         // 3. Input area click — position cursor and enter Insert mode
-        if self.is_in_rect(col, row, self.mouse_input_area) {
+        if is_in_rect(col, row, self.mouse_input_area) {
             self.mode = InputMode::Insert;
             // Content starts after left border (1) + prefix
             let content_start_col = self.mouse_input_area.x + 1 + self.mouse_input_prefix_len;
@@ -4351,19 +4361,20 @@ impl App {
                 let text_width = (self.mouse_input_area.width.saturating_sub(2)) as usize
                     - self.mouse_input_prefix_len as usize;
                 let input_scroll = self.input_cursor.saturating_sub(text_width);
-                let click_offset = (col - content_start_col) as usize;
-                self.input_cursor = (input_scroll + click_offset).min(self.input_buffer.len());
+                let target_col = (col - content_start_col) as usize;
+                // Walk characters to find the byte offset for the target column
+                let mut byte_pos = input_scroll;
+                for (col_pos, ch) in self.input_buffer[input_scroll..].chars().enumerate() {
+                    if col_pos >= target_col {
+                        break;
+                    }
+                    byte_pos += ch.len_utf8();
+                }
+                self.input_cursor = byte_pos.min(self.input_buffer.len());
             } else {
                 self.input_cursor = 0;
             }
         }
-    }
-
-    fn is_in_rect(&self, col: u16, row: u16, rect: Rect) -> bool {
-        col >= rect.x
-            && col < rect.x + rect.width
-            && row >= rect.y
-            && row < rect.y + rect.height
     }
 
     fn open_url(&mut self, url: &str) {
@@ -4371,6 +4382,14 @@ impl App {
             self.status_message = format!("Failed to open URL: {e}");
         }
     }
+}
+
+/// Simple point-in-rect hit test for mouse coordinates.
+fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
+    col >= rect.x
+        && col < rect.x + rect.width
+        && row >= rect.y
+        && row < rect.y + rect.height
 }
 
 /// Shorten a phone number for display: +15551234567 -> +1***4567
@@ -6626,13 +6645,15 @@ mod tests {
     }
 
     #[test]
-    fn mouse_overlay_ignores_events() {
+    fn mouse_overlay_scroll_navigates_list() {
         let mut app = test_app();
         app.show_settings = true;
+        app.settings_index = 0;
         app.mouse_messages_area = Rect::new(0, 0, 80, 20);
-        let result = app.handle_mouse_event(mouse_scroll_up(10, 10));
-        assert!(result.is_none());
-        assert_eq!(app.scroll_offset, 0);
+        // Scroll down in overlay should navigate settings list (j), not scroll messages
+        app.handle_mouse_event(mouse_scroll_down(10, 10));
+        assert_eq!(app.settings_index, 1);
+        assert_eq!(app.scroll_offset, 0); // messages not scrolled
     }
 
     #[test]
@@ -6690,6 +6711,21 @@ mod tests {
         app.handle_mouse_event(mouse_down(18, 21));
         assert_eq!(app.mode, InputMode::Insert);
         assert_eq!(app.input_cursor, 5);
+    }
+
+    #[test]
+    fn mouse_input_click_handles_multibyte() {
+        let mut app = test_app();
+        app.mode = InputMode::Normal;
+        app.input_buffer = "caf\u{e9} ok".to_string(); // "café ok" — é is 2 bytes
+        app.input_cursor = 0;
+        app.mouse_input_area = Rect::new(0, 0, 40, 3);
+        app.mouse_input_prefix_len = 2;
+
+        // Click at column 7: content_start = 0+1+2 = 3, target_col = 7-3 = 4
+        // Characters: c(1) a(1) f(1) é(2bytes,1col) → 4 chars = 5 bytes
+        app.handle_mouse_event(mouse_down(7, 1));
+        assert_eq!(app.input_cursor, 5); // byte offset of space after "café"
     }
 
     #[test]
