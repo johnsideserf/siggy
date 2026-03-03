@@ -1358,20 +1358,7 @@ fn parse_data_message(
         attachments = Vec::new();
     }
 
-    let mentions = data
-        .get("bodyRanges")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|r| {
-                    let start = r.get("start").and_then(|v| v.as_u64())? as usize;
-                    let length = r.get("length").and_then(|v| v.as_u64())? as usize;
-                    let uuid = r.get("mentionUuid").and_then(|v| v.as_str())?.to_string();
-                    Some(Mention { start, length, uuid })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mentions = parse_mentions(data);
 
     let text_styles = parse_text_styles(data);
 
@@ -1621,20 +1608,7 @@ fn parse_sent_sync(
         attachments = Vec::new();
     }
 
-    let mentions = sent
-        .get("bodyRanges")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|r| {
-                    let start = r.get("start").and_then(|v| v.as_u64())? as usize;
-                    let length = r.get("length").and_then(|v| v.as_u64())? as usize;
-                    let uuid = r.get("mentionUuid").and_then(|v| v.as_str())?.to_string();
-                    Some(Mention { start, length, uuid })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mentions = parse_mentions(sent);
 
     let text_styles = parse_text_styles(sent);
 
@@ -1933,6 +1907,32 @@ fn format_expiration(seconds: i64) -> String {
     };
     let plural = if n == 1 { "" } else { "s" };
     format!("Disappearing messages set to {n} {unit}{plural}")
+}
+
+/// Parse mentions from a data/sync message.
+/// signal-cli uses "mentions" array with "uuid" field; fall back to legacy "bodyRanges" with "mentionUuid".
+fn parse_mentions(data: &serde_json::Value) -> Vec<Mention> {
+    let arr = data
+        .get("mentions")
+        .and_then(|v| v.as_array())
+        .or_else(|| data.get("bodyRanges").and_then(|v| v.as_array()));
+
+    arr.map(|items| {
+        items
+            .iter()
+            .filter_map(|r| {
+                let start = r.get("start").and_then(|v| v.as_u64())? as usize;
+                let length = r.get("length").and_then(|v| v.as_u64())? as usize;
+                let uuid = r
+                    .get("uuid")
+                    .or_else(|| r.get("mentionUuid"))
+                    .and_then(|v| v.as_str())?
+                    .to_string();
+                Some(Mention { start, length, uuid })
+            })
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Parse text styles from a data message's textStyles array (or bodyRanges style entries).
@@ -2379,8 +2379,8 @@ mod tests {
                     "dataMessage": {
                         "timestamp": 1700000000000_i64,
                         "message": "\u{FFFC} check this out",
-                        "bodyRanges": [
-                            {"start": 0, "length": 1, "mentionUuid": "abc-def-123"}
+                        "mentions": [
+                            {"start": 0, "length": 1, "uuid": "abc-def-123"}
                         ]
                     }
                 }
@@ -2416,8 +2416,8 @@ mod tests {
                             "timestamp": 1700000000000_i64,
                             "destinationNumber": "+15559876543",
                             "message": "Hey \u{FFFC}!",
-                            "bodyRanges": [
-                                {"start": 4, "length": 1, "mentionUuid": "xyz-456"}
+                            "mentions": [
+                                {"start": 4, "length": 1, "uuid": "xyz-456"}
                             ]
                         }
                     }
