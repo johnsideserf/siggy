@@ -77,6 +77,21 @@ fn truncate(s: &str, max_width: usize) -> String {
     }
 }
 
+/// Format seconds as a compact duration: "30s", "5m", "1h", "1d", "1w".
+fn format_compact_duration(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{}h", seconds / 3600)
+    } else if seconds < 604800 {
+        format!("{}d", seconds / 86400)
+    } else {
+        format!("{}w", seconds / 604800)
+    }
+}
+
 /// Build a centered separator line: `───── label ─────`
 fn build_separator(label: &str, width: usize, style: Style) -> Line<'static> {
     let pad_total = width.saturating_sub(label.len());
@@ -608,28 +623,44 @@ fn draw_chat_area(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
 }
 
 fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
-    let (title_left, title_right) = match &app.active_conversation {
+    let (title_spans, title_right) = match &app.active_conversation {
         Some(id) => {
             let conv = &app.conversations[id];
             let prefix = if conv.is_group { " #" } else { " " };
-            let left = format!("{prefix}{} ", conv.name);
+            let mut spans = vec![
+                Span::styled(
+                    format!("{prefix}{} ", conv.name),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+            ];
+
+            // Timer indicator when disappearing messages are enabled
+            if conv.expiration_timer > 0 {
+                let timer_label = format_compact_duration(conv.expiration_timer);
+                spans.push(Span::styled(
+                    format!("\u{23F1} {timer_label} "),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
 
             // Scroll indicator in title
             let right = if app.scroll_offset > 0 {
-                format!(" ↑ {} more ", app.scroll_offset)
+                format!(" \u{2191} {} more ", app.scroll_offset)
             } else {
                 String::new()
             };
-            (left, right)
+            (spans, right)
         }
-        None => (" signal-tui ".to_string(), String::new()),
+        None => (vec![Span::styled(
+            " signal-tui ".to_string(),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )], String::new()),
     };
 
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(title_left)
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .title(Line::from(title_spans));
 
     if !title_right.is_empty() {
         block = block
@@ -749,10 +780,17 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
 
-            spans.push(Span::styled(
-                format!("[{}] ", time),
-                Style::default().fg(Color::DarkGray),
-            ));
+            if msg.expires_in_seconds > 0 {
+                spans.push(Span::styled(
+                    format!("\u{23F1}[{}] ", time),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!("[{}] ", time),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
             spans.push(Span::styled(
                 format!("<{}>", msg.sender),
                 Style::default()

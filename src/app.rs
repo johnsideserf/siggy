@@ -86,6 +86,10 @@ pub struct DisplayMessage {
     pub is_deleted: bool,
     /// Phone number / ID of the sender (for wire protocol; "you" for outgoing)
     pub sender_id: String,
+    /// Disappearing message timer (seconds, 0 = no expiration)
+    pub expires_in_seconds: i64,
+    /// When the expiration countdown started (epoch ms, 0 = not started)
+    pub expiration_start_ms: i64,
 }
 
 impl DisplayMessage {
@@ -105,6 +109,8 @@ pub struct Conversation {
     pub messages: Vec<DisplayMessage>,
     pub unread: usize,
     pub is_group: bool,
+    /// Disappearing message timer in seconds (0 = off)
+    pub expiration_timer: i64,
 }
 
 /// Application state
@@ -340,6 +346,11 @@ pub enum SendRequest {
     ReadReceipt {
         recipient: String,
         timestamps: Vec<i64>,
+    },
+    UpdateExpiration {
+        conv_id: String,
+        is_group: bool,
+        seconds: i64,
     },
 }
 
@@ -1864,6 +1875,18 @@ impl App {
             SignalEvent::SystemMessage { conv_id, body, timestamp, timestamp_ms } => {
                 self.handle_system_message(&conv_id, &body, timestamp, timestamp_ms);
             }
+            SignalEvent::ExpirationTimerChanged { conv_id, seconds, body, timestamp, timestamp_ms } => {
+                // Update conversation timer
+                let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                let conv_name = self.contact_names.get(&conv_id).cloned().unwrap_or_else(|| conv_id.to_string());
+                self.get_or_create_conversation(&conv_id, &conv_name, is_group);
+                if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                    conv.expiration_timer = seconds;
+                }
+                db_warn(self.db.update_expiration_timer(&conv_id, seconds), "update_expiration_timer");
+                // Insert system message
+                self.handle_system_message(&conv_id, &body, timestamp, timestamp_ms);
+            }
             SignalEvent::ReadSyncReceived { read_messages } => {
                 self.handle_read_sync(read_messages);
             }
@@ -1931,6 +1954,25 @@ impl App {
         // Outgoing synced messages already have a server timestamp; incoming messages have no status
         let msg_status = if msg.is_outgoing { Some(MessageStatus::Sent) } else { None };
 
+        // Disappearing messages: extract expiration metadata
+        let msg_expires_in = msg.expires_in_seconds;
+        let msg_expiration_start = if msg_expires_in > 0 {
+            // For received messages, start countdown now; for sent sync, use message timestamp
+            if msg.is_outgoing { msg_ts_ms } else { Utc::now().timestamp_millis() }
+        } else {
+            0
+        };
+
+        // Keep conversation's expiration_timer in sync with incoming messages
+        if msg_expires_in > 0 {
+            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                if conv.expiration_timer != msg_expires_in {
+                    conv.expiration_timer = msg_expires_in;
+                    db_warn(self.db.update_expiration_timer(&conv_id, msg_expires_in), "update_expiration_timer");
+                }
+            }
+        }
+
         // Resolve @mentions before the push closure borrows self mutably
         let resolved_body = msg.body.as_ref().map(|body| {
             self.resolve_mentions(body, &msg.mentions)
@@ -1978,6 +2020,8 @@ impl App {
                     is_edited: false,
                     is_deleted: false,
                     sender_id: sender_id.clone(),
+                    expires_in_seconds: msg_expires_in,
+                    expiration_start_ms: msg_expiration_start,
                 });
                 // Bump last_read_index if we inserted before the read marker
                 if let Some(read_idx) = self.last_read_index.get_mut(&conv_id) {
@@ -1987,12 +2031,14 @@ impl App {
                 }
             }
             db_warn(
-                self.db.insert_message_full(
+                self.db.insert_message_with_expiry(
                     &conv_id, &sender_display, &ts_rfc3339, &body, false, msg_status, msg_ts_ms,
                     &sender_id,
                     wire_quote_author.as_deref(),
                     wire_quote_body.as_deref(),
                     wire_quote_ts,
+                    msg_expires_in,
+                    msg_expiration_start,
                 ),
                 "insert_message",
             );
@@ -2096,6 +2142,8 @@ impl App {
                 is_edited: false,
                 is_deleted: false,
                 sender_id: String::new(),
+                expires_in_seconds: 0,
+                expiration_start_ms: 0,
             });
             // Bump last_read_index if we inserted before the read marker
             if let Some(read_idx) = self.last_read_index.get_mut(conv_id) {
@@ -2109,6 +2157,37 @@ impl App {
             self.db.insert_message(conv_id, "", &ts_rfc3339, body, true, None, timestamp_ms),
             "insert_system_message",
         );
+    }
+
+    /// Remove expired disappearing messages from memory and DB.
+    /// Returns true if any messages were removed (caller should re-render).
+    pub fn sweep_expired_messages(&mut self) -> bool {
+        let now_ms = Utc::now().timestamp_millis();
+        let mut removed = false;
+
+        for conv in self.conversations.values_mut() {
+            let before = conv.messages.len();
+            conv.messages.retain(|m| {
+                if m.expires_in_seconds > 0 && m.expiration_start_ms > 0 {
+                    let expiry = m.expiration_start_ms + m.expires_in_seconds * 1000;
+                    expiry >= now_ms
+                } else {
+                    true
+                }
+            });
+            if conv.messages.len() < before {
+                removed = true;
+            }
+        }
+
+        // Clean up DB
+        if let Ok(n) = self.db.delete_expired_messages(now_ms) {
+            if n > 0 {
+                removed = true;
+            }
+        }
+
+        removed
     }
 
     fn handle_reaction(
@@ -2800,6 +2879,7 @@ impl App {
                     messages: Vec::new(),
                     unread: 0,
                     is_group,
+                    expiration_timer: 0,
                 },
             );
             self.conversation_order.push(id.to_string());
@@ -2921,6 +3001,11 @@ impl App {
                     let quote_author = self.reply_target.as_ref().map(|(phone, _, _)| phone.clone());
                     let quote_body = self.reply_target.as_ref().map(|(_, body, _)| body.clone());
 
+                    // Outgoing messages inherit the conversation's expiration timer
+                    let out_expires = self.conversations.get(&conv_id)
+                        .map(|c| c.expiration_timer).unwrap_or(0);
+                    let out_expiry_start = if out_expires > 0 { local_ts_ms } else { 0 };
+
                     if let Some(conv) = self.conversations.get_mut(&conv_id) {
                         conv.messages.push(DisplayMessage {
                             sender: "you".to_string(),
@@ -2938,9 +3023,11 @@ impl App {
                             is_edited: false,
                             is_deleted: false,
                             sender_id: self.account.clone(),
+                            expires_in_seconds: out_expires,
+                            expiration_start_ms: out_expiry_start,
                         });
                     }
-                    db_warn(self.db.insert_message_full(
+                    db_warn(self.db.insert_message_with_expiry(
                         &conv_id,
                         "you",
                         &now.to_rfc3339(),
@@ -2952,6 +3039,8 @@ impl App {
                         quote_author.as_deref(),
                         quote_body.as_deref(),
                         quote_timestamp,
+                        out_expires,
+                        out_expiry_start,
                     ), "insert_message");
                     self.scroll_offset = 0;
                     self.focused_msg_index = None;
@@ -3054,6 +3143,32 @@ impl App {
             }
             InputAction::Help => {
                 self.show_help = true;
+            }
+            InputAction::SetDisappearing(duration_str) => {
+                match input::parse_duration_to_seconds(&duration_str) {
+                    Ok(seconds) => {
+                        if let Some(ref conv_id) = self.active_conversation {
+                            let conv_id = conv_id.clone();
+                            let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                            // Update locally immediately
+                            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                                conv.expiration_timer = seconds;
+                            }
+                            db_warn(self.db.update_expiration_timer(&conv_id, seconds), "update_expiration_timer");
+                            // Return a SendRequest to trigger the RPC in main.rs
+                            return Some(SendRequest::UpdateExpiration {
+                                conv_id,
+                                is_group,
+                                seconds,
+                            });
+                        } else {
+                            self.status_message = "No active conversation".to_string();
+                        }
+                    }
+                    Err(msg) => {
+                        self.status_message = msg;
+                    }
+                }
             }
             InputAction::Unknown(msg) => {
                 self.status_message = msg;
@@ -3702,6 +3817,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         assert_eq!(app.conversations["+15551234567"].name, "+15551234567");
@@ -3732,6 +3848,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         assert_eq!(app.conversations["+1"].name, "Alice");
@@ -3770,6 +3887,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
@@ -3802,6 +3920,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
@@ -3835,6 +3954,7 @@ mod tests {
                 mentions: vec![],
                 text_styles: vec![],
                 quote: None,
+                expires_in_seconds: 0,
             };
             app.handle_signal_event(SignalEvent::MessageReceived(msg));
         }
@@ -4320,6 +4440,8 @@ mod tests {
                 is_edited: false,
                 is_deleted: false,
                 sender_id: String::new(),
+                expires_in_seconds: 0,
+                expiration_start_ms: 0,
             });
         }
 
@@ -4370,6 +4492,8 @@ mod tests {
                 is_edited: false,
                 is_deleted: false,
                 sender_id: String::new(),
+                expires_in_seconds: 0,
+                expiration_start_ms: 0,
             });
         }
 
@@ -4411,6 +4535,8 @@ mod tests {
                 is_edited: false,
                 is_deleted: false,
                 sender_id: String::new(),
+                expires_in_seconds: 0,
+                expiration_start_ms: 0,
             });
         }
 
@@ -4452,6 +4578,8 @@ mod tests {
                 is_edited: false,
                 is_deleted: false,
                 sender_id: String::new(),
+                expires_in_seconds: 0,
+                expiration_start_ms: 0,
             });
         }
 
@@ -4484,6 +4612,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
@@ -4517,6 +4646,8 @@ mod tests {
                 is_edited: false,
                 is_deleted: false,
                 sender_id: String::new(),
+                expires_in_seconds: 0,
+                expiration_start_ms: 0,
             });
         }
 
@@ -4568,6 +4699,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         let ts_ms = app.conversations["+1"].messages[0].timestamp_ms;
@@ -4606,6 +4738,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         let ts_ms = app.conversations["+1"].messages[0].timestamp_ms;
@@ -4652,6 +4785,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         let ts_ms = app.conversations["+1"].messages[0].timestamp_ms;
@@ -4705,6 +4839,8 @@ mod tests {
                 is_edited: false,
                 is_deleted: false,
                 sender_id: String::new(),
+                expires_in_seconds: 0,
+                expiration_start_ms: 0,
             });
         }
 
@@ -4771,6 +4907,8 @@ mod tests {
             is_edited: false,
             is_deleted: false,
             sender_id: "+3".to_string(), // Charlie's phone — not in contacts
+            expires_in_seconds: 0,
+            expiration_start_ms: 0,
         });
         conv.messages.push(DisplayMessage {
             sender: "Alice".to_string(),
@@ -4793,6 +4931,8 @@ mod tests {
             is_edited: false,
             is_deleted: false,
             sender_id: "+1".to_string(),
+            expires_in_seconds: 0,
+            expiration_start_ms: 0,
         });
         // A message with a quote from a non-contact
         conv.messages.push(DisplayMessage {
@@ -4811,6 +4951,8 @@ mod tests {
             is_edited: false,
             is_deleted: false,
             sender_id: "+10000000000".to_string(),
+            expires_in_seconds: 0,
+            expiration_start_ms: 0,
         });
 
         // Contact list arrives — only +2 is a formal contact
@@ -5030,6 +5172,7 @@ mod tests {
             mentions: vec![Mention { start: 0, length: 1, uuid: "uuid-bob".to_string() }],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
@@ -5197,6 +5340,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg1));
 
@@ -5222,6 +5366,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg2));
 
@@ -5250,6 +5395,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg("one", 1000)));
         app.handle_signal_event(SignalEvent::MessageReceived(msg("two", 2000)));
@@ -5286,6 +5432,7 @@ mod tests {
             mentions: vec![],
             text_styles: vec![],
             quote: None,
+            expires_in_seconds: 0,
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg("one", 1000)));
         app.handle_signal_event(SignalEvent::MessageReceived(msg("two", 2000)));

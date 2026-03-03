@@ -39,6 +39,12 @@
 - [x] `/join` autocomplete (contacts and groups with Tab completion)
 - [x] Send typing indicators (auto-start/stop on keypress)
 - [x] Send read receipts (automatic on conversation view, configurable)
+- [x] System messages (missed calls, safety number changes, group updates, expiration timer)
+- [x] Message action menu (Enter in Normal mode, contextual actions on focused message)
+- [x] Text styling (bold, italic, strikethrough, monospace, spoiler rendering)
+- [x] Display stickers (shown as `[Sticker: emoji]` in chat)
+- [x] View-once messages (shown as `[View-once message]` placeholder)
+- [x] Cross-device read sync (sync read state across linked devices)
 
 ## Up next
 
@@ -63,18 +69,12 @@
 - [ ] Link previews -- display URL previews for shared links (#63)
 - [ ] Polls -- create and vote in Signal polls (#64)
 - [ ] Pinned messages -- view and manage pinned messages (#65)
-- [ ] Text styling -- render bold, italic, strikethrough, monospace, and
-  spoiler formatting (#66)
-- [ ] Cross-device read sync -- sync read state across linked devices (#71)
 
 ### Low priority
 
 - [ ] Publish to crates.io (#11)
-- [ ] Display stickers (#67)
-- [ ] View-once messages (#68)
 - [ ] Update profile from TUI (#69)
 - [ ] Identity key verification (#70)
-- [ ] Missed call notifications (#72)
 - [ ] Multi-line message input (Shift+Enter for newlines)
 - [ ] Message history pagination (scroll-up to load older messages)
 - [ ] Scroll position memory per conversation

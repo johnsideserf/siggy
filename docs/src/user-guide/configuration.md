@@ -59,7 +59,7 @@ toggles for runtime settings:
 - Notification toggles (direct / group)
 - Sidebar visibility
 - Inline image previews
-- Read receipts / receipt colors / nerd font icons
+- Show read receipts / receipt colors / nerd font icons
 - Verbose reactions
 - Send read receipts
 

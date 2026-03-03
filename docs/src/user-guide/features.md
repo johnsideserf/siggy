@@ -125,11 +125,65 @@ Press Enter to jump to the message in context.
 After searching, use `n`/`N` in Normal mode to cycle through matches without
 re-opening the overlay.
 
+## Text styling
+
+Signal formatting is rendered in the chat area:
+
+- **Bold** -- displayed with terminal bold
+- **Italic** -- displayed with terminal italic
+- **Strikethrough** -- displayed with terminal strikethrough
+- **Monospace** -- displayed in gray
+- **Spoiler** -- hidden behind block characters (`████`)
+
+Styles compose correctly with @mentions and link highlighting.
+
+## Sticker messages
+
+Incoming stickers display as `[Sticker: emoji]` in the chat area (e.g.
+`[Sticker: 👍]`). If the sticker has no associated emoji, it shows as
+`[Sticker]`.
+
+## View-once messages
+
+View-once messages display as `[View-once message]` with any attachments
+suppressed, respecting the sender's ephemeral intent.
+
+## System messages
+
+Certain Signal events display as system messages (dimmed, centered) in the chat:
+
+- **Missed calls** -- "Missed voice call" / "Missed video call"
+- **Safety number changes** -- warning when a contact's safety number changes
+- **Group updates** -- group metadata changes (member adds/removes)
+- **Disappearing message timer** -- e.g. "Disappearing messages set to 1 day"
+
+## Message action menu
+
+Press `Enter` in Normal mode on a focused message to open a contextual action
+menu. Available actions depend on the message type:
+
+| Action | Key | Available on |
+|---|---|---|
+| Reply | `q` | Non-deleted messages |
+| Edit | `e` | Your own outgoing messages |
+| React | `r` | All messages |
+| Copy | `y` | All messages |
+| Delete | `d` | Non-deleted messages |
+
+Navigate with `j`/`k`, press Enter to execute, or press the shortcut key
+directly. Press `Esc` to close.
+
 ## Read receipts
 
 signal-tui sends read receipts to message senders when you view a conversation,
 letting them know you've read their messages. This can be toggled off via
 `/settings` > "Send read receipts".
+
+## Cross-device read sync
+
+When you read messages on your phone or another linked device, signal-tui
+receives the read sync and marks those conversations as read. Unread counts
+update automatically.
 
 ## Demo mode
 

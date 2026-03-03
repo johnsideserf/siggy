@@ -513,6 +513,64 @@ impl SignalClient {
         Ok(())
     }
 
+    /// Set the disappearing message timer for a 1:1 contact.
+    pub async fn send_update_contact_expiration(
+        &self,
+        recipient: &str,
+        seconds: i64,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("updateContact".to_string(), Instant::now()));
+        }
+        let params = serde_json::json!({
+            "recipient": recipient,
+            "expiration": seconds,
+            "account": self.account,
+        });
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "updateContact".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send updateContact to signal-cli stdin")?;
+        Ok(())
+    }
+
+    /// Set the disappearing message timer for a group.
+    pub async fn send_update_group_expiration(
+        &self,
+        group_id: &str,
+        seconds: i64,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
+        }
+        let params = serde_json::json!({
+            "groupId": group_id,
+            "expiration": seconds,
+            "account": self.account,
+        });
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "updateGroup".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send updateGroup to signal-cli stdin")?;
+        Ok(())
+    }
+
     /// Returns accumulated stderr output from the signal-cli process.
     pub fn stderr_output(&self) -> String {
         self.stderr_buffer.lock().map(|buf| buf.clone()).unwrap_or_default()
@@ -603,7 +661,7 @@ fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&st
                 .collect();
             Some(SignalEvent::GroupList(groups))
         }
-        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" => None, // fire-and-forget, no action needed
+        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" | "updateContact" | "updateGroup" => None, // fire-and-forget, no action needed
         _ => None,
     }
 }
@@ -843,7 +901,7 @@ fn parse_data_message(
         });
     }
 
-    // Expiration timer update → system message
+    // Expiration timer update → ExpirationTimerChanged event
     if data.get("isExpirationUpdate").and_then(|v| v.as_bool()).unwrap_or(false) {
         let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
         let conv_id = group_id
@@ -854,8 +912,9 @@ fn parse_data_message(
         let seconds = data.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
         let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
         let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
-        return Some(SignalEvent::SystemMessage {
+        return Some(SignalEvent::ExpirationTimerChanged {
             conv_id,
+            seconds,
             body: format_expiration(seconds),
             timestamp,
             timestamp_ms,
@@ -970,6 +1029,8 @@ fn parse_data_message(
         Some((q_ts, q_author, q_body))
     });
 
+    let expires_in_seconds = data.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+
     Some(SignalEvent::MessageReceived(SignalMessage {
         source,
         source_name,
@@ -983,6 +1044,7 @@ fn parse_data_message(
         mentions,
         text_styles,
         quote,
+        expires_in_seconds,
     }))
 }
 
@@ -1024,7 +1086,7 @@ fn parse_sent_sync(
         });
     }
 
-    // Expiration timer update (synced) → system message
+    // Expiration timer update (synced) → ExpirationTimerChanged event
     if sent.get("isExpirationUpdate").and_then(|v| v.as_bool()).unwrap_or(false) {
         let group_id = sent.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
         let conv_id = group_id
@@ -1041,8 +1103,9 @@ fn parse_sent_sync(
         let seconds = sent.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
         let timestamp_ms = sent.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
         let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
-        return Some(SignalEvent::SystemMessage {
+        return Some(SignalEvent::ExpirationTimerChanged {
             conv_id,
+            seconds,
             body: format_expiration(seconds),
             timestamp,
             timestamp_ms,
@@ -1157,6 +1220,8 @@ fn parse_sent_sync(
         Some((q_ts, q_author, q_body))
     });
 
+    let expires_in_seconds = sent.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+
     Some(SignalEvent::MessageReceived(SignalMessage {
         source,
         source_name: None,
@@ -1170,6 +1235,7 @@ fn parse_sent_sync(
         mentions,
         text_styles,
         quote,
+        expires_in_seconds,
     }))
 }
 
@@ -2159,11 +2225,12 @@ mod tests {
         };
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::SystemMessage { conv_id, body, .. } => {
+            SignalEvent::ExpirationTimerChanged { conv_id, seconds, body, .. } => {
                 assert_eq!(conv_id, "+15551234567");
+                assert_eq!(seconds, 604800);
                 assert_eq!(body, "Disappearing messages set to 1 week");
             }
-            _ => panic!("Expected SystemMessage, got {:?}", event),
+            _ => panic!("Expected ExpirationTimerChanged, got {:?}", event),
         }
     }
 
@@ -2189,10 +2256,11 @@ mod tests {
         };
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::SystemMessage { body, .. } => {
+            SignalEvent::ExpirationTimerChanged { seconds, body, .. } => {
+                assert_eq!(seconds, 0);
                 assert_eq!(body, "Disappearing messages disabled");
             }
-            _ => panic!("Expected SystemMessage, got {:?}", event),
+            _ => panic!("Expected ExpirationTimerChanged, got {:?}", event),
         }
     }
 

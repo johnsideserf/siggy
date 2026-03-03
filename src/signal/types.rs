@@ -102,6 +102,13 @@ pub enum SignalEvent {
         timestamp: DateTime<Utc>,
         timestamp_ms: i64,
     },
+    ExpirationTimerChanged {
+        conv_id: String,
+        seconds: i64,
+        body: String,
+        timestamp: DateTime<Utc>,
+        timestamp_ms: i64,
+    },
     ReadSyncReceived {
         read_messages: Vec<(String, i64)>,
     },
@@ -129,6 +136,8 @@ pub struct SignalMessage {
     pub text_styles: Vec<TextStyle>,
     /// Quoted reply context: (timestamp_ms, author_phone, body)
     pub quote: Option<(i64, String, String)>,
+    /// Disappearing message timer (seconds, 0 = no expiration)
+    pub expires_in_seconds: i64,
 }
 
 /// An attachment on a message

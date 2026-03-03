@@ -16,6 +16,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/search",   alias: "/s",  args: "<query>", description: "Search messages" },
     CommandInfo { name: "/contacts", alias: "/c",  args: "",        description: "Browse contacts" },
     CommandInfo { name: "/settings", alias: "",    args: "",        description: "Open settings" },
+    CommandInfo { name: "/disappearing", alias: "/dm", args: "<duration>", description: "Set disappearing timer (off/30s/5m/1h/1d/1w)" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
     CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit signal-tui" },
 ];
@@ -47,6 +48,8 @@ pub enum InputAction {
     Attach,
     /// Search messages in current (or all) conversations
     Search(String),
+    /// Set disappearing message timer (raw duration string)
+    SetDisappearing(String),
     /// Unknown command
     Unknown(String),
 }
@@ -95,11 +98,45 @@ pub fn parse_input(input: &str) -> InputAction {
         }
         "/contacts" | "/c" => InputAction::Contacts,
         "/settings" => InputAction::Settings,
+        "/disappearing" | "/dm" => {
+            if arg.is_empty() {
+                InputAction::Unknown("/disappearing requires a duration (e.g. off, 30s, 5m, 1h, 1d, 1w)".to_string())
+            } else {
+                InputAction::SetDisappearing(arg)
+            }
+        }
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
 }
 
+
+/// Parse a human-readable duration string into seconds.
+/// Returns Ok(seconds) or Err(message) for invalid input.
+pub fn parse_duration_to_seconds(s: &str) -> Result<i64, String> {
+    let s = s.trim().to_lowercase();
+    if s == "off" || s == "0" {
+        return Ok(0);
+    }
+    // Try parsing as number + suffix
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix('s') {
+        (n, 1i64)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3600)
+    } else if let Some(n) = s.strip_suffix('d') {
+        (n, 86400)
+    } else if let Some(n) = s.strip_suffix('w') {
+        (n, 604800)
+    } else {
+        return Err(format!("Invalid duration: {s}. Use off/30s/5m/1h/1d/1w/4w"));
+    };
+    match num_str.parse::<i64>() {
+        Ok(n) if n > 0 => Ok(n * multiplier),
+        _ => Err(format!("Invalid duration: {s}. Use off/30s/5m/1h/1d/1w/4w")),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -256,5 +293,64 @@ mod tests {
     fn unknown_command() {
         let InputAction::Unknown(s) = parse_input("/foo") else { panic!("expected Unknown") };
         assert!(s.contains("/foo"));
+    }
+
+    #[test]
+    fn disappearing_command() {
+        let InputAction::SetDisappearing(s) = parse_input("/disappearing 30s") else { panic!("expected SetDisappearing") };
+        assert_eq!(s, "30s");
+    }
+
+    #[test]
+    fn disappearing_alias() {
+        let InputAction::SetDisappearing(s) = parse_input("/dm off") else { panic!("expected SetDisappearing") };
+        assert_eq!(s, "off");
+    }
+
+    #[test]
+    fn disappearing_without_arg() {
+        let InputAction::Unknown(s) = parse_input("/disappearing") else { panic!("expected Unknown") };
+        assert!(s.contains("requires"));
+    }
+
+    #[test]
+    fn duration_parser_off() {
+        assert_eq!(parse_duration_to_seconds("off").unwrap(), 0);
+        assert_eq!(parse_duration_to_seconds("0").unwrap(), 0);
+    }
+
+    #[test]
+    fn duration_parser_seconds() {
+        assert_eq!(parse_duration_to_seconds("30s").unwrap(), 30);
+    }
+
+    #[test]
+    fn duration_parser_minutes() {
+        assert_eq!(parse_duration_to_seconds("5m").unwrap(), 300);
+    }
+
+    #[test]
+    fn duration_parser_hours() {
+        assert_eq!(parse_duration_to_seconds("1h").unwrap(), 3600);
+        assert_eq!(parse_duration_to_seconds("8h").unwrap(), 28800);
+    }
+
+    #[test]
+    fn duration_parser_days() {
+        assert_eq!(parse_duration_to_seconds("1d").unwrap(), 86400);
+    }
+
+    #[test]
+    fn duration_parser_weeks() {
+        assert_eq!(parse_duration_to_seconds("1w").unwrap(), 604800);
+        assert_eq!(parse_duration_to_seconds("4w").unwrap(), 2419200);
+    }
+
+    #[test]
+    fn duration_parser_invalid() {
+        assert!(parse_duration_to_seconds("abc").is_err());
+        assert!(parse_duration_to_seconds("").is_err());
+        assert!(parse_duration_to_seconds("0s").is_err());
+        assert!(parse_duration_to_seconds("-1h").is_err());
     }
 }

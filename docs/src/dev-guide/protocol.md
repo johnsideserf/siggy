@@ -113,6 +113,10 @@ Incoming `receive` envelopes may also contain:
 | `dataMessage.quote` | Quoted reply metadata | `quote` field on `SignalMessage` |
 | `editMessage` | Edited message | `SignalEvent::EditReceived` |
 | `syncMessage.sentMessage` | Outgoing sync (own messages from other devices) | Same as above, with `is_outgoing = true` |
+| `syncMessage.readMessages` | Read sync from other devices | `SignalEvent::ReadSyncReceived` |
+| `dataMessage.sticker` | Sticker message | Body set to `[Sticker: emoji]` |
+| `dataMessage.textStyles` / `bodyRanges` | Text formatting (bold, italic, etc.) | `text_styles` field on `SignalMessage` |
+| `callMessage` | Missed call notification | `SignalEvent::SystemMessage` |
 
 ## Parsing logic
 

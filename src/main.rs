@@ -10,7 +10,7 @@ mod signal;
 mod ui;
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
@@ -510,6 +510,28 @@ async fn dispatch_send(
                 crate::debug_log::logf(format_args!("read receipt error: {e}"));
             }
         }
+        SendRequest::UpdateExpiration { conv_id, is_group, seconds } => {
+            let result = if is_group {
+                signal_client.send_update_group_expiration(&conv_id, seconds).await
+            } else {
+                signal_client.send_update_contact_expiration(&conv_id, seconds).await
+            };
+            if let Err(e) = result {
+                app.status_message = format!("expiration error: {e}");
+            } else {
+                let label = if seconds == 0 {
+                    "Disappearing messages disabled".to_string()
+                } else {
+                    let (n, unit) = if seconds < 60 { (seconds, "s") }
+                        else if seconds < 3600 { (seconds / 60, "m") }
+                        else if seconds < 86400 { (seconds / 3600, "h") }
+                        else if seconds < 604800 { (seconds / 86400, "d") }
+                        else { (seconds / 604800, "w") };
+                    format!("Disappearing messages set to {n}{unit}")
+                };
+                app.status_message = label;
+            }
+        }
     }
 }
 
@@ -534,10 +556,15 @@ async fn run_app(
     app.load_from_db()?;
     app.set_connected();
 
+    // Purge messages that expired while the app was closed
+    app.sweep_expired_messages();
+
     // Ask primary device to sync contacts/groups, then fetch them (best-effort)
     let _ = signal_client.send_sync_request().await;
     let _ = signal_client.list_contacts().await;
     let _ = signal_client.list_groups().await;
+
+    let mut last_expiry_sweep = Instant::now();
 
     loop {
         // Force full redraw when active conversation changes (clears native image artifacts)
@@ -630,6 +657,12 @@ async fn run_app(
         // Drain pending typing stop from conversation switches
         if let Some(typing_stop) = app.pending_typing_stop.take() {
             dispatch_send(signal_client, &mut app, typing_stop).await;
+        }
+
+        // Periodic sweep of expired disappearing messages (every 10s)
+        if last_expiry_sweep.elapsed() >= Duration::from_secs(10) {
+            app.sweep_expired_messages();
+            last_expiry_sweep = Instant::now();
         }
 
         // Terminal bell on new messages in background conversations
@@ -754,6 +787,8 @@ fn populate_demo_data(app: &mut App) {
             is_edited: false,
             is_deleted: false,
             sender_id: String::new(),
+            expires_in_seconds: 0,
+            expiration_start_ms: 0,
         }
     };
 
@@ -772,6 +807,7 @@ fn populate_demo_data(app: &mut App) {
         ],
         unread: 0,
         is_group: false,
+        expiration_timer: 0,
     };
 
     // --- Bob: code review ---
@@ -786,6 +822,7 @@ fn populate_demo_data(app: &mut App) {
         ],
         unread: 0,
         is_group: false,
+        expiration_timer: 0,
     };
 
     // --- Carol: single unread ---
@@ -798,6 +835,7 @@ fn populate_demo_data(app: &mut App) {
         ],
         unread: 1,
         is_group: false,
+        expiration_timer: 0,
     };
 
     // --- Dave: older meetup conversation ---
@@ -812,6 +850,7 @@ fn populate_demo_data(app: &mut App) {
         ],
         unread: 0,
         is_group: false,
+        expiration_timer: 0,
     };
 
     // --- #Rust Devs: group technical discussion with @mentions ---
@@ -832,6 +871,7 @@ fn populate_demo_data(app: &mut App) {
         ],
         unread: 0,
         is_group: true,
+        expiration_timer: 0,
     };
 
     // --- #Family: group with unread ---
@@ -848,6 +888,7 @@ fn populate_demo_data(app: &mut App) {
         ],
         unread: 2,
         is_group: true,
+        expiration_timer: 0,
     };
 
     // Insert conversations and set ordering
