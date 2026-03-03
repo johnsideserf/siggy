@@ -45,27 +45,18 @@
 - [x] Display stickers (shown as `[Sticker: emoji]` in chat)
 - [x] View-once messages (shown as `[View-once message]` placeholder)
 - [x] Cross-device read sync (sync read state across linked devices)
-
-## Up next
-
-- [ ] **Group management** -- create groups, add/remove members, view member
-  list (#26)
-- [ ] **Disappearing messages** -- honor disappearing message timers, show
-  countdown, set timer per conversation (#61)
-- [ ] **Message requests** -- accept or reject message requests from unknown
-  senders (#62)
+- [x] Disappearing messages (honor timers, countdown display, `/disappearing` command)
+- [x] Group management (`/group` command: view/add/remove members, rename, create, leave)
+- [x] Message requests (detect unknown senders, accept/delete with banner UI)
+- [x] Block/unblock contacts (`/block`, `/unblock` commands)
+- [x] Mouse support (click sidebar, scroll messages, click input bar, overlay scroll)
+- [x] Color themes (selectable themes via `/theme` or `/settings`)
+- [x] Desktop notifications (OS-native via `notify-rust`, configurable toggle)
 
 ## Future
 
-### High priority
-
-- [ ] Desktop notifications -- OS-native notifications beyond terminal bell (#19)
-
 ### Medium priority
 
-- [ ] Color themes -- custom color schemes beyond the default palette (#18)
-- [ ] Mouse support -- clickable sidebar, messages, and buttons (#17)
-- [ ] Block/unblock contacts -- block and unblock users from the TUI (#60)
 - [ ] Link previews -- display URL previews for shared links (#63)
 - [ ] Polls -- create and vote in Signal polls (#64)
 - [ ] Pinned messages -- view and manage pinned messages (#65)

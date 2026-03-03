@@ -21,11 +21,14 @@ One row per conversation (1:1 or group).
 
 ```sql
 CREATE TABLE conversations (
-    id         TEXT PRIMARY KEY,      -- phone number or group ID
-    name       TEXT NOT NULL,         -- display name
-    is_group   INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    muted      INTEGER NOT NULL DEFAULT 0   -- added in migration v2
+    id                TEXT PRIMARY KEY,      -- phone number or group ID
+    name              TEXT NOT NULL,         -- display name
+    is_group          INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    muted             INTEGER NOT NULL DEFAULT 0,  -- added in migration v2
+    expiration_timer  INTEGER NOT NULL DEFAULT 0,  -- disappearing msg seconds (v7)
+    accepted          INTEGER NOT NULL DEFAULT 1,  -- message request state (v8)
+    blocked           INTEGER NOT NULL DEFAULT 0   -- blocked state (v9)
 );
 ```
 
@@ -51,7 +54,9 @@ CREATE TABLE messages (
     quote_author    TEXT,                           -- quoted reply author (v6)
     quote_body      TEXT,                           -- quoted reply body (v6)
     quote_ts_ms     INTEGER,                        -- quoted reply timestamp (v6)
-    sender_id       TEXT NOT NULL DEFAULT ''        -- sender phone number (v6)
+    sender_id            TEXT NOT NULL DEFAULT '',       -- sender phone number (v6)
+    expires_in_seconds   INTEGER NOT NULL DEFAULT 0,    -- disappearing timer (v7)
+    expiration_start_ms  INTEGER NOT NULL DEFAULT 0     -- timer start epoch ms (v7)
 );
 
 CREATE INDEX idx_messages_conv_ts ON messages(conversation_id, timestamp);
@@ -105,6 +110,9 @@ Migrations are version-based and run sequentially in `Database::migrate()`:
 | 4 | Create `reactions` table with unique constraint per sender per message |
 | 5 | Add index on `messages(conversation_id, timestamp_ms)` for search performance |
 | 6 | Add `is_edited`, `is_deleted`, `quote_author`, `quote_body`, `quote_ts_ms`, `sender_id` columns to `messages` |
+| 7 | Add `expiration_timer` to `conversations` and `expires_in_seconds`, `expiration_start_ms` to `messages` |
+| 8 | Add `accepted` column to `conversations` (message request tracking) |
+| 9 | Add `blocked` column to `conversations` (block/unblock state) |
 
 Each migration is wrapped in a transaction. The `schema_version` table tracks
 the current version.

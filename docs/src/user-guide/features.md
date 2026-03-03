@@ -51,8 +51,14 @@ conversations. Configure them per type:
 
 - `notify_direct` -- 1:1 messages (default: on)
 - `notify_group` -- group messages (default: on)
+- `desktop_notifications` -- OS-level desktop notifications (default: off)
 - `/mute` -- per-conversation mute (persists in the database)
 - `/bell` -- toggle notification types at runtime
+
+Desktop notifications use `notify-rust` for cross-platform support (Linux D-Bus,
+macOS NSNotification, Windows WinRT toast). They show the sender name and a
+message preview, and respect the same mute/block/accept conditions as bell
+notifications.
 
 ## Contact resolution
 
@@ -184,6 +190,56 @@ letting them know you've read their messages. This can be toggled off via
 When you read messages on your phone or another linked device, signal-tui
 receives the read sync and marks those conversations as read. Unread counts
 update automatically.
+
+## Disappearing messages
+
+signal-tui honors Signal's disappearing message timers. When a conversation has
+a timer set, messages auto-expire after the configured duration. Set the timer
+with `/disappearing <duration>` (alias `/dm`):
+
+- `30s`, `5m`, `1h`, `1d`, `1w` -- set the timer
+- `off` -- disable disappearing messages
+
+Timer changes from other devices sync automatically.
+
+## Group management
+
+Use `/group` (alias `/g`) to manage groups directly from the TUI:
+
+- **View members** -- see all group members
+- **Add member** -- type-to-filter contact picker to add members
+- **Remove member** -- type-to-filter member picker to remove members
+- **Rename** -- change the group name
+- **Create** -- create a new group (available from any conversation)
+- **Leave** -- leave the group with confirmation
+
+## Message requests
+
+Messages from unknown senders (not in your contacts) are flagged as message
+requests. A banner appears at the top of the conversation with options to accept
+or delete. Unaccepted conversations do not trigger notifications or send read
+receipts.
+
+## Block and unblock
+
+Use `/block` to block the current conversation's contact or group, and
+`/unblock` to unblock. Blocked conversations do not trigger notifications,
+read receipts, or typing indicators.
+
+## Mouse support
+
+Mouse support is enabled by default. Toggle via `/settings` > "Mouse support".
+
+- **Click sidebar** -- switch conversations by clicking
+- **Scroll messages** -- scroll wheel in the chat area
+- **Click input bar** -- position the cursor by clicking
+- **Overlay scroll** -- scroll wheel navigates lists in overlays
+
+## Color themes
+
+Open the theme picker with `/theme` (alias `/t`) or from `/settings` > Theme.
+Choose from built-in themes with customizable sidebar, chat, status bar, and
+accent colors.
 
 ## Demo mode
 

@@ -62,7 +62,7 @@ after Ratatui's draw to avoid width calculation issues).
 ### `db.rs`
 
 SQLite database layer with WAL mode. Four tables: `conversations`, `messages`,
-`read_markers`, `reactions`. Schema migration is version-based (currently at v6,
+`read_markers`, `reactions`. Schema migration is version-based (currently at v9,
 see [Database Schema](database.md)).
 
 Provides `open()` for disk-backed storage and `open_in_memory()` for incognito mode.
@@ -71,7 +71,9 @@ Provides `open()` for disk-backed storage and `open_in_memory()` for incognito m
 
 TOML configuration. The `Config` struct is serialized/deserialized with serde.
 Fields: `account`, `signal_cli_path`, `download_dir`, `notify_direct`,
-`notify_group`, `inline_images`, `send_read_receipts`. All fields have defaults.
+`notify_group`, `desktop_notifications`, `inline_images`, `native_images`,
+`show_receipts`, `color_receipts`, `nerd_fonts`, `reaction_verbose`,
+`send_read_receipts`, `mouse_enabled`, `theme`. All fields have defaults.
 
 `Config::load()` reads from the platform-specific path (or a custom path).
 `Config::save()` writes the current config back to disk.
@@ -80,7 +82,8 @@ Fields: `account`, `signal_cli_path`, `download_dir`, `notify_direct`,
 
 Input parsing. Converts text input into an `InputAction` enum. Handles all
 slash commands (`/join`, `/part`, `/quit`, `/sidebar`, `/bell`, `/mute`,
-`/contacts`, `/settings`, `/search`, `/attach`, `/help`) and their aliases.
+`/block`, `/unblock`, `/attach`, `/search`, `/contacts`, `/settings`,
+`/disappearing`, `/group`, `/theme`, `/help`) and their aliases.
 
 Also defines `CommandInfo` and the `COMMANDS` constant used for autocomplete.
 

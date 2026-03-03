@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.8.0
+
+### Disappearing messages
+
+- **Timer support** -- signal-tui now honors disappearing message timers.
+  Messages auto-expire after the configured duration, with a countdown shown
+  in the chat area. Set the timer with `/disappearing <duration>` (alias `/dm`)
+  using values like `30s`, `5m`, `1h`, `1d`, `1w`, or `off` (closes #61)
+
+### Group management
+
+- **`/group` command** -- manage groups directly from the TUI (alias `/g`).
+  Opens a menu with options to view members, add/remove members, rename the
+  group, create a new group, or leave a group. Add/remove members use a
+  type-to-filter contact picker (closes #26)
+
+### Message requests
+
+- **Unknown sender detection** -- messages from unknown senders (not in your
+  contacts) are now flagged as message requests. A banner appears with options
+  to accept (start chatting) or delete the conversation. Unaccepted
+  conversations do not trigger notifications or send read receipts (closes #62)
+
+### Block and unblock
+
+- **`/block` and `/unblock` commands** -- block or unblock the current
+  conversation's contact or group. Blocked conversations do not trigger
+  notifications, read receipts, or typing indicators (closes #60)
+
+### Mouse support
+
+- **Clickable sidebar** -- click conversations in the sidebar to switch
+- **Scrollable messages** -- scroll wheel in the chat area
+- **Overlay navigation** -- scroll wheel navigates lists in overlays
+- **Click to position cursor** -- click in the input bar to place the cursor
+- Configurable via `/settings` > "Mouse support" (default: on) (closes #17)
+
+### Color themes
+
+- **Selectable themes** -- open the theme picker with `/theme` (alias `/t`)
+  or from `/settings` > Theme. Includes built-in themes with customizable
+  sidebar, chat, status bar, and accent colors (closes #18)
+
+### Desktop notifications
+
+- **OS-level notifications** -- cross-platform desktop notifications using
+  `notify-rust` (Linux D-Bus, macOS NSNotification, Windows WinRT toast).
+  Shows sender name and message preview. Toggle via `/settings` > "Desktop
+  notifications" (default: off) (closes #19)
+
+### Bug fixes
+
+- **Mouse capture on Windows** -- mouse support no longer breaks after
+  signal-cli starts on Windows. Spawning `signal-cli.bat` (cmd.exe) was
+  resetting console input mode flags (#105)
+
+### Database
+
+- **Migration v7** -- adds `expiration_timer` to `conversations` and
+  `expires_in_seconds`, `expiration_start_ms` to `messages` (disappearing
+  messages)
+- **Migration v8** -- adds `accepted` column to `conversations` (message
+  requests)
+- **Migration v9** -- adds `blocked` column to `conversations` (block/unblock)
+
+---
+
 ## v0.7.0
 
 ### Text styling

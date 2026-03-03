@@ -95,6 +95,11 @@ outbound request). They have a `method` field but no `id`:
 | `remoteDelete` | Delete a message for all recipients |
 | `sendTypingIndicator` | Send typing started/stopped indicator |
 | `sendReceipt` | Send a read receipt for one or more messages |
+| `updateGroup` | Create/rename group, add/remove members |
+| `quitGroup` | Leave a group |
+| `block` | Block a contact or group |
+| `unblock` | Unblock a contact or group |
+| `setExpiration` | Set disappearing message timer |
 
 ### Inbound notifications (signal-cli -> signal-tui)
 
@@ -116,6 +121,8 @@ Incoming `receive` envelopes may also contain:
 | `syncMessage.readMessages` | Read sync from other devices | `SignalEvent::ReadSyncReceived` |
 | `dataMessage.sticker` | Sticker message | Body set to `[Sticker: emoji]` |
 | `dataMessage.textStyles` / `bodyRanges` | Text formatting (bold, italic, etc.) | `text_styles` field on `SignalMessage` |
+| `dataMessage.expiresInSeconds` | Disappearing message timer | `expires_in_seconds` on `SignalMessage` |
+| `dataMessage.isViewOnce` | View-once message flag | Body set to `[View-once message]` |
 | `callMessage` | Missed call notification | `SignalEvent::SystemMessage` |
 
 ## Parsing logic
