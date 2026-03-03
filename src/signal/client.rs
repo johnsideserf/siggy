@@ -542,6 +542,117 @@ impl SignalClient {
         Ok(())
     }
 
+    /// Create a new group with the given name (optionally with initial members).
+    pub async fn create_group(&self, name: &str, members: &[String]) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
+        }
+        let mut params = serde_json::json!({
+            "name": name,
+            "account": self.account,
+        });
+        if !members.is_empty() {
+            params["members"] = serde_json::json!(members);
+        }
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "updateGroup".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx.send(json).await.context("Failed to send createGroup to signal-cli stdin")?;
+        Ok(())
+    }
+
+    /// Add members to an existing group.
+    pub async fn add_group_members(&self, group_id: &str, members: &[String]) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
+        }
+        let params = serde_json::json!({
+            "groupId": group_id,
+            "members": members,
+            "account": self.account,
+        });
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "updateGroup".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx.send(json).await.context("Failed to send addGroupMembers to signal-cli stdin")?;
+        Ok(())
+    }
+
+    /// Remove members from an existing group.
+    pub async fn remove_group_members(&self, group_id: &str, members: &[String]) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
+        }
+        let params = serde_json::json!({
+            "groupId": group_id,
+            "removeMembers": members,
+            "account": self.account,
+        });
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "updateGroup".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx.send(json).await.context("Failed to send removeGroupMembers to signal-cli stdin")?;
+        Ok(())
+    }
+
+    /// Rename an existing group.
+    pub async fn rename_group(&self, group_id: &str, name: &str) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
+        }
+        let params = serde_json::json!({
+            "groupId": group_id,
+            "name": name,
+            "account": self.account,
+        });
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "updateGroup".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx.send(json).await.context("Failed to send renameGroup to signal-cli stdin")?;
+        Ok(())
+    }
+
+    /// Leave (quit) a group.
+    pub async fn quit_group(&self, group_id: &str) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("quitGroup".to_string(), Instant::now()));
+        }
+        let params = serde_json::json!({
+            "groupId": group_id,
+            "account": self.account,
+        });
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "quitGroup".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx.send(json).await.context("Failed to send quitGroup to signal-cli stdin")?;
+        Ok(())
+    }
+
     /// Set the disappearing message timer for a group.
     pub async fn send_update_group_expiration(
         &self,
@@ -661,7 +772,7 @@ fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&st
                 .collect();
             Some(SignalEvent::GroupList(groups))
         }
-        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" | "updateContact" | "updateGroup" => None, // fire-and-forget, no action needed
+        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" | "updateContact" | "updateGroup" | "quitGroup" => None, // fire-and-forget, no action needed
         _ => None,
     }
 }

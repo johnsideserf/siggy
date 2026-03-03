@@ -40,6 +40,18 @@ pub enum AutocompleteMode {
     Join,
 }
 
+/// Which sub-overlay of the /group menu is currently active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupMenuState {
+    Menu,           // top-level flyout
+    Members,        // read-only member list
+    AddMember,      // contact picker (type-to-filter)
+    RemoveMember,   // member picker (type-to-filter)
+    Rename,         // text input (pre-filled)
+    Create,         // text input (empty)
+    LeaveConfirm,   // y/n confirmation
+}
+
 /// An action available in the message action menu.
 pub struct MenuAction {
     pub label: &'static str,
@@ -287,6 +299,16 @@ pub struct App {
     pub show_action_menu: bool,
     /// Cursor position in action menu
     pub action_menu_index: usize,
+    /// Group management menu state (None = closed)
+    pub group_menu_state: Option<GroupMenuState>,
+    /// Cursor position in group menu / member lists
+    pub group_menu_index: usize,
+    /// Type-to-filter text for add/remove member pickers
+    pub group_menu_filter: String,
+    /// Filtered list of (phone, display_name) for add/remove member pickers
+    pub group_menu_filtered: Vec<(String, String)>,
+    /// Separate text input buffer for rename/create (avoids disturbing input_buffer)
+    pub group_menu_input: String,
 }
 
 /// A search result entry.
@@ -351,6 +373,24 @@ pub enum SendRequest {
         conv_id: String,
         is_group: bool,
         seconds: i64,
+    },
+    CreateGroup {
+        name: String,
+    },
+    AddGroupMembers {
+        group_id: String,
+        members: Vec<String>,
+    },
+    RemoveGroupMembers {
+        group_id: String,
+        members: Vec<String>,
+    },
+    RenameGroup {
+        group_id: String,
+        name: String,
+    },
+    LeaveGroup {
+        group_id: String,
     },
 }
 
@@ -531,6 +571,347 @@ impl App {
             self.contacts_index = 0;
         } else if self.contacts_index >= self.contacts_filtered.len() {
             self.contacts_index = self.contacts_filtered.len() - 1;
+        }
+    }
+
+    /// Build the list of available group menu actions (context-dependent).
+    pub fn group_menu_items(&self) -> Vec<MenuAction> {
+        let is_group = self.active_conversation.as_ref()
+            .and_then(|id| self.conversations.get(id))
+            .is_some_and(|c| c.is_group);
+        if is_group {
+            vec![
+                MenuAction { label: "Members",       key_hint: "m", nerd_icon: "\u{f0849}" },
+                MenuAction { label: "Add member",    key_hint: "a", nerd_icon: "\u{f0234}" },
+                MenuAction { label: "Remove member", key_hint: "r", nerd_icon: "\u{f0235}" },
+                MenuAction { label: "Rename",        key_hint: "n", nerd_icon: "\u{f03eb}" },
+                MenuAction { label: "Leave",         key_hint: "l", nerd_icon: "\u{f0a79}" },
+            ]
+        } else {
+            vec![
+                MenuAction { label: "Create group",  key_hint: "c", nerd_icon: "\u{f0234}" },
+            ]
+        }
+    }
+
+    /// Build filtered contacts list for the "Add member" picker (excludes existing group members).
+    pub fn refresh_group_add_filter(&mut self) {
+        let filter_lower = self.group_menu_filter.to_lowercase();
+        let existing_members: HashSet<&str> = self.active_conversation.as_ref()
+            .and_then(|id| self.groups.get(id))
+            .map(|g| g.members.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default();
+        let mut contacts: Vec<(String, String)> = self
+            .contact_names
+            .iter()
+            .filter(|(_, name)| !name.is_empty())
+            .filter(|(number, _)| !existing_members.contains(number.as_str()))
+            .filter(|(number, name)| {
+                if filter_lower.is_empty() {
+                    return true;
+                }
+                name.to_lowercase().contains(&filter_lower)
+                    || number.to_lowercase().contains(&filter_lower)
+            })
+            .map(|(number, name)| (number.clone(), name.clone()))
+            .collect();
+        contacts.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        self.group_menu_filtered = contacts;
+        if self.group_menu_filtered.is_empty() {
+            self.group_menu_index = 0;
+        } else if self.group_menu_index >= self.group_menu_filtered.len() {
+            self.group_menu_index = self.group_menu_filtered.len() - 1;
+        }
+    }
+
+    /// Build filtered member list for the "Remove member" picker (excludes self).
+    pub fn refresh_group_remove_filter(&mut self) {
+        let filter_lower = self.group_menu_filter.to_lowercase();
+        let members: Vec<String> = self.active_conversation.as_ref()
+            .and_then(|id| self.groups.get(id))
+            .map(|g| g.members.clone())
+            .unwrap_or_default();
+        let mut result: Vec<(String, String)> = members
+            .into_iter()
+            .filter(|phone| *phone != self.account)
+            .map(|phone| {
+                let name = self.contact_names.get(&phone)
+                    .cloned()
+                    .unwrap_or_else(|| phone.clone());
+                (phone, name)
+            })
+            .filter(|(phone, name)| {
+                if filter_lower.is_empty() {
+                    return true;
+                }
+                name.to_lowercase().contains(&filter_lower)
+                    || phone.to_lowercase().contains(&filter_lower)
+            })
+            .collect();
+        result.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        self.group_menu_filtered = result;
+        if self.group_menu_filtered.is_empty() {
+            self.group_menu_index = 0;
+        } else if self.group_menu_index >= self.group_menu_filtered.len() {
+            self.group_menu_index = self.group_menu_filtered.len() - 1;
+        }
+    }
+
+    /// Handle a key press while the group management menu is open.
+    pub fn handle_group_menu_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+        let state = self.group_menu_state.clone()?;
+        match state {
+            GroupMenuState::Menu => {
+                let items = self.group_menu_items();
+                let item_count = items.len();
+                match code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if self.group_menu_index < item_count.saturating_sub(1) {
+                            self.group_menu_index += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                    }
+                    KeyCode::Enter => {
+                        if let Some(action) = items.get(self.group_menu_index) {
+                            self.transition_group_menu(action.key_hint);
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        let hint = match c {
+                            'm' => "m", 'a' => "a", 'r' => "r",
+                            'n' => "n", 'l' => "l", 'c' => "c",
+                            _ => "",
+                        };
+                        if !hint.is_empty() && items.iter().any(|a| a.key_hint == hint) {
+                            self.transition_group_menu(hint);
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.group_menu_state = None;
+                    }
+                    _ => {}
+                }
+                None
+            }
+            GroupMenuState::Members => {
+                let member_count = self.group_menu_filtered.len();
+                match code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if self.group_menu_index < member_count.saturating_sub(1) {
+                            self.group_menu_index += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                    }
+                    KeyCode::Esc => {
+                        self.group_menu_state = Some(GroupMenuState::Menu);
+                        self.group_menu_index = 0;
+                    }
+                    _ => {}
+                }
+                None
+            }
+            GroupMenuState::AddMember => {
+                match code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !self.group_menu_filtered.is_empty()
+                            && self.group_menu_index < self.group_menu_filtered.len() - 1
+                        {
+                            self.group_menu_index += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                    }
+                    KeyCode::Enter => {
+                        if let Some((phone, _)) = self.group_menu_filtered.get(self.group_menu_index) {
+                            let phone = phone.clone();
+                            let group_id = self.active_conversation.clone()?;
+                            self.group_menu_state = None;
+                            self.group_menu_filter.clear();
+                            return Some(SendRequest::AddGroupMembers {
+                                group_id,
+                                members: vec![phone],
+                            });
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.group_menu_state = Some(GroupMenuState::Menu);
+                        self.group_menu_index = 0;
+                        self.group_menu_filter.clear();
+                    }
+                    KeyCode::Backspace => {
+                        self.group_menu_filter.pop();
+                        self.group_menu_index = 0;
+                        self.refresh_group_add_filter();
+                    }
+                    KeyCode::Char(c) if c != 'j' && c != 'k' => {
+                        self.group_menu_filter.push(c);
+                        self.group_menu_index = 0;
+                        self.refresh_group_add_filter();
+                    }
+                    _ => {}
+                }
+                None
+            }
+            GroupMenuState::RemoveMember => {
+                match code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if !self.group_menu_filtered.is_empty()
+                            && self.group_menu_index < self.group_menu_filtered.len() - 1
+                        {
+                            self.group_menu_index += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                    }
+                    KeyCode::Enter => {
+                        if let Some((phone, _)) = self.group_menu_filtered.get(self.group_menu_index) {
+                            let phone = phone.clone();
+                            let group_id = self.active_conversation.clone()?;
+                            self.group_menu_state = None;
+                            self.group_menu_filter.clear();
+                            return Some(SendRequest::RemoveGroupMembers {
+                                group_id,
+                                members: vec![phone],
+                            });
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.group_menu_state = Some(GroupMenuState::Menu);
+                        self.group_menu_index = 0;
+                        self.group_menu_filter.clear();
+                    }
+                    KeyCode::Backspace => {
+                        self.group_menu_filter.pop();
+                        self.group_menu_index = 0;
+                        self.refresh_group_remove_filter();
+                    }
+                    KeyCode::Char(c) if c != 'j' && c != 'k' => {
+                        self.group_menu_filter.push(c);
+                        self.group_menu_index = 0;
+                        self.refresh_group_remove_filter();
+                    }
+                    _ => {}
+                }
+                None
+            }
+            GroupMenuState::Rename => {
+                match code {
+                    KeyCode::Enter => {
+                        let name = self.group_menu_input.trim().to_string();
+                        if !name.is_empty() {
+                            let group_id = self.active_conversation.clone()?;
+                            self.group_menu_state = None;
+                            self.group_menu_input.clear();
+                            return Some(SendRequest::RenameGroup { group_id, name });
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.group_menu_state = Some(GroupMenuState::Menu);
+                        self.group_menu_index = 0;
+                        self.group_menu_input.clear();
+                    }
+                    KeyCode::Backspace => {
+                        self.group_menu_input.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        self.group_menu_input.push(c);
+                    }
+                    _ => {}
+                }
+                None
+            }
+            GroupMenuState::Create => {
+                match code {
+                    KeyCode::Enter => {
+                        let name = self.group_menu_input.trim().to_string();
+                        if !name.is_empty() {
+                            self.group_menu_state = None;
+                            self.group_menu_input.clear();
+                            return Some(SendRequest::CreateGroup { name });
+                        }
+                    }
+                    KeyCode::Esc => {
+                        self.group_menu_state = None;
+                        self.group_menu_input.clear();
+                    }
+                    KeyCode::Backspace => {
+                        self.group_menu_input.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        self.group_menu_input.push(c);
+                    }
+                    _ => {}
+                }
+                None
+            }
+            GroupMenuState::LeaveConfirm => {
+                match code {
+                    KeyCode::Char('y') => {
+                        let group_id = self.active_conversation.clone()?;
+                        self.group_menu_state = None;
+                        return Some(SendRequest::LeaveGroup { group_id });
+                    }
+                    KeyCode::Char('n') | KeyCode::Esc => {
+                        self.group_menu_state = Some(GroupMenuState::Menu);
+                        self.group_menu_index = 0;
+                    }
+                    _ => {}
+                }
+                None
+            }
+        }
+    }
+
+    /// Transition from the top-level group menu to a sub-state.
+    fn transition_group_menu(&mut self, hint: &str) {
+        self.group_menu_index = 0;
+        self.group_menu_filter.clear();
+        self.group_menu_input.clear();
+        match hint {
+            "m" => {
+                // Populate member list for display
+                let members: Vec<(String, String)> = self.active_conversation.as_ref()
+                    .and_then(|id| self.groups.get(id))
+                    .map(|g| g.members.iter().map(|phone| {
+                        let name = self.contact_names.get(phone)
+                            .cloned()
+                            .unwrap_or_else(|| phone.clone());
+                        (phone.clone(), name)
+                    }).collect())
+                    .unwrap_or_default();
+                self.group_menu_filtered = members;
+                self.group_menu_state = Some(GroupMenuState::Members);
+            }
+            "a" => {
+                self.refresh_group_add_filter();
+                self.group_menu_state = Some(GroupMenuState::AddMember);
+            }
+            "r" => {
+                self.refresh_group_remove_filter();
+                self.group_menu_state = Some(GroupMenuState::RemoveMember);
+            }
+            "n" => {
+                // Pre-fill with current group name
+                let name = self.active_conversation.as_ref()
+                    .and_then(|id| self.conversations.get(id))
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                self.group_menu_input = name;
+                self.group_menu_state = Some(GroupMenuState::Rename);
+            }
+            "l" => {
+                self.group_menu_state = Some(GroupMenuState::LeaveConfirm);
+            }
+            "c" => {
+                self.group_menu_state = Some(GroupMenuState::Create);
+            }
+            _ => {}
         }
     }
 
@@ -1259,6 +1640,11 @@ impl App {
             pending_read_receipts: Vec::new(),
             show_action_menu: false,
             action_menu_index: 0,
+            group_menu_state: None,
+            group_menu_index: 0,
+            group_menu_filter: String::new(),
+            group_menu_filtered: Vec::new(),
+            group_menu_input: String::new(),
         }
     }
 
@@ -1507,6 +1893,10 @@ impl App {
         }
         if self.show_reaction_picker {
             let send = self.handle_reaction_picker_key(code);
+            return (true, send);
+        }
+        if self.group_menu_state.is_some() {
+            let send = self.handle_group_menu_key(code);
             return (true, send);
         }
         if self.show_help {
@@ -3138,6 +3528,12 @@ impl App {
                 self.contacts_index = 0;
                 self.contacts_filter.clear();
                 self.refresh_contacts_filter();
+            }
+            InputAction::Group => {
+                self.group_menu_state = Some(GroupMenuState::Menu);
+                self.group_menu_index = 0;
+                self.group_menu_filter.clear();
+                self.group_menu_input.clear();
             }
             InputAction::Help => {
                 self.show_help = true;
@@ -5521,5 +5917,170 @@ mod tests {
         let app = test_app();
         let resolved = app.resolve_text_styles("hello world", &[], &[]);
         assert!(resolved.is_empty());
+    }
+
+    // --- Group management tests ---
+
+    #[test]
+    fn group_command_parsed() {
+        assert!(matches!(crate::input::parse_input("/group"), crate::input::InputAction::Group));
+        assert!(matches!(crate::input::parse_input("/g"), crate::input::InputAction::Group));
+    }
+
+    #[test]
+    fn group_menu_items_in_group_context() {
+        let mut app = test_app();
+        app.get_or_create_conversation("g1", "Family", true);
+        app.active_conversation = Some("g1".to_string());
+        let items = app.group_menu_items();
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0].label, "Members");
+        assert_eq!(items[4].label, "Leave");
+    }
+
+    #[test]
+    fn group_menu_items_not_in_group() {
+        let mut app = test_app();
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+        let items = app.group_menu_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "Create group");
+    }
+
+    #[test]
+    fn group_menu_items_no_conversation() {
+        let app = test_app();
+        let items = app.group_menu_items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "Create group");
+    }
+
+    #[test]
+    fn group_add_filter_excludes_existing_members() {
+        let mut app = test_app();
+        app.get_or_create_conversation("g1", "Family", true);
+        app.active_conversation = Some("g1".to_string());
+        app.groups.insert("g1".to_string(), Group {
+            id: "g1".to_string(),
+            name: "Family".to_string(),
+            members: vec!["+1".to_string(), "+2".to_string()],
+            member_uuids: vec![],
+        });
+        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.contact_names.insert("+2".to_string(), "Bob".to_string());
+        app.contact_names.insert("+3".to_string(), "Charlie".to_string());
+
+        app.refresh_group_add_filter();
+
+        // Only Charlie should appear (not Alice or Bob who are already members)
+        assert_eq!(app.group_menu_filtered.len(), 1);
+        assert_eq!(app.group_menu_filtered[0].0, "+3");
+    }
+
+    #[test]
+    fn group_remove_filter_excludes_self() {
+        let mut app = test_app();
+        app.get_or_create_conversation("g1", "Family", true);
+        app.active_conversation = Some("g1".to_string());
+        app.groups.insert("g1".to_string(), Group {
+            id: "g1".to_string(),
+            name: "Family".to_string(),
+            members: vec!["+10000000000".to_string(), "+1".to_string(), "+2".to_string()],
+            member_uuids: vec![],
+        });
+        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.contact_names.insert("+2".to_string(), "Bob".to_string());
+
+        app.refresh_group_remove_filter();
+
+        // Self (+10000000000) should be excluded
+        assert_eq!(app.group_menu_filtered.len(), 2);
+        let phones: Vec<&str> = app.group_menu_filtered.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(!phones.contains(&"+10000000000"));
+        assert!(phones.contains(&"+1"));
+        assert!(phones.contains(&"+2"));
+    }
+
+    #[test]
+    fn group_menu_state_transitions() {
+        let mut app = test_app();
+        app.get_or_create_conversation("g1", "Family", true);
+        app.active_conversation = Some("g1".to_string());
+        app.groups.insert("g1".to_string(), Group {
+            id: "g1".to_string(),
+            name: "Family".to_string(),
+            members: vec!["+1".to_string()],
+            member_uuids: vec![],
+        });
+
+        // Open group menu via handle_input
+        app.input_buffer = "/group".to_string();
+        app.input_cursor = 6;
+        app.handle_input();
+        assert_eq!(app.group_menu_state, Some(GroupMenuState::Menu));
+
+        // Press 'm' to go to Members
+        app.handle_group_menu_key(KeyCode::Char('m'));
+        assert_eq!(app.group_menu_state, Some(GroupMenuState::Members));
+
+        // Esc goes back to Menu
+        app.handle_group_menu_key(KeyCode::Esc);
+        assert_eq!(app.group_menu_state, Some(GroupMenuState::Menu));
+
+        // Press 'l' to go to LeaveConfirm
+        app.handle_group_menu_key(KeyCode::Char('l'));
+        assert_eq!(app.group_menu_state, Some(GroupMenuState::LeaveConfirm));
+
+        // Press 'n' to cancel leave
+        app.handle_group_menu_key(KeyCode::Char('n'));
+        assert_eq!(app.group_menu_state, Some(GroupMenuState::Menu));
+
+        // Esc closes the menu entirely
+        app.handle_group_menu_key(KeyCode::Esc);
+        assert_eq!(app.group_menu_state, None);
+    }
+
+    #[test]
+    fn group_leave_produces_send_request() {
+        let mut app = test_app();
+        app.get_or_create_conversation("g1", "Family", true);
+        app.active_conversation = Some("g1".to_string());
+        app.groups.insert("g1".to_string(), Group {
+            id: "g1".to_string(),
+            name: "Family".to_string(),
+            members: vec![],
+            member_uuids: vec![],
+        });
+
+        app.group_menu_state = Some(GroupMenuState::LeaveConfirm);
+        let req = app.handle_group_menu_key(KeyCode::Char('y'));
+        assert!(req.is_some());
+        assert!(matches!(req, Some(SendRequest::LeaveGroup { group_id }) if group_id == "g1"));
+        assert_eq!(app.group_menu_state, None);
+    }
+
+    #[test]
+    fn group_create_produces_send_request() {
+        let mut app = test_app();
+        app.group_menu_state = Some(GroupMenuState::Create);
+        app.group_menu_input = "New Group".to_string();
+        let req = app.handle_group_menu_key(KeyCode::Enter);
+        assert!(req.is_some());
+        assert!(matches!(req, Some(SendRequest::CreateGroup { name }) if name == "New Group"));
+        assert_eq!(app.group_menu_state, None);
+    }
+
+    #[test]
+    fn group_rename_produces_send_request() {
+        let mut app = test_app();
+        app.get_or_create_conversation("g1", "Old Name", true);
+        app.active_conversation = Some("g1".to_string());
+        app.group_menu_state = Some(GroupMenuState::Rename);
+        app.group_menu_input = "New Name".to_string();
+        let req = app.handle_group_menu_key(KeyCode::Enter);
+        assert!(req.is_some());
+        assert!(matches!(req, Some(SendRequest::RenameGroup { group_id, name }) if group_id == "g1" && name == "New Name"));
+        assert_eq!(app.group_menu_state, None);
     }
 }

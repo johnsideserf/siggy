@@ -527,6 +527,65 @@ async fn dispatch_send(
                 );
             }
         }
+        SendRequest::CreateGroup { name } => {
+            if let Err(e) = signal_client.create_group(&name, &[]).await {
+                app.status_message = format!("create group error: {e}");
+            } else {
+                app.status_message = format!("Created group \"{}\"", name);
+                let _ = signal_client.list_groups().await;
+            }
+        }
+        SendRequest::AddGroupMembers { group_id, members } => {
+            if let Err(e) = signal_client.add_group_members(&group_id, &members).await {
+                app.status_message = format!("add member error: {e}");
+            } else {
+                let names: Vec<String> = members.iter()
+                    .map(|m| app.contact_names.get(m).cloned().unwrap_or_else(|| m.clone()))
+                    .collect();
+                app.status_message = format!("Added {}", names.join(", "));
+                let _ = signal_client.list_groups().await;
+            }
+        }
+        SendRequest::RemoveGroupMembers { group_id, members } => {
+            if let Err(e) = signal_client.remove_group_members(&group_id, &members).await {
+                app.status_message = format!("remove member error: {e}");
+            } else {
+                let names: Vec<String> = members.iter()
+                    .map(|m| app.contact_names.get(m).cloned().unwrap_or_else(|| m.clone()))
+                    .collect();
+                app.status_message = format!("Removed {}", names.join(", "));
+                let _ = signal_client.list_groups().await;
+            }
+        }
+        SendRequest::RenameGroup { group_id, name } => {
+            if let Err(e) = signal_client.rename_group(&group_id, &name).await {
+                app.status_message = format!("rename group error: {e}");
+            } else {
+                // Update locally for instant visual feedback
+                if let Some(conv) = app.conversations.get_mut(&group_id) {
+                    conv.name = name.clone();
+                }
+                app.contact_names.insert(group_id.clone(), name.clone());
+                app.status_message = format!("Renamed group to \"{}\"", name);
+                let _ = signal_client.list_groups().await;
+            }
+        }
+        SendRequest::LeaveGroup { group_id } => {
+            if let Err(e) = signal_client.quit_group(&group_id).await {
+                app.status_message = format!("leave group error: {e}");
+            } else {
+                let name = app.conversations.get(&group_id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| group_id.clone());
+                app.conversations.remove(&group_id);
+                app.conversation_order.retain(|id| id != &group_id);
+                app.groups.remove(&group_id);
+                if app.active_conversation.as_ref() == Some(&group_id) {
+                    app.active_conversation = None;
+                }
+                app.status_message = format!("Left group \"{}\"", name);
+            }
+        }
     }
 }
 

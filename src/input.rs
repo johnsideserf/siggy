@@ -17,6 +17,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/contacts", alias: "/c",  args: "",        description: "Browse contacts" },
     CommandInfo { name: "/settings", alias: "",    args: "",        description: "Open settings" },
     CommandInfo { name: "/disappearing", alias: "/dm", args: "<duration>", description: "Set disappearing timer (off/30s/5m/1h/1d/1w)" },
+    CommandInfo { name: "/group",    alias: "/g",  args: "",        description: "Group management" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
     CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit signal-tui" },
 ];
@@ -50,6 +51,8 @@ pub enum InputAction {
     Search(String),
     /// Set disappearing message timer (raw duration string)
     SetDisappearing(String),
+    /// Open group management menu
+    Group,
     /// Unknown command
     Unknown(String),
 }
@@ -105,6 +108,7 @@ pub fn parse_input(input: &str) -> InputAction {
                 InputAction::SetDisappearing(arg)
             }
         }
+        "/group" | "/g" => InputAction::Group,
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
@@ -367,5 +371,15 @@ mod tests {
         assert!(parse_duration_to_seconds("").is_err());
         assert!(parse_duration_to_seconds("0s").is_err());
         assert!(parse_duration_to_seconds("-1h").is_err());
+    }
+
+    #[test]
+    fn group_command() {
+        assert!(matches!(parse_input("/group"), InputAction::Group));
+    }
+
+    #[test]
+    fn group_alias() {
+        assert!(matches!(parse_input("/g"), InputAction::Group));
     }
 }
