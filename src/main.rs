@@ -7,6 +7,7 @@ mod input;
 mod link;
 mod setup;
 mod signal;
+mod theme;
 mod ui;
 
 use std::io;
@@ -342,6 +343,7 @@ fn ratatui_color_to_crossterm(c: Color) -> crossterm::style::Color {
 fn emit_osc8_links(
     backend: &mut CrosstermBackend<io::Stdout>,
     links: &[ui::LinkRegion],
+    link_color: Color,
 ) -> Result<()> {
     if links.is_empty() {
         return Ok(());
@@ -353,7 +355,7 @@ fn emit_osc8_links(
         queue!(backend, MoveTo(link.x, link.y))?;
         queue!(
             backend,
-            SetForegroundColor(crossterm::style::Color::Blue)
+            SetForegroundColor(ratatui_color_to_crossterm(link_color))
         )?;
         if let Some(bg) = link.bg {
             // Preserve the background color (e.g. highlight) that ratatui rendered.
@@ -629,6 +631,8 @@ async fn run_app(
     app.reaction_verbose = config.reaction_verbose;
     app.send_read_receipts = config.send_read_receipts;
     app.mouse_enabled = config.mouse_enabled;
+    app.available_themes = theme::all_themes();
+    app.theme = theme::find_theme(&config.theme);
     app.load_from_db()?;
     app.set_connected();
 
@@ -651,7 +655,7 @@ async fn run_app(
 
         // Render
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        emit_osc8_links(terminal.backend_mut(), &app.link_regions)?;
+        emit_osc8_links(terminal.backend_mut(), &app.link_regions, app.theme.link)?;
         if app.native_images {
             emit_native_images(terminal.backend_mut(), &mut app)?;
         }
@@ -795,7 +799,7 @@ async fn run_demo_app(
         }
 
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
-        emit_osc8_links(terminal.backend_mut(), &app.link_regions)?;
+        emit_osc8_links(terminal.backend_mut(), &app.link_regions, app.theme.link)?;
         if app.native_images {
             emit_native_images(terminal.backend_mut(), &mut app)?;
         }
