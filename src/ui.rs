@@ -11,7 +11,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
-use crate::signal::types::{MessageStatus, Reaction, StyleType};
+use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction, StyleType};
 use crate::image_render::ImageProtocol;
 use crate::input::{COMMANDS, format_compact_duration};
 use crate::theme::Theme;
@@ -517,6 +517,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_pin_duration_picker(frame, app, size);
     }
 
+    // Poll vote overlay
+    if app.show_poll_vote {
+        draw_poll_vote_overlay(frame, app, size);
+    }
+
     // Collect link regions from the rendered buffer for OSC 8 injection
     let area = frame.area();
     app.link_regions = collect_link_regions(frame.buffer_mut(), area, app.theme.link);
@@ -902,6 +907,17 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                         if let Some(ref path) = msg.image_path {
                             image_records.push((first_idx, count, path.clone()));
                         }
+                    }
+                }
+            }
+
+            // Render inline poll display
+            if !msg.is_deleted {
+                if let Some(ref poll_data) = msg.poll_data {
+                    let poll_lines = build_poll_display(poll_data, &msg.poll_votes, &app.account, theme);
+                    for line in poll_lines {
+                        lines.push(line);
+                        line_msg_idx.push(Some(msg_index));
                     }
                 }
             }
@@ -2702,6 +2718,120 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         " j/k  Enter  Esc",
+        Style::default().fg(theme.fg_muted),
+    )));
+
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
+}
+
+fn build_poll_display(
+    poll: &PollData,
+    votes: &[PollVote],
+    own_account: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    let option_count = poll.options.len();
+    let mut counts = vec![0usize; option_count];
+    let mut total_votes = 0usize;
+    let mut own_selections: Vec<bool> = vec![false; option_count];
+
+    for vote in votes {
+        for &idx in &vote.option_indexes {
+            if (idx as usize) < option_count {
+                counts[idx as usize] += vote.vote_count as usize;
+                total_votes += vote.vote_count as usize;
+            }
+        }
+        if vote.voter == own_account {
+            for &idx in &vote.option_indexes {
+                if (idx as usize) < option_count {
+                    own_selections[idx as usize] = true;
+                }
+            }
+        }
+    }
+
+    let bar_width = 10;
+
+    for (i, opt) in poll.options.iter().enumerate() {
+        let count = counts[i];
+        let pct = if total_votes > 0 { (count * 100) / total_votes } else { 0 };
+        let filled = if total_votes > 0 { (count * bar_width) / total_votes } else { 0 };
+        let empty = bar_width - filled;
+
+        let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(empty);
+
+        let voted_marker = if own_selections[i] { "\u{2713} " } else { "  " };
+        let text_style = if own_selections[i] {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {voted_marker}"), text_style),
+            Span::styled(
+                format!("{:<12}", opt.text),
+                text_style,
+            ),
+            Span::styled(bar, Style::default().fg(theme.accent)),
+            Span::styled(
+                format!("  {count} ({pct}%)"),
+                Style::default().fg(theme.fg_muted),
+            ),
+        ]));
+    }
+
+    let mode = if poll.allow_multiple { "multi-select" } else { "single choice" };
+    let status = if poll.closed { " [CLOSED]" } else { "" };
+    lines.push(Line::from(Span::styled(
+        format!("    {total_votes} votes \u{00b7} {mode}{status}"),
+        Style::default().fg(theme.fg_muted),
+    )));
+
+    lines
+}
+
+fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let pending = match &app.poll_vote_pending {
+        Some(p) => p,
+        None => return,
+    };
+
+    let option_count = pending.options.len();
+    let max_text_len = pending.options.iter().map(|o| o.text.len()).max().unwrap_or(8);
+    let popup_width = (max_text_len as u16 + 12).max(24).min(area.width.saturating_sub(4));
+    let popup_height = option_count as u16 + 5;
+
+    let (popup_area, block) = centered_popup(
+        frame, area, popup_width, popup_height, " Vote ", theme,
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, opt) in pending.options.iter().enumerate() {
+        let selected = app.poll_vote_selections.get(i).copied().unwrap_or(false);
+        let marker = if i == app.poll_vote_index { ">" } else { " " };
+        let checkbox = if selected { "[x]" } else { "[ ]" };
+        let style = if i == app.poll_vote_index {
+            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {marker} {checkbox} {}", opt.text),
+            style,
+        )));
+    }
+
+    lines.push(Line::from(""));
+    let mode_hint = if pending.allow_multiple { "Space: toggle" } else { "Space: select" };
+    lines.push(Line::from(Span::styled(
+        format!(" {mode_hint}  Enter: submit  Esc"),
         Style::default().fg(theme.fg_muted),
     )));
 

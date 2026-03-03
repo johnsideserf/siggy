@@ -608,6 +608,26 @@ async fn dispatch_send(
                 app.status_message = format!("unpin error: {e}");
             }
         }
+        SendRequest::PollCreate { recipient, is_group, question, options, allow_multiple, local_ts_ms } => {
+            match signal_client.send_poll_create(&recipient, is_group, &question, &options, allow_multiple).await {
+                Ok(rpc_id) => {
+                    app.pending_sends.insert(rpc_id, (recipient, local_ts_ms));
+                }
+                Err(e) => {
+                    app.status_message = format!("poll error: {e}");
+                }
+            }
+        }
+        SendRequest::PollVote { recipient, is_group, poll_author, poll_timestamp, option_indexes, vote_count } => {
+            if let Err(e) = signal_client.send_poll_vote(&recipient, is_group, &poll_author, poll_timestamp, &option_indexes, vote_count).await {
+                app.status_message = format!("vote error: {e}");
+            }
+        }
+        SendRequest::PollTerminate { recipient, is_group, poll_timestamp } => {
+            if let Err(e) = signal_client.send_poll_terminate(&recipient, is_group, poll_timestamp).await {
+                app.status_message = format!("end poll error: {e}");
+            }
+        }
         SendRequest::MessageRequestResponse { recipient, is_group, response_type } => {
             if let Err(e) = signal_client.send_message_request_response(&recipient, is_group, &response_type).await {
                 app.status_message = format!("message request error: {e}");
@@ -896,6 +916,8 @@ fn populate_demo_data(app: &mut App) {
             sender_id: String::new(),
             expires_in_seconds: 0,
             expiration_start_ms: 0,
+            poll_data: None,
+            poll_votes: Vec::new(),
         }
     };
 

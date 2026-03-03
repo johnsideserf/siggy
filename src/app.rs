@@ -11,7 +11,7 @@ use crate::image_render;
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::theme::{self, Theme};
-use crate::signal::types::{Contact, Group, Mention, MessageStatus, Reaction, SignalEvent, SignalMessage, StyleType, TextStyle};
+use crate::signal::types::{Contact, Group, Mention, MessageStatus, PollData, PollOption, PollVote, Reaction, SignalEvent, SignalMessage, StyleType, TextStyle};
 
 /// Log a database error via debug_log (no-op when --debug is off).
 fn db_warn<T>(result: Result<T, impl std::fmt::Display>, context: &str) {
@@ -100,6 +100,16 @@ pub struct PinPending {
     pub target_timestamp: i64,
 }
 
+/// Context saved when the poll vote overlay is open.
+pub struct PollVotePending {
+    pub conv_id: String,
+    pub is_group: bool,
+    pub poll_author: String,
+    pub poll_timestamp: i64,
+    pub allow_multiple: bool,
+    pub options: Vec<PollOption>,
+}
+
 /// A single displayed message in a conversation
 #[derive(Debug, Clone)]
 pub struct DisplayMessage {
@@ -135,6 +145,10 @@ pub struct DisplayMessage {
     pub expires_in_seconds: i64,
     /// When the expiration countdown started (epoch ms, 0 = not started)
     pub expiration_start_ms: i64,
+    /// Poll data (for poll-create messages)
+    pub poll_data: Option<PollData>,
+    /// Votes received for this poll
+    pub poll_votes: Vec<PollVote>,
 }
 
 impl DisplayMessage {
@@ -374,6 +388,14 @@ pub struct App {
     pub pin_duration_index: usize,
     /// Pending pin context while duration picker is open
     pub pin_pending: Option<PinPending>,
+    /// Poll vote overlay visible
+    pub show_poll_vote: bool,
+    /// Cursor position in poll vote overlay
+    pub poll_vote_index: usize,
+    /// Multi-select tracking for poll vote options
+    pub poll_vote_selections: Vec<bool>,
+    /// Pending poll vote context
+    pub poll_vote_pending: Option<PollVotePending>,
 }
 
 /// A search result entry.
@@ -489,6 +511,27 @@ pub enum SendRequest {
         is_group: bool,
         target_author: String,
         target_timestamp: i64,
+    },
+    PollCreate {
+        recipient: String,
+        is_group: bool,
+        question: String,
+        options: Vec<String>,
+        allow_multiple: bool,
+        local_ts_ms: i64,
+    },
+    PollVote {
+        recipient: String,
+        is_group: bool,
+        poll_author: String,
+        poll_timestamp: i64,
+        option_indexes: Vec<i64>,
+        vote_count: i64,
+    },
+    PollTerminate {
+        recipient: String,
+        is_group: bool,
+        poll_timestamp: i64,
     },
 }
 
@@ -1246,6 +1289,22 @@ impl App {
                 nerd_icon: "\u{f0403}",
             });
         }
+        if let Some(ref poll) = msg.poll_data {
+            if !poll.closed {
+                items.push(MenuAction {
+                    label: "Vote",
+                    key_hint: "v",
+                    nerd_icon: "\u{f0e73}",
+                });
+            }
+            if msg.sender == "you" && !poll.closed {
+                items.push(MenuAction {
+                    label: "End Poll",
+                    key_hint: "x",
+                    nerd_icon: "\u{f073a}",
+                });
+            }
+        }
         items
     }
 
@@ -1278,7 +1337,7 @@ impl App {
                     None
                 }
             }
-            KeyCode::Char(c @ ('q' | 'e' | 'r' | 'y' | 'd' | 'p')) => {
+            KeyCode::Char(c @ ('q' | 'e' | 'r' | 'y' | 'd' | 'p' | 'v' | 'x')) => {
                 let hint = match c {
                     'q' => "q",
                     'e' => "e",
@@ -1286,6 +1345,8 @@ impl App {
                     'y' => "y",
                     'd' => "d",
                     'p' => "p",
+                    'v' => "v",
+                    'x' => "x",
                     _ => unreachable!(),
                 };
                 // Only execute if this action is available in the menu
@@ -1373,6 +1434,62 @@ impl App {
             "p" => {
                 // Pin/Unpin
                 self.execute_pin_toggle()
+            }
+            "v" => {
+                // Vote on poll
+                if let Some(msg) = self.selected_message() {
+                    if let Some(ref poll) = msg.poll_data {
+                        if !poll.closed {
+                            let conv_id = self.active_conversation.clone().unwrap_or_default();
+                            let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                            let poll_author = if msg.sender_id.is_empty() || msg.sender_id == "you" {
+                                self.account.clone()
+                            } else {
+                                msg.sender_id.clone()
+                            };
+                            let options = poll.options.clone();
+                            let allow_multiple = poll.allow_multiple;
+                            let poll_timestamp = msg.timestamp_ms;
+                            self.poll_vote_pending = Some(PollVotePending {
+                                conv_id,
+                                is_group,
+                                poll_author,
+                                poll_timestamp,
+                                allow_multiple,
+                                options: options.clone(),
+                            });
+                            self.poll_vote_selections = vec![false; options.len()];
+                            self.poll_vote_index = 0;
+                            self.show_poll_vote = true;
+                        }
+                    }
+                }
+                None
+            }
+            "x" => {
+                // End poll
+                if let Some(msg) = self.selected_message() {
+                    if msg.sender == "you" && msg.poll_data.as_ref().is_some_and(|p| !p.closed) {
+                        let conv_id = self.active_conversation.clone()?;
+                        let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                        let poll_timestamp = msg.timestamp_ms;
+                        // Optimistic close
+                        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                            if let Some(m) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == poll_timestamp) {
+                                if let Some(ref mut poll) = m.poll_data {
+                                    poll.closed = true;
+                                }
+                            }
+                        }
+                        db_warn(self.db.close_poll(&conv_id, poll_timestamp), "close_poll");
+                        return Some(SendRequest::PollTerminate {
+                            recipient: conv_id,
+                            is_group,
+                            poll_timestamp,
+                        });
+                    }
+                }
+                None
             }
             _ => None,
         }
@@ -1866,6 +1983,10 @@ impl App {
             show_pin_duration: false,
             pin_duration_index: 0,
             pin_pending: None,
+            show_poll_vote: false,
+            poll_vote_index: 0,
+            poll_vote_selections: Vec::new(),
+            poll_vote_pending: None,
         }
     }
 
@@ -2107,6 +2228,10 @@ impl App {
     /// command triggers a message send. Returns `None` otherwise.
     /// Returns `Ok(true)` if the key was consumed by an overlay.
     pub fn handle_overlay_key(&mut self, code: KeyCode) -> (bool, Option<SendRequest>) {
+        if self.show_poll_vote {
+            let send = self.handle_poll_vote_key(code);
+            return (true, send);
+        }
         if self.show_pin_duration {
             let send = self.handle_pin_duration_key(code);
             return (true, send);
@@ -2524,6 +2649,20 @@ impl App {
                 }
                 self.handle_pin_received(&conv_id, &sender, target_timestamp, false);
             }
+            SignalEvent::PollCreated { conv_id, timestamp, poll_data } => {
+                self.handle_poll_created(&conv_id, timestamp, poll_data);
+            }
+            SignalEvent::PollVoteReceived {
+                conv_id, target_timestamp, voter, voter_name, option_indexes, vote_count,
+            } => {
+                if let Some(ref name) = voter_name {
+                    self.contact_names.entry(voter.clone()).or_insert_with(|| name.clone());
+                }
+                self.handle_poll_vote(&conv_id, target_timestamp, &voter, voter_name.as_deref(), &option_indexes, vote_count);
+            }
+            SignalEvent::PollTerminated { conv_id, target_timestamp } => {
+                self.handle_poll_terminated(&conv_id, target_timestamp);
+            }
             SignalEvent::SystemMessage { conv_id, body, timestamp, timestamp_ms } => {
                 self.handle_system_message(&conv_id, &body, timestamp, timestamp_ms);
             }
@@ -2680,6 +2819,8 @@ impl App {
                     sender_id: sender_id.clone(),
                     expires_in_seconds: msg_expires_in,
                     expiration_start_ms: msg_expiration_start,
+                    poll_data: None,
+                    poll_votes: Vec::new(),
                 });
                 // Bump last_read_index if we inserted before the read marker
                 if let Some(read_idx) = self.last_read_index.get_mut(&conv_id) {
@@ -2822,6 +2963,8 @@ impl App {
                 sender_id: String::new(),
                 expires_in_seconds: 0,
                 expiration_start_ms: 0,
+                poll_data: None,
+                poll_votes: Vec::new(),
             });
             // Bump last_read_index if we inserted before the read marker
             if let Some(read_idx) = self.last_read_index.get_mut(conv_id) {
@@ -3052,6 +3195,65 @@ impl App {
         self.handle_system_message(conv_id, &body, now, now_ms);
     }
 
+    fn handle_poll_created(&mut self, conv_id: &str, timestamp: i64, poll_data: PollData) {
+        // The poll arrives as a regular message too — find it and attach poll_data
+        if let Some(conv) = self.conversations.get_mut(conv_id) {
+            if let Some(msg) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == timestamp) {
+                msg.poll_data = Some(poll_data.clone());
+            }
+        }
+        db_warn(
+            self.db.upsert_poll_data(conv_id, timestamp, &poll_data),
+            "upsert_poll_data",
+        );
+    }
+
+    fn handle_poll_vote(
+        &mut self,
+        conv_id: &str,
+        target_timestamp: i64,
+        voter: &str,
+        voter_name: Option<&str>,
+        option_indexes: &[i64],
+        vote_count: i64,
+    ) {
+        if let Some(conv) = self.conversations.get_mut(conv_id) {
+            if let Some(msg) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == target_timestamp) {
+                // Upsert vote in memory
+                if let Some(existing) = msg.poll_votes.iter_mut().find(|v| v.voter == voter) {
+                    existing.option_indexes = option_indexes.to_vec();
+                    existing.vote_count = vote_count;
+                    existing.voter_name = voter_name.map(|s| s.to_string());
+                } else {
+                    msg.poll_votes.push(PollVote {
+                        voter: voter.to_string(),
+                        voter_name: voter_name.map(|s| s.to_string()),
+                        option_indexes: option_indexes.to_vec(),
+                        vote_count,
+                    });
+                }
+            }
+        }
+        db_warn(
+            self.db.upsert_poll_vote(conv_id, target_timestamp, voter, voter_name, option_indexes, vote_count),
+            "upsert_poll_vote",
+        );
+    }
+
+    fn handle_poll_terminated(&mut self, conv_id: &str, target_timestamp: i64) {
+        if let Some(conv) = self.conversations.get_mut(conv_id) {
+            if let Some(msg) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == target_timestamp) {
+                if let Some(ref mut poll) = msg.poll_data {
+                    poll.closed = true;
+                }
+            }
+        }
+        db_warn(
+            self.db.close_poll(conv_id, target_timestamp),
+            "close_poll",
+        );
+    }
+
     fn execute_pin_toggle(&mut self) -> Option<SendRequest> {
         let msg = self.selected_message()?;
         if msg.is_system || msg.is_deleted {
@@ -3152,6 +3354,72 @@ impl App {
             KeyCode::Esc => {
                 self.show_pin_duration = false;
                 self.pin_pending = None;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    pub fn handle_poll_vote_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+        let pending = self.poll_vote_pending.as_ref()?;
+        let option_count = pending.options.len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.poll_vote_index < option_count.saturating_sub(1) {
+                    self.poll_vote_index += 1;
+                }
+                None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.poll_vote_index = self.poll_vote_index.saturating_sub(1);
+                None
+            }
+            KeyCode::Char(' ') => {
+                let allow_multiple = pending.allow_multiple;
+                if allow_multiple {
+                    if let Some(sel) = self.poll_vote_selections.get_mut(self.poll_vote_index) {
+                        *sel = !*sel;
+                    }
+                } else {
+                    // Single select: clear all, select current
+                    for sel in &mut self.poll_vote_selections {
+                        *sel = false;
+                    }
+                    if let Some(sel) = self.poll_vote_selections.get_mut(self.poll_vote_index) {
+                        *sel = true;
+                    }
+                }
+                None
+            }
+            KeyCode::Enter => {
+                let selected: Vec<i64> = self.poll_vote_selections
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &sel)| sel)
+                    .map(|(i, _)| i as i64)
+                    .collect();
+                if selected.is_empty() {
+                    return None;
+                }
+                let pending = self.poll_vote_pending.take()?;
+                self.show_poll_vote = false;
+
+                // Optimistic local vote
+                let voter = self.account.clone();
+                self.handle_poll_vote(&pending.conv_id, pending.poll_timestamp, &voter, None, &selected, 1);
+
+                Some(SendRequest::PollVote {
+                    recipient: pending.conv_id,
+                    is_group: pending.is_group,
+                    poll_author: pending.poll_author,
+                    poll_timestamp: pending.poll_timestamp,
+                    option_indexes: selected,
+                    vote_count: 1,
+                })
+            }
+            KeyCode::Esc => {
+                self.show_poll_vote = false;
+                self.poll_vote_pending = None;
                 None
             }
             _ => None,
@@ -3846,6 +4114,8 @@ impl App {
                             sender_id: self.account.clone(),
                             expires_in_seconds: out_expires,
                             expiration_start_ms: out_expiry_start,
+                            poll_data: None,
+                            poll_votes: Vec::new(),
                         });
                     }
                     db_warn(self.db.insert_message_full(
@@ -4040,6 +4310,78 @@ impl App {
                     Err(msg) => {
                         self.status_message = msg;
                     }
+                }
+            }
+            InputAction::Poll { question, options, allow_multiple } => {
+                if let Some(ref conv_id) = self.active_conversation {
+                    let conv_id = conv_id.clone();
+                    let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                    let now = Utc::now();
+                    let local_ts_ms = now.timestamp_millis();
+
+                    let poll_options: Vec<PollOption> = options.iter().enumerate()
+                        .map(|(i, text)| PollOption { id: i as i64, text: text.clone() })
+                        .collect();
+                    let poll_data = PollData {
+                        question: question.clone(),
+                        options: poll_options,
+                        allow_multiple,
+                        closed: false,
+                    };
+
+                    // Optimistic local message
+                    if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                        conv.messages.push(DisplayMessage {
+                            sender: "you".to_string(),
+                            timestamp: now,
+                            body: format!("\u{1F4CA} {question}"),
+                            is_system: false,
+                            image_lines: None,
+                            image_path: None,
+                            status: Some(MessageStatus::Sending),
+                            timestamp_ms: local_ts_ms,
+                            reactions: Vec::new(),
+                            mention_ranges: Vec::new(),
+                            style_ranges: Vec::new(),
+                            quote: None,
+                            is_edited: false,
+                            is_deleted: false,
+                            is_pinned: false,
+                            sender_id: self.account.clone(),
+                            expires_in_seconds: 0,
+                            expiration_start_ms: 0,
+                            poll_data: Some(poll_data),
+                            poll_votes: Vec::new(),
+                        });
+                    }
+                    db_warn(self.db.insert_message_full(
+                        &conv_id, "you", &now.to_rfc3339(),
+                        &format!("\u{1F4CA} {question}"),
+                        false, Some(MessageStatus::Sending), local_ts_ms,
+                        &self.account.clone(), None, None, None, 0, 0,
+                    ), "insert_poll_msg");
+                    // Persist poll_data
+                    let poll_data_for_db = PollData {
+                        question: question.clone(),
+                        options: options.iter().enumerate()
+                            .map(|(i, text)| PollOption { id: i as i64, text: text.clone() })
+                            .collect(),
+                        allow_multiple,
+                        closed: false,
+                    };
+                    db_warn(self.db.upsert_poll_data(&conv_id, local_ts_ms, &poll_data_for_db), "upsert_poll_data");
+
+                    self.scroll_offset = 0;
+                    return Some(SendRequest::PollCreate {
+                        recipient: conv_id,
+                        is_group,
+                        question,
+                        options,
+                        allow_multiple,
+                        local_ts_ms,
+                    });
+                } else {
+                    self.status_message = "No active conversation".to_string();
                 }
             }
             InputAction::Unknown(msg) => {
@@ -4609,6 +4951,7 @@ impl App {
             || self.show_message_request
             || self.show_theme_picker
             || self.show_pin_duration
+            || self.show_poll_vote
             || self.autocomplete_visible
     }
 
@@ -5383,6 +5726,8 @@ mod tests {
                 sender_id: String::new(),
                 expires_in_seconds: 0,
                 expiration_start_ms: 0,
+                poll_data: None,
+                poll_votes: Vec::new(),
             });
         }
 
@@ -5435,6 +5780,8 @@ mod tests {
                 sender_id: String::new(),
                 expires_in_seconds: 0,
                 expiration_start_ms: 0,
+                poll_data: None,
+                poll_votes: Vec::new(),
             });
         }
 
@@ -5478,6 +5825,8 @@ mod tests {
                 sender_id: String::new(),
                 expires_in_seconds: 0,
                 expiration_start_ms: 0,
+                poll_data: None,
+                poll_votes: Vec::new(),
             });
         }
 
@@ -5521,6 +5870,8 @@ mod tests {
                 sender_id: String::new(),
                 expires_in_seconds: 0,
                 expiration_start_ms: 0,
+                poll_data: None,
+                poll_votes: Vec::new(),
             });
         }
 
@@ -5588,6 +5939,8 @@ mod tests {
                 sender_id: String::new(),
                 expires_in_seconds: 0,
                 expiration_start_ms: 0,
+                poll_data: None,
+                poll_votes: Vec::new(),
             });
         }
 
@@ -5782,6 +6135,8 @@ mod tests {
                 sender_id: String::new(),
                 expires_in_seconds: 0,
                 expiration_start_ms: 0,
+                poll_data: None,
+                poll_votes: Vec::new(),
             });
         }
 
@@ -5851,6 +6206,8 @@ mod tests {
             sender_id: "+3".to_string(), // Charlie's phone — not in contacts
             expires_in_seconds: 0,
             expiration_start_ms: 0,
+            poll_data: None,
+            poll_votes: Vec::new(),
         });
         conv.messages.push(DisplayMessage {
             sender: "Alice".to_string(),
@@ -5876,6 +6233,8 @@ mod tests {
             sender_id: "+1".to_string(),
             expires_in_seconds: 0,
             expiration_start_ms: 0,
+            poll_data: None,
+            poll_votes: Vec::new(),
         });
         // A message with a quote from a non-contact
         conv.messages.push(DisplayMessage {
@@ -5897,6 +6256,8 @@ mod tests {
             sender_id: "+10000000000".to_string(),
             expires_in_seconds: 0,
             expiration_start_ms: 0,
+            poll_data: None,
+            poll_votes: Vec::new(),
         });
 
         // Contact list arrives — only +2 is a formal contact
@@ -6982,6 +7343,10 @@ mod tests {
         app.show_pin_duration = true;
         assert!(app.has_overlay());
         app.show_pin_duration = false;
+
+        app.show_poll_vote = true;
+        assert!(app.has_overlay());
+        app.show_poll_vote = false;
 
         assert!(!app.has_overlay());
     }

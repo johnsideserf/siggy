@@ -866,6 +866,158 @@ impl SignalClient {
         Ok(())
     }
 
+    pub async fn send_poll_create(
+        &self,
+        recipient: &str,
+        is_group: bool,
+        question: &str,
+        options: &[String],
+        allow_multiple: bool,
+    ) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("sendPollCreate".to_string(), Instant::now()));
+        }
+
+        let option_arr: Vec<serde_json::Value> = options
+            .iter()
+            .map(|o| serde_json::Value::String(o.clone()))
+            .collect();
+
+        let mut params = if is_group {
+            serde_json::json!({
+                "groupId": recipient,
+                "question": question,
+                "option": option_arr,
+                "account": self.account,
+            })
+        } else {
+            serde_json::json!({
+                "recipient": [recipient],
+                "question": question,
+                "option": option_arr,
+                "account": self.account,
+            })
+        };
+
+        if !allow_multiple {
+            params.as_object_mut().unwrap().insert("noMulti".to_string(), serde_json::json!(true));
+        }
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendPollCreate".to_string(),
+            id: id.clone(),
+            params: Some(params),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send poll create to signal-cli stdin")?;
+        Ok(id)
+    }
+
+    pub async fn send_poll_vote(
+        &self,
+        recipient: &str,
+        is_group: bool,
+        poll_author: &str,
+        poll_timestamp: i64,
+        options: &[i64],
+        vote_count: i64,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("sendPollVote".to_string(), Instant::now()));
+        }
+
+        let option_arr: Vec<serde_json::Value> = options
+            .iter()
+            .map(|&o| serde_json::json!(o))
+            .collect();
+
+        let mut params = if is_group {
+            serde_json::json!({
+                "groupId": recipient,
+                "pollAuthor": poll_author,
+                "pollTimestamp": poll_timestamp,
+                "option": option_arr,
+                "account": self.account,
+            })
+        } else {
+            serde_json::json!({
+                "recipient": [recipient],
+                "pollAuthor": poll_author,
+                "pollTimestamp": poll_timestamp,
+                "option": option_arr,
+                "account": self.account,
+            })
+        };
+
+        if vote_count != 1 {
+            params.as_object_mut().unwrap().insert("voteCount".to_string(), serde_json::json!(vote_count));
+        }
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendPollVote".to_string(),
+            id,
+            params: Some(params),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send poll vote to signal-cli stdin")?;
+        Ok(())
+    }
+
+    pub async fn send_poll_terminate(
+        &self,
+        recipient: &str,
+        is_group: bool,
+        poll_timestamp: i64,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("sendPollTerminate".to_string(), Instant::now()));
+        }
+
+        let params = if is_group {
+            serde_json::json!({
+                "groupId": recipient,
+                "pollTimestamp": poll_timestamp,
+                "account": self.account,
+            })
+        } else {
+            serde_json::json!({
+                "recipient": [recipient],
+                "pollTimestamp": poll_timestamp,
+                "account": self.account,
+            })
+        };
+
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "sendPollTerminate".to_string(),
+            id,
+            params: Some(params),
+        };
+
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send poll terminate to signal-cli stdin")?;
+        Ok(())
+    }
+
     /// Returns accumulated stderr output from the signal-cli process.
     pub fn stderr_output(&self) -> String {
         self.stderr_buffer.lock().map(|buf| buf.clone()).unwrap_or_default()
@@ -956,7 +1108,14 @@ fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&st
                 .collect();
             Some(SignalEvent::GroupList(groups))
         }
-        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" | "updateContact" | "updateGroup" | "quitGroup" | "sendMessageRequestResponse" | "block" | "unblock" | "sendPinMessage" | "sendUnpinMessage" => None, // fire-and-forget, no action needed
+        "sendPollCreate" => {
+            let id = rpc_id?.to_string();
+            let server_ts = result.get("timestamp").and_then(|v| v.as_i64())
+                .or_else(|| result.as_i64())
+                .unwrap_or(0);
+            Some(SignalEvent::SendTimestamp { rpc_id: id, server_ts })
+        }
+        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" | "updateContact" | "updateGroup" | "quitGroup" | "sendMessageRequestResponse" | "block" | "unblock" | "sendPinMessage" | "sendUnpinMessage" | "sendPollVote" | "sendPollTerminate" => None, // fire-and-forget, no action needed
         _ => None,
     }
 }
@@ -1234,6 +1393,17 @@ fn parse_data_message(
         });
     }
 
+    // Check for poll messages
+    if let Some(poll_create) = data.get("pollCreate") {
+        return parse_poll_create(envelope, data, poll_create);
+    }
+    if let Some(poll_vote) = data.get("pollVote") {
+        return parse_poll_vote(envelope, data, poll_vote);
+    }
+    if let Some(poll_terminate) = data.get("pollTerminate") {
+        return parse_poll_terminate(envelope, data, poll_terminate);
+    }
+
     // Check for remote delete
     if let Some(remote_delete) = data.get("remoteDelete") {
         let target_timestamp = remote_delete.get("timestamp").and_then(|v| v.as_i64())?;
@@ -1390,6 +1560,102 @@ fn parse_data_message(
     }))
 }
 
+fn parse_poll_create(
+    envelope: &serde_json::Value,
+    data: &serde_json::Value,
+    poll_create: &serde_json::Value,
+) -> Option<SignalEvent> {
+    let question = poll_create.get("question").and_then(|v| v.as_str())?.to_string();
+    let allow_multiple = poll_create.get("allowMultiple").and_then(|v| v.as_bool()).unwrap_or(false);
+    let options: Vec<crate::signal::types::PollOption> = poll_create
+        .get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .filter_map(|(i, opt)| {
+                    let text = opt.get("optionText").and_then(|v| v.as_str())?.to_string();
+                    let id = opt.get("id").and_then(|v| v.as_i64()).unwrap_or(i as i64);
+                    Some(crate::signal::types::PollOption { id, text })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
+    let sender = envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let conv_id = group_id.unwrap_or(sender).to_string();
+    let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+
+    let poll_data = crate::signal::types::PollData {
+        question,
+        options,
+        allow_multiple,
+        closed: false,
+    };
+
+    // Also emit the message itself (with body = question) so it appears in chat
+    Some(SignalEvent::PollCreated {
+        conv_id,
+        timestamp,
+        poll_data,
+    })
+}
+
+fn parse_poll_vote(
+    envelope: &serde_json::Value,
+    data: &serde_json::Value,
+    poll_vote: &serde_json::Value,
+) -> Option<SignalEvent> {
+    let target_timestamp = poll_vote.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
+    let voter = poll_vote
+        .get("authorNumber")
+        .and_then(|v| v.as_str())
+        .or_else(|| envelope.get("sourceNumber").and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
+        .to_string();
+    let voter_name = envelope
+        .get("sourceName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let option_indexes: Vec<i64> = poll_vote
+        .get("optionIndexes")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+    let vote_count = poll_vote.get("voteCount").and_then(|v| v.as_i64()).unwrap_or(1);
+
+    let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
+    let sender = envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let conv_id = group_id.unwrap_or(sender).to_string();
+
+    Some(SignalEvent::PollVoteReceived {
+        conv_id,
+        target_timestamp,
+        voter,
+        voter_name,
+        option_indexes,
+        vote_count,
+    })
+}
+
+fn parse_poll_terminate(
+    envelope: &serde_json::Value,
+    data: &serde_json::Value,
+    poll_terminate: &serde_json::Value,
+) -> Option<SignalEvent> {
+    let target_timestamp = poll_terminate.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
+    let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
+    let sender = envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let conv_id = group_id.unwrap_or(sender).to_string();
+
+    Some(SignalEvent::PollTerminated {
+        conv_id,
+        target_timestamp,
+    })
+}
+
 fn parse_sent_sync(
     envelope: &serde_json::Value,
     sent: &serde_json::Value,
@@ -1398,6 +1664,17 @@ fn parse_sent_sync(
     // Check for synced reaction before extracting body/attachments
     if let Some(reaction) = sent.get("reaction") {
         return parse_reaction_sync(envelope, sent, reaction);
+    }
+
+    // Check for synced poll messages
+    if let Some(poll_create) = sent.get("pollCreate") {
+        return parse_poll_create(envelope, sent, poll_create);
+    }
+    if let Some(poll_vote) = sent.get("pollVote") {
+        return parse_poll_vote(envelope, sent, poll_vote);
+    }
+    if let Some(poll_terminate) = sent.get("pollTerminate") {
+        return parse_poll_terminate(envelope, sent, poll_terminate);
     }
 
     // Check for synced pin message
@@ -2891,6 +3168,99 @@ mod tests {
                 assert!(msg.text_styles.is_empty());
             }
             _ => panic!("Expected MessageReceived, got {:?}", event2),
+        }
+    }
+
+    #[test]
+    fn parse_poll_create_basic() {
+        let resp = make_resp(json!({
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "sourceName": "Alice",
+                "timestamp": 1700000000000i64,
+                "dataMessage": {
+                    "timestamp": 1700000000000i64,
+                    "pollCreate": {
+                        "question": "What for lunch?",
+                        "allowMultiple": true,
+                        "options": [
+                            {"id": 0, "optionText": "Pizza"},
+                            {"id": 1, "optionText": "Sushi"},
+                            {"id": 2, "optionText": "Tacos"}
+                        ]
+                    }
+                }
+            }
+        }));
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::PollCreated { conv_id, timestamp, poll_data } => {
+                assert_eq!(conv_id, "+15551234567");
+                assert_eq!(timestamp, 1700000000000);
+                assert_eq!(poll_data.question, "What for lunch?");
+                assert!(poll_data.allow_multiple);
+                assert_eq!(poll_data.options.len(), 3);
+                assert_eq!(poll_data.options[0].text, "Pizza");
+                assert_eq!(poll_data.options[2].text, "Tacos");
+                assert!(!poll_data.closed);
+            }
+            _ => panic!("Expected PollCreated, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_poll_vote_basic() {
+        let resp = make_resp(json!({
+            "envelope": {
+                "sourceNumber": "+15559876543",
+                "sourceName": "Bob",
+                "timestamp": 1700000001000i64,
+                "dataMessage": {
+                    "timestamp": 1700000001000i64,
+                    "pollVote": {
+                        "authorNumber": "+15559876543",
+                        "targetSentTimestamp": 1700000000000i64,
+                        "optionIndexes": [0, 2],
+                        "voteCount": 1
+                    }
+                }
+            }
+        }));
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::PollVoteReceived { conv_id, target_timestamp, voter, option_indexes, vote_count, .. } => {
+                assert_eq!(conv_id, "+15559876543");
+                assert_eq!(target_timestamp, 1700000000000);
+                assert_eq!(voter, "+15559876543");
+                assert_eq!(option_indexes, vec![0, 2]);
+                assert_eq!(vote_count, 1);
+            }
+            _ => panic!("Expected PollVoteReceived, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_poll_terminate_basic() {
+        let resp = make_resp(json!({
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "sourceName": "Alice",
+                "timestamp": 1700000002000i64,
+                "dataMessage": {
+                    "timestamp": 1700000002000i64,
+                    "pollTerminate": {
+                        "targetSentTimestamp": 1700000000000i64
+                    }
+                }
+            }
+        }));
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::PollTerminated { conv_id, target_timestamp } => {
+                assert_eq!(conv_id, "+15551234567");
+                assert_eq!(target_timestamp, 1700000000000);
+            }
+            _ => panic!("Expected PollTerminated, got {event:?}"),
         }
     }
 }

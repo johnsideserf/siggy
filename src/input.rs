@@ -21,6 +21,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/disappearing", alias: "/dm", args: "<duration>", description: "Set disappearing timer (off/30s/5m/1h/1d/1w)" },
     CommandInfo { name: "/group",    alias: "/g",  args: "",        description: "Group management" },
     CommandInfo { name: "/theme",    alias: "/t",  args: "",        description: "Change color theme" },
+    CommandInfo { name: "/poll",     alias: "",    args: "\"question\" \"opt1\" \"opt2\" [--single]", description: "Create a poll" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
     CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit signal-tui" },
 ];
@@ -62,6 +63,8 @@ pub enum InputAction {
     Group,
     /// Open theme picker
     Theme,
+    /// Create a poll
+    Poll { question: String, options: Vec<String>, allow_multiple: bool },
     /// Unknown command
     Unknown(String),
 }
@@ -121,11 +124,74 @@ pub fn parse_input(input: &str) -> InputAction {
         }
         "/group" | "/g" => InputAction::Group,
         "/theme" | "/t" => InputAction::Theme,
+        "/poll" => {
+            match parse_poll_args(&arg) {
+                Some((question, options, allow_multiple)) if options.len() >= 2 => {
+                    InputAction::Poll { question, options, allow_multiple }
+                }
+                _ => InputAction::Unknown("Usage: /poll \"question\" \"option1\" \"option2\" [--single]".into()),
+            }
+        }
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
 }
 
+
+/// Parse `/poll` arguments: extract quoted strings and `--single` flag.
+/// Returns (question, options, allow_multiple) or None on parse failure.
+fn parse_poll_args(input: &str) -> Option<(String, Vec<String>, bool)> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut allow_multiple = true;
+    let mut chars = input.chars().peekable();
+
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if c == '"' {
+            // Quoted string
+            chars.next(); // skip opening quote
+            let mut s = String::new();
+            loop {
+                match chars.next() {
+                    Some('\\') => {
+                        if let Some(escaped) = chars.next() {
+                            s.push(escaped);
+                        }
+                    }
+                    Some('"') => break,
+                    Some(ch) => s.push(ch),
+                    None => break,
+                }
+            }
+            parts.push(s);
+        } else {
+            // Unquoted token
+            let mut s = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() {
+                    break;
+                }
+                s.push(c);
+                chars.next();
+            }
+            if s == "--single" {
+                allow_multiple = false;
+            } else {
+                parts.push(s);
+            }
+        }
+    }
+
+    if parts.len() < 3 {
+        // Need at least question + 2 options
+        return None;
+    }
+    let question = parts.remove(0);
+    Some((question, parts, allow_multiple))
+}
 
 /// Format seconds as a compact duration: "30s", "5m", "1h", "1d", "1w".
 pub fn format_compact_duration(seconds: i64) -> String {
@@ -275,5 +341,44 @@ mod tests {
     #[case("-1h")]
     fn duration_parser_invalid(#[case] input: &str) {
         assert!(parse_duration_to_seconds(input).is_err(), "expected error for {input:?}");
+    }
+
+    // --- Poll command ---
+
+    #[test]
+    fn poll_command_basic() {
+        let result = parse_input(r#"/poll "What for lunch?" "Pizza" "Sushi""#);
+        match result {
+            InputAction::Poll { question, options, allow_multiple } => {
+                assert_eq!(question, "What for lunch?");
+                assert_eq!(options, vec!["Pizza", "Sushi"]);
+                assert!(allow_multiple);
+            }
+            other => panic!("expected Poll, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn poll_command_single_select() {
+        let result = parse_input(r#"/poll "Q" "A" "B" --single"#);
+        match result {
+            InputAction::Poll { allow_multiple, options, .. } => {
+                assert!(!allow_multiple);
+                assert_eq!(options, vec!["A", "B"]);
+            }
+            other => panic!("expected Poll, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn poll_command_too_few_options() {
+        let result = parse_input(r#"/poll "Q" "A""#);
+        assert!(matches!(result, InputAction::Unknown(_)));
+    }
+
+    #[test]
+    fn poll_command_no_args() {
+        let result = parse_input("/poll");
+        assert!(matches!(result, InputAction::Unknown(_)));
     }
 }

@@ -4,7 +4,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 
 use crate::app::{Conversation, DisplayMessage};
-use crate::signal::types::{MessageStatus, Reaction};
+use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction};
 
 /// (sender, body, timestamp_ms, conversation_id, conversation_name)
 pub type SearchRow = (String, String, i64, String, String);
@@ -195,6 +195,26 @@ impl Database {
             )?;
         }
 
+        if version < 11 {
+            self.conn.execute_batch(
+                "
+                BEGIN;
+                ALTER TABLE messages ADD COLUMN poll_data TEXT;
+                CREATE TABLE IF NOT EXISTS poll_votes (
+                    conv_id TEXT NOT NULL,
+                    poll_timestamp INTEGER NOT NULL,
+                    voter TEXT NOT NULL,
+                    voter_name TEXT,
+                    option_indexes TEXT NOT NULL,
+                    vote_count INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(conv_id, poll_timestamp, voter)
+                );
+                UPDATE schema_version SET version = 11;
+                COMMIT;
+                ",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -249,7 +269,7 @@ impl Database {
         for (id, name, is_group, expiration_timer, accepted) in convs {
             // Load last N messages
             let mut msg_stmt = self.conn.prepare(
-                "SELECT sender, timestamp, body, is_system, status, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, pinned FROM messages
+                "SELECT sender, timestamp, body, is_system, status, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, pinned, poll_data FROM messages
                  WHERE conversation_id = ?1
                  ORDER BY timestamp_ms DESC, rowid DESC LIMIT ?2",
             )?;
@@ -271,10 +291,11 @@ impl Database {
                     let expires_in_seconds: i64 = row.get(12)?;
                     let expiration_start_ms: i64 = row.get(13)?;
                     let is_pinned: bool = row.get::<_, i32>(14)? != 0;
-                    Ok((sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned))
+                    let poll_data_json: Option<String> = row.get(15)?;
+                    Ok((sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json))
                 })?
                 .filter_map(|r| r.ok())
-                .filter_map(|(sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned)| {
+                .filter_map(|(sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json)| {
                     let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
                         .ok()?
                         .with_timezone(&chrono::Utc);
@@ -287,6 +308,7 @@ impl Database {
                         }),
                         _ => None,
                     };
+                    let poll_data = poll_data_json.and_then(|j| serde_json::from_str::<PollData>(&j).ok());
                     Some(DisplayMessage {
                         sender,
                         timestamp,
@@ -306,6 +328,8 @@ impl Database {
                         sender_id,
                         expires_in_seconds,
                         expiration_start_ms,
+                        poll_data,
+                        poll_votes: Vec::new(),
                     })
                 })
                 .collect();
@@ -332,6 +356,15 @@ impl Database {
                         } else {
                             msg.reactions.push(Reaction { emoji, sender });
                         }
+                    }
+                }
+            }
+
+            // Attach poll votes from DB to matching poll messages
+            for msg in &mut messages {
+                if msg.poll_data.is_some() {
+                    if let Ok(votes) = self.load_poll_votes(&id, msg.timestamp_ms) {
+                        msg.poll_votes = votes;
                     }
                 }
             }
@@ -707,6 +740,76 @@ impl Database {
             params![now_ms],
         )?;
         Ok(deleted)
+    }
+
+    // --- Polls ---
+
+    pub fn upsert_poll_data(&self, conv_id: &str, timestamp_ms: i64, poll_data: &PollData) -> Result<()> {
+        let json = serde_json::to_string(poll_data)?;
+        self.conn.execute(
+            "UPDATE messages SET poll_data = ?3
+             WHERE conversation_id = ?1 AND timestamp_ms = ?2",
+            params![conv_id, timestamp_ms, json],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_poll_vote(
+        &self,
+        conv_id: &str,
+        poll_timestamp: i64,
+        voter: &str,
+        voter_name: Option<&str>,
+        option_indexes: &[i64],
+        vote_count: i64,
+    ) -> Result<()> {
+        let indexes_json = serde_json::to_string(option_indexes)?;
+        self.conn.execute(
+            "INSERT INTO poll_votes (conv_id, poll_timestamp, voter, voter_name, option_indexes, vote_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(conv_id, poll_timestamp, voter)
+             DO UPDATE SET option_indexes = excluded.option_indexes, vote_count = excluded.vote_count, voter_name = excluded.voter_name",
+            params![conv_id, poll_timestamp, voter, voter_name, indexes_json, vote_count],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_poll_votes(&self, conv_id: &str, poll_timestamp: i64) -> Result<Vec<PollVote>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT voter, voter_name, option_indexes, vote_count FROM poll_votes
+             WHERE conv_id = ?1 AND poll_timestamp = ?2",
+        )?;
+        let rows: Vec<PollVote> = stmt
+            .query_map(params![conv_id, poll_timestamp], |row| {
+                let voter: String = row.get(0)?;
+                let voter_name: Option<String> = row.get(1)?;
+                let indexes_json: String = row.get(2)?;
+                let vote_count: i64 = row.get(3)?;
+                let option_indexes: Vec<i64> = serde_json::from_str(&indexes_json).unwrap_or_default();
+                Ok(PollVote { voter, voter_name, option_indexes, vote_count })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn close_poll(&self, conv_id: &str, poll_timestamp: i64) -> Result<()> {
+        let poll_json: Option<String> = self.conn.query_row(
+            "SELECT poll_data FROM messages WHERE conversation_id = ?1 AND timestamp_ms = ?2",
+            params![conv_id, poll_timestamp],
+            |row| row.get(0),
+        ).ok().flatten();
+        if let Some(json_str) = poll_json {
+            if let Ok(mut poll_data) = serde_json::from_str::<PollData>(&json_str) {
+                poll_data.closed = true;
+                let updated = serde_json::to_string(&poll_data)?;
+                self.conn.execute(
+                    "UPDATE messages SET poll_data = ?3
+                     WHERE conversation_id = ?1 AND timestamp_ms = ?2",
+                    params![conv_id, poll_timestamp, updated],
+                )?;
+            }
+        }
+        Ok(())
     }
 
 }

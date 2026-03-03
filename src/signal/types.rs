@@ -47,6 +47,31 @@ pub struct Reaction {
     pub sender: String,
 }
 
+/// Poll data attached to a poll-create message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollData {
+    pub question: String,
+    pub options: Vec<PollOption>,
+    pub allow_multiple: bool,
+    pub closed: bool,
+}
+
+/// A single option in a poll.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PollOption {
+    pub id: i64,
+    pub text: String,
+}
+
+/// A vote on a poll from a specific user.
+#[derive(Debug, Clone)]
+pub struct PollVote {
+    pub voter: String,
+    pub voter_name: Option<String>,
+    pub option_indexes: Vec<i64>,
+    pub vote_count: i64,
+}
+
 /// Events received from signal-cli
 #[derive(Debug, Clone)]
 pub enum SignalEvent {
@@ -110,6 +135,23 @@ pub enum SignalEvent {
         sender_name: Option<String>,
         #[allow(dead_code)]
         target_author: String,
+        target_timestamp: i64,
+    },
+    PollCreated {
+        conv_id: String,
+        timestamp: i64,
+        poll_data: PollData,
+    },
+    PollVoteReceived {
+        conv_id: String,
+        target_timestamp: i64,
+        voter: String,
+        voter_name: Option<String>,
+        option_indexes: Vec<i64>,
+        vote_count: i64,
+    },
+    PollTerminated {
+        conv_id: String,
         target_timestamp: i64,
     },
     SystemMessage {
