@@ -412,6 +412,8 @@ pub struct App {
     pub mouse_input_prefix_len: u16,
     /// Enable mouse support (click sidebar, scroll messages, click links)
     pub mouse_enabled: bool,
+    /// Pending mouse capture toggle — set by settings on_toggle, drained by main loop
+    pub pending_mouse_toggle: Option<bool>,
     /// Active color theme
     pub theme: Theme,
     /// Theme picker overlay visible
@@ -681,7 +683,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.mouse_enabled,
         set: |a, v| a.mouse_enabled = v,
         save: Some(|c, v| c.mouse_enabled = v),
-        on_toggle: None,
+        on_toggle: Some(|a| { a.pending_mouse_toggle = Some(a.mouse_enabled); }),
     },
 ];
 
@@ -2095,6 +2097,7 @@ impl App {
             mouse_input_area: Rect::default(),
             mouse_input_prefix_len: 0,
             mouse_enabled: true,
+            pending_mouse_toggle: None,
             theme: theme::default_theme(),
             show_theme_picker: false,
             theme_index: 0,
@@ -4938,6 +4941,29 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Handle a bracketed paste event (Ctrl+V or terminal paste).
+    /// Inserts the entire pasted string at once, avoiding per-character overhead.
+    pub fn handle_paste(&mut self, text: String) -> Option<SendRequest> {
+        if self.mode != InputMode::Insert || self.has_overlay() {
+            return None;
+        }
+        // Insert pasted text at cursor position
+        self.input_buffer.insert_str(self.input_cursor, &text);
+        self.input_cursor += text.len();
+        // Single autocomplete + typing indicator update
+        self.update_autocomplete();
+        self.typing_last_keypress = Some(Instant::now());
+        if !self.typing_sent
+            && !self.input_buffer.is_empty()
+            && !self.input_buffer.starts_with('/')
+            && self.active_conversation.as_ref().is_some_and(|id| !self.blocked_conversations.contains(id))
+        {
+            self.typing_sent = true;
+            return self.build_typing_request(false);
+        }
+        None
     }
 
     /// Accept the currently selected autocomplete candidate.

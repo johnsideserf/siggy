@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::{
     cursor::{MoveTo, RestorePosition, SavePosition},
-    event::{self, EnableMouseCapture, DisableMouseCapture, Event, KeyEventKind},
+    event::{self, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, Event, KeyEventKind},
     execute, queue,
     style::{Print, ResetColor, SetForegroundColor},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -132,7 +132,11 @@ async fn main() -> Result<()> {
     // Set up terminal BEFORE anything else so all errors render in the TUI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    if config.mouse_enabled {
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    } else {
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -141,7 +145,7 @@ async fn main() -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)?;
     terminal.show_cursor()?;
 
     if let Err(e) = result {
@@ -695,9 +699,13 @@ async fn run_app(
 
     let mut last_expiry_sweep = Instant::now();
 
-    // Re-enable mouse capture — on Windows, spawning cmd.exe subprocesses
+    // Re-enable terminal modes — on Windows, spawning cmd.exe subprocesses
     // (signal-cli.bat, check_account_registered) can reset console input mode flags.
-    execute!(terminal.backend_mut(), EnableMouseCapture)?;
+    if config.mouse_enabled {
+        execute!(terminal.backend_mut(), EnableMouseCapture, EnableBracketedPaste)?;
+    } else {
+        execute!(terminal.backend_mut(), EnableBracketedPaste)?;
+    }
 
     loop {
         // Force full redraw when active conversation changes (clears native image artifacts)
@@ -740,6 +748,11 @@ async fn run_app(
                 }
                 Event::Mouse(mouse) => {
                     if let Some(req) = app.handle_mouse_event(mouse) {
+                        dispatch_send(signal_client, &mut app, req).await;
+                    }
+                }
+                Event::Paste(text) => {
+                    if let Some(req) = app.handle_paste(text) {
                         dispatch_send(signal_client, &mut app, req).await;
                     }
                 }
@@ -809,6 +822,15 @@ async fn run_app(
             execute!(terminal.backend_mut(), crossterm::style::Print("\x07"))?;
         }
 
+        // Dynamic mouse capture toggle from settings
+        if let Some(enabled) = app.pending_mouse_toggle.take() {
+            if enabled {
+                execute!(terminal.backend_mut(), EnableMouseCapture)?;
+            } else {
+                execute!(terminal.backend_mut(), DisableMouseCapture)?;
+            }
+        }
+
         // Update terminal title with unread count
         let unread = app.total_unread();
         let title = if unread > 0 {
@@ -875,6 +897,9 @@ async fn run_demo_app(
                 }
                 Event::Mouse(mouse) => {
                     app.handle_mouse_event(mouse);
+                }
+                Event::Paste(text) => {
+                    app.handle_paste(text);
                 }
                 _ => {}
             }
