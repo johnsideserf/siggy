@@ -2784,14 +2784,12 @@ pub(crate) fn build_poll_display(
 
     let option_count = poll.options.len();
     let mut counts = vec![0usize; option_count];
-    let mut total_votes = 0usize;
     let mut own_selections: Vec<bool> = vec![false; option_count];
 
     for vote in votes {
         for &idx in &vote.option_indexes {
             if (idx as usize) < option_count {
-                counts[idx as usize] += vote.vote_count as usize;
-                total_votes += vote.vote_count as usize;
+                counts[idx as usize] += 1;
             }
         }
         if vote.voter == own_account {
@@ -2802,6 +2800,7 @@ pub(crate) fn build_poll_display(
             }
         }
     }
+    let total_votes: usize = counts.iter().sum();
 
     let bar_width = 10;
 
