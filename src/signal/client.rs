@@ -9,6 +9,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+/// Maximum size of the stderr capture buffer (~1 MB).
+const MAX_STDERR_LEN: usize = 1_000_000;
+
 use crate::config::Config;
 use crate::signal::types::*;
 
@@ -145,6 +148,10 @@ impl SignalClient {
                         buf.push('\n');
                     }
                     buf.push_str(&line);
+                    if buf.len() > MAX_STDERR_LEN {
+                        let drain_to = buf.len() - MAX_STDERR_LEN / 2;
+                        buf.drain(..drain_to);
+                    }
                 }
             }
         });
