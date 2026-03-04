@@ -24,9 +24,9 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/poll",     alias: "",    args: "\"question\" \"opt1\" \"opt2\" [--single]", description: "Create a poll" },
     CommandInfo { name: "/verify",   alias: "/v",  args: "",        description: "Verify contact identity" },
     CommandInfo { name: "/profile",  alias: "",    args: "",        description: "Edit your Signal profile" },
-    CommandInfo { name: "/about",    alias: "",    args: "",        description: "About signal-tui" },
+    CommandInfo { name: "/about",    alias: "",    args: "",        description: "About siggy" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
-    CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit signal-tui" },
+    CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit siggy" },
 ];
 
 /// Parsed user input — either a command or plain text to send

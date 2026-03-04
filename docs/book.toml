@@ -1,5 +1,5 @@
 [book]
-title = "signal-tui"
+title = "siggy"
 description = "Terminal-based Signal messenger client"
 authors = ["johnsideserf"]
 language = "en"
@@ -13,9 +13,9 @@ default-theme = "light"
 preferred-dark-theme = "light"
 additional-css = ["theme/css/irc-theme.css"]
 additional-js = ["theme/js/dark-toggle.js"]
-site-url = "/signal-tui/"
-git-repository-url = "https://github.com/johnsideserf/signal-tui"
-edit-url-template = "https://github.com/johnsideserf/signal-tui/edit/master/docs/{path}"
+site-url = "/siggy/"
+git-repository-url = "https://github.com/johnsideserf/siggy"
+edit-url-template = "https://github.com/johnsideserf/siggy/edit/master/docs/{path}"
 
 [output.html.fold]
 enable = true

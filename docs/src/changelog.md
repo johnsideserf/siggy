@@ -71,7 +71,7 @@
 
 ### Disappearing messages
 
-- **Timer support** -- signal-tui now honors disappearing message timers.
+- **Timer support** -- siggy now honors disappearing message timers.
   Messages auto-expire after the configured duration, with a countdown shown
   in the chat area. Set the timer with `/disappearing <duration>` (alias `/dm`)
   using values like `30s`, `5m`, `1h`, `1d`, `1w`, or `off` (closes #61)
@@ -155,7 +155,7 @@
 ### Cross-device read sync
 
 - **Read state sync** -- when you read messages on your phone or another linked
-  device, signal-tui marks those conversations as read and updates unread counts
+  device, siggy marks those conversations as read and updates unread counts
   automatically (closes #71)
 
 ### System messages
@@ -257,7 +257,7 @@
 
 ### Send typing indicators
 
-- **Outbound typing** -- signal-tui now sends typing indicators to your
+- **Outbound typing** -- siggy now sends typing indicators to your
   conversation partner while you type. Typing state starts on the first
   keypress, auto-stops after 5 seconds of inactivity, and stops immediately
   when you send or switch conversations (closes #58)
@@ -399,7 +399,7 @@
 
 ### Debug logging
 
-- **`--debug` flag** -- opt-in protocol logging to `signal-tui-debug.log`
+- **`--debug` flag** -- opt-in protocol logging to `siggy-debug.log`
   for diagnosing signal-cli communication issues
 
 ### Database

@@ -61,7 +61,7 @@ Two install scripts are provided in the repository root:
 ### `install.sh` (Linux / macOS)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/johnsideserf/signal-tui/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/johnsideserf/siggy/master/install.sh | bash
 ```
 
 Downloads the latest release binary for the detected platform and checks for
@@ -70,7 +70,7 @@ signal-cli.
 ### `install.ps1` (Windows)
 
 ```powershell
-irm https://raw.githubusercontent.com/johnsideserf/signal-tui/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/johnsideserf/siggy/master/install.ps1 | iex
 ```
 
 Downloads the latest Windows release binary and checks for signal-cli.

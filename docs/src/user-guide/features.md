@@ -25,7 +25,7 @@ to open in your browser.
 ## Typing indicators
 
 When someone is typing, their name appears below the chat area. Contact name
-resolution is used where available. signal-tui also sends typing indicators to
+resolution is used where available. siggy also sends typing indicators to
 your conversation partners while you type, so they can see when you're composing
 a message.
 
@@ -35,8 +35,8 @@ All conversations, messages, and read markers are stored in a SQLite database wi
 WAL (Write-Ahead Logging) mode for safe concurrent access. Data survives app restarts.
 
 The database is stored alongside the config file:
-- **Linux / macOS:** `~/.config/signal-tui/signal-tui.db`
-- **Windows:** `%APPDATA%\signal-tui\signal-tui.db`
+- **Linux / macOS:** `~/.config/siggy/siggy.db`
+- **Windows:** `%APPDATA%\siggy\siggy.db`
 
 ## Unread tracking
 
@@ -62,7 +62,7 @@ notifications.
 
 ## Contact resolution
 
-On startup, signal-tui requests your contact list and group list from signal-cli.
+On startup, siggy requests your contact list and group list from signal-cli.
 Names from your Signal address book are used throughout the sidebar, chat area,
 and typing indicators.
 
@@ -74,7 +74,7 @@ The sidebar auto-hides on narrow terminals (less than 60 columns). Use
 ## Incognito mode
 
 ```sh
-signal-tui --incognito
+siggy --incognito
 ```
 
 Uses an in-memory database instead of on-disk SQLite. No messages, conversations,
@@ -181,19 +181,19 @@ directly. Press `Esc` to close.
 
 ## Read receipts
 
-signal-tui sends read receipts to message senders when you view a conversation,
+siggy sends read receipts to message senders when you view a conversation,
 letting them know you've read their messages. This can be toggled off via
 `/settings` > "Send read receipts".
 
 ## Cross-device read sync
 
-When you read messages on your phone or another linked device, signal-tui
+When you read messages on your phone or another linked device, siggy
 receives the read sync and marks those conversations as read. Unread counts
 update automatically.
 
 ## Disappearing messages
 
-signal-tui honors Signal's disappearing message timers. When a conversation has
+siggy honors Signal's disappearing message timers. When a conversation has
 a timer set, messages auto-expire after the configured duration. Set the timer
 with `/disappearing <duration>` (alias `/dm`):
 
@@ -291,7 +291,7 @@ Toggle via `/settings` > "Sidebar on right".
 ## Demo mode
 
 ```sh
-signal-tui --demo
+siggy --demo
 ```
 
 Launches with dummy conversations and messages. No signal-cli process is spawned.

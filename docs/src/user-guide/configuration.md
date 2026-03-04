@@ -2,17 +2,17 @@
 
 ## Config file location
 
-signal-tui loads its config from a TOML file at the platform-specific path:
+siggy loads its config from a TOML file at the platform-specific path:
 
 | Platform | Path |
 |---|---|
-| Linux / macOS | `~/.config/signal-tui/config.toml` |
-| Windows | `%APPDATA%\signal-tui\config.toml` |
+| Linux / macOS | `~/.config/siggy/config.toml` |
+| Windows | `%APPDATA%\siggy\config.toml` |
 
 You can override the path with the `-c` flag:
 
 ```sh
-signal-tui -c /path/to/config.toml
+siggy -c /path/to/config.toml
 ```
 
 ## Config fields
@@ -87,7 +87,7 @@ close the overlay, and persist across sessions.
 ## Incognito mode
 
 ```sh
-signal-tui --incognito
+siggy --incognito
 ```
 
 Incognito mode replaces the on-disk SQLite database with an in-memory database.

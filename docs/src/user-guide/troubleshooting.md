@@ -48,7 +48,7 @@ the install script uses the native signal-cli build which does not require Java.
 **Fix:**
 1. Check that your device is properly linked in Signal's settings on your phone
    (**Settings > Linked Devices**)
-2. Try re-running the setup wizard: `signal-tui --setup`
+2. Try re-running the setup wizard: `siggy --setup`
 3. Check signal-cli can communicate by running it directly:
    ```sh
    signal-cli -a +15551234567 receive
@@ -75,11 +75,11 @@ Widen your terminal, or press `/sidebar` to force it on. You can also use
 **Symptom:** errors about SQLite or the database file.
 
 **Fix:** the database is stored alongside the config file. If it becomes corrupted,
-you can delete it and signal-tui will create a fresh one on next launch. You'll
+you can delete it and siggy will create a fresh one on next launch. You'll
 lose message history but all conversations will re-populate from signal-cli.
 
 As a workaround, you can also run in incognito mode:
 
 ```sh
-signal-tui --incognito
+siggy --incognito
 ```

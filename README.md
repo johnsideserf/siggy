@@ -1,30 +1,30 @@
-# signal-tui
+# siggy
 
-[![CI](https://github.com/johnsideserf/signal-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/johnsideserf/signal-tui/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/johnsideserf/signal-tui)](https://github.com/johnsideserf/signal-tui/releases/latest)
-[![License: GPL-3.0](https://img.shields.io/github/license/johnsideserf/signal-tui)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-signal--tui-blue)](https://johnsideserf.github.io/signal-tui/)
+[![CI](https://github.com/johnsideserf/siggy/actions/workflows/ci.yml/badge.svg)](https://github.com/johnsideserf/siggy/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/johnsideserf/siggy)](https://github.com/johnsideserf/siggy/releases/latest)
+[![License: GPL-3.0](https://img.shields.io/github/license/johnsideserf/siggy)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-signal--tui-blue)](https://johnsideserf.github.io/siggy/)
 
 A terminal-based Signal messenger client with an IRC aesthetic. Wraps [signal-cli](https://github.com/AsamK/signal-cli) via JSON-RPC for the messaging backend.
 
-![signal-tui screenshot](screenshot.png)
+![siggy screenshot](screenshot.png)
 
 ## Install
 
 ### Pre-built binaries
 
-Download the latest release for your platform from [Releases](https://github.com/johnsideserf/signal-tui/releases).
+Download the latest release for your platform from [Releases](https://github.com/johnsideserf/siggy/releases).
 
 **Linux / macOS** (one-liner):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/johnsideserf/signal-tui/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/johnsideserf/siggy/master/install.sh | bash
 ```
 
 **Windows** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/johnsideserf/signal-tui/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/johnsideserf/siggy/master/install.ps1 | iex
 ```
 
 Both scripts download the latest release binary and check for signal-cli.
@@ -34,16 +34,16 @@ Both scripts download the latest release binary and check for signal-cli.
 Requires Rust 1.70+.
 
 ```sh
-cargo install --git https://github.com/johnsideserf/signal-tui.git
+cargo install --git https://github.com/johnsideserf/siggy.git
 ```
 
 Or clone and build locally:
 
 ```sh
-git clone https://github.com/johnsideserf/signal-tui.git
-cd signal-tui
+git clone https://github.com/johnsideserf/siggy.git
+cd siggy
 cargo build --release
-# Binary is at target/release/signal-tui
+# Binary is at target/release/siggy
 ```
 
 ## Prerequisites
@@ -54,12 +54,12 @@ cargo build --release
 ## Usage
 
 ```sh
-signal-tui                        # Launch (uses config file)
-signal-tui -a +15551234567        # Specify account
-signal-tui -c /path/to/config.toml  # Custom config path
-signal-tui --setup                # Re-run first-time setup wizard
-signal-tui --demo                 # Launch with dummy data (no signal-cli needed)
-signal-tui --incognito            # No local message storage (in-memory only)
+siggy                        # Launch (uses config file)
+siggy -a +15551234567        # Specify account
+siggy -c /path/to/config.toml  # Custom config path
+siggy --setup                # Re-run first-time setup wizard
+siggy --demo                 # Launch with dummy data (no signal-cli needed)
+siggy --incognito            # No local message storage (in-memory only)
 ```
 
 On first launch, the setup wizard guides you through locating signal-cli, entering your phone number, and linking your device via QR code.
@@ -67,8 +67,8 @@ On first launch, the setup wizard guides you through locating signal-cli, enteri
 ## Configuration
 
 Config is loaded from:
-- **Linux/macOS:** `~/.config/signal-tui/config.toml`
-- **Windows:** `%APPDATA%\signal-tui\config.toml`
+- **Linux/macOS:** `~/.config/siggy/config.toml`
+- **Windows:** `%APPDATA%\siggy\config.toml`
 
 ```toml
 account = "+15551234567"
@@ -137,7 +137,7 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 | `/contacts` | `/c` | Browse synced contacts |
 | `/settings` | | Open settings overlay |
 | `/help` | `/h` | Show help overlay |
-| `/quit` | `/q` | Exit signal-tui |
+| `/quit` | `/q` | Exit siggy |
 
 Type `/` to open the autocomplete popup. Use `Tab` to complete, arrow keys to navigate.
 

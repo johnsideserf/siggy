@@ -416,7 +416,7 @@ fn draw_signal_cli_step(
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  Welcome to signal-tui!",
+            "  Welcome to siggy!",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -741,7 +741,7 @@ fn draw_done_screen(frame: &mut ratatui::Frame) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  All set! Starting signal-tui...",
+            "  All set! Starting siggy...",
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),

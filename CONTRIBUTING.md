@@ -1,4 +1,4 @@
-# Contributing to signal-tui
+# Contributing to siggy
 
 Thanks for your interest in contributing! Here's how to get started.
 
@@ -51,11 +51,11 @@ Examples: `feature/dark-mode`, `fix/unread-count`, `docs/update-readme`
 
 ## Reporting bugs
 
-Use the [bug report template](https://github.com/johnsideserf/signal-tui/issues/new?template=bug_report.yml). Include your OS, terminal emulator, and signal-tui version.
+Use the [bug report template](https://github.com/johnsideserf/siggy/issues/new?template=bug_report.yml). Include your OS, terminal emulator, and siggy version.
 
 ## Suggesting features
 
-Use the [feature request template](https://github.com/johnsideserf/signal-tui/issues/new?template=feature_request.yml). Describe the problem you're trying to solve.
+Use the [feature request template](https://github.com/johnsideserf/siggy/issues/new?template=feature_request.yml). Describe the problem you're trying to solve.
 
 ## License
 

@@ -1,6 +1,6 @@
 # signal-cli Protocol
 
-signal-tui communicates with signal-cli using
+siggy communicates with signal-cli using
 [JSON-RPC 2.0](https://www.jsonrpc.org/specification) over stdin/stdout. signal-cli
 is spawned as a child process in `jsonRpc` mode.
 
@@ -17,7 +17,7 @@ responses/notifications to stdout. Each message is a single JSON line.
 
 ## Request format
 
-Requests sent from signal-tui to signal-cli:
+Requests sent from siggy to signal-cli:
 
 ```json
 {
@@ -83,7 +83,7 @@ outbound request). They have a `method` field but no `id`:
 
 ## Methods used
 
-### Outbound (signal-tui -> signal-cli)
+### Outbound (siggy -> signal-cli)
 
 | Method | Purpose |
 |---|---|
@@ -105,7 +105,7 @@ outbound request). They have a `method` field but no `id`:
 | `trust` | Trust a contact's identity key |
 | `sendMessageRequestResponse` | Accept or delete a message request |
 
-### Inbound notifications (signal-cli -> signal-tui)
+### Inbound notifications (signal-cli -> siggy)
 
 | Method | Purpose | Maps to |
 |---|---|---|

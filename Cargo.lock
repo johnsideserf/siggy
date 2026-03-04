@@ -1636,6 +1636,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "siggy"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "base64",
+ "chrono",
+ "crossterm",
+ "dirs",
+ "image",
+ "notify-rust",
+ "open",
+ "qrcode",
+ "ratatui",
+ "rstest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1664,30 +1688,6 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
-]
-
-[[package]]
-name = "signal-tui"
-version = "0.8.0"
-dependencies = [
- "anyhow",
- "arboard",
- "base64",
- "chrono",
- "crossterm",
- "dirs",
- "image",
- "notify-rust",
- "open",
- "qrcode",
- "ratatui",
- "rstest",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "uuid",
 ]
 
 [[package]]

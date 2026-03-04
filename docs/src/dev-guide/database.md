@@ -1,6 +1,6 @@
 # Database Schema
 
-signal-tui uses SQLite with WAL (Write-Ahead Logging) mode for safe concurrent
+siggy uses SQLite with WAL (Write-Ahead Logging) mode for safe concurrent
 reads/writes. The database file is stored alongside the config file.
 
 ## Tables

@@ -16,7 +16,7 @@ body:
       label: Steps to reproduce
       description: How can we reproduce this?
       placeholder: |
-        1. Start signal-tui with ...
+        1. Start siggy with ...
         2. Run command ...
         3. See error ...
     validations:
@@ -41,7 +41,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: signal-tui version
+      label: siggy version
       placeholder: e.g. v0.2.0 or commit hash
     validations:
       required: true

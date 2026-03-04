@@ -434,10 +434,10 @@ fn builtin_themes() -> Vec<Theme> {
     ]
 }
 
-/// Load custom themes from `~/.config/signal-tui/themes/*.toml`.
+/// Load custom themes from `~/.config/siggy/themes/*.toml`.
 pub fn load_custom_themes() -> Vec<Theme> {
     let dir = match dirs::config_dir() {
-        Some(d) => d.join("signal-tui").join("themes"),
+        Some(d) => d.join("siggy").join("themes"),
         None => return Vec::new(),
     };
     if !dir.is_dir() {

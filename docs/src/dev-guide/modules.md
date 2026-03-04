@@ -1,6 +1,6 @@
 # Module Reference
 
-signal-tui is organized into a flat module structure under `src/`.
+siggy is organized into a flat module structure under `src/`.
 
 ## Source files
 

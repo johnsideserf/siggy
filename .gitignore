@@ -6,5 +6,5 @@ Cargo.lock
 .DS_Store
 docs/book/
 docs/plans/
-signal-tui-debug.log
+siggy-debug.log
 .claude/settings.local.json

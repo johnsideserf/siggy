@@ -25,7 +25,7 @@ All commands start with `/`. Type `/` in Insert mode to open the autocomplete po
 | `/contacts` | `/c` | | Browse synced contacts |
 | `/settings` | | | Open settings overlay |
 | `/help` | `/h` | | Show help overlay |
-| `/quit` | `/q` | | Exit signal-tui |
+| `/quit` | `/q` | | Exit siggy |
 
 ## Autocomplete
 

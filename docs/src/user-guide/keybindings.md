@@ -1,6 +1,6 @@
 # Keybindings
 
-signal-tui uses vim-style modal editing with two modes: **Insert** (default) and
+siggy uses vim-style modal editing with two modes: **Insert** (default) and
 **Normal**.
 
 ## Global (both modes)

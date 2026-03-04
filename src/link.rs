@@ -75,7 +75,7 @@ pub async fn run_linking_flow(
     let mut child = Command::new(&config.signal_cli_path)
         .arg("link")
         .arg("-n")
-        .arg("signal-tui")
+        .arg("siggy")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

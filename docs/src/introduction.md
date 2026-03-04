@@ -1,15 +1,15 @@
-# signal-tui
+# siggy
 
 A terminal-based Signal messenger client with an IRC aesthetic.
 
-![signal-tui screenshot](screenshot.png)
+![siggy screenshot](screenshot.png)
 
-signal-tui wraps [signal-cli](https://github.com/AsamK/signal-cli) via JSON-RPC, giving you a
+siggy wraps [signal-cli](https://github.com/AsamK/signal-cli) via JSON-RPC, giving you a
 full-featured messaging interface that runs entirely in your terminal. Built with
 [Ratatui](https://ratatui.rs/), [Crossterm](https://github.com/crossterm-rs/crossterm), and
 [Tokio](https://tokio.rs/).
 
-## Why signal-tui?
+## Why siggy?
 
 - **Lightweight** -- no Electron, no web browser, just your terminal
 - **Vim keybindings** -- modal editing with Normal and Insert modes
@@ -22,19 +22,19 @@ full-featured messaging interface that runs entirely in your terminal. Built wit
 **Linux / macOS:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/johnsideserf/signal-tui/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/johnsideserf/siggy/master/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/johnsideserf/signal-tui/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/johnsideserf/siggy/master/install.ps1 | iex
 ```
 
 **Then launch:**
 
 ```sh
-signal-tui
+siggy
 ```
 
 The setup wizard will guide you through linking your Signal account on first launch.
@@ -42,7 +42,7 @@ The setup wizard will guide you through linking your Signal account on first lau
 ## Try it without Signal
 
 ```sh
-signal-tui --demo
+siggy --demo
 ```
 
 Demo mode populates the UI with dummy conversations and messages so you can explore
@@ -50,4 +50,4 @@ the interface without a Signal account or signal-cli installed.
 
 ## License
 
-[GPL-3.0](https://github.com/johnsideserf/signal-tui/blob/master/LICENSE)
+[GPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE)

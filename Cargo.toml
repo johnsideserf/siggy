@@ -1,10 +1,10 @@
 [package]
-name = "signal-tui"
+name = "siggy"
 version = "0.9.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Terminal-based Signal messenger client with vim keybindings"
-repository = "https://github.com/johnsideserf/signal-tui"
+repository = "https://github.com/johnsideserf/siggy"
 keywords = ["signal", "tui", "terminal", "messenger", "ratatui"]
 categories = ["command-line-utilities"]
 

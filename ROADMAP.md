@@ -1,4 +1,4 @@
-# signal-tui Roadmap
+# siggy Roadmap
 
 ## Completed
 

@@ -1,4 +1,4 @@
-//! Optional debug logger — writes to signal-tui-debug.log when --debug is passed.
+//! Optional debug logger — writes to siggy-debug.log when --debug is passed.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -13,7 +13,7 @@ pub fn enable() {
     if let Ok(f) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open("signal-tui-debug.log")
+        .open("siggy-debug.log")
     {
         if let Ok(mut guard) = FILE.lock() {
             *guard = Some(f);

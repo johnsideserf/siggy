@@ -119,7 +119,23 @@ impl Config {
     pub fn load(path: Option<&str>) -> Result<Self> {
         let config_path = match path {
             Some(p) => PathBuf::from(p),
-            None => Self::default_config_path(),
+            None => {
+                let new_path = Self::default_config_path();
+                // Auto-migrate from old "signal-tui" config directory
+                if !new_path.exists() {
+                    let old_path = dirs::config_dir()
+                        .unwrap_or_else(|| PathBuf::from(".config"))
+                        .join("signal-tui")
+                        .join("config.toml");
+                    if old_path.exists() {
+                        if let Some(parent) = new_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::rename(old_path.parent().unwrap(), new_path.parent().unwrap());
+                    }
+                }
+                new_path
+            }
         };
 
         if config_path.exists() {
@@ -155,7 +171,7 @@ impl Config {
     pub fn default_config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from(".config"))
-            .join("signal-tui")
+            .join("siggy")
             .join("config.toml")
     }
 }

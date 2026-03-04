@@ -2,7 +2,7 @@
 
 ## Overview
 
-signal-tui is a terminal Signal client that wraps
+siggy is a terminal Signal client that wraps
 [signal-cli](https://github.com/AsamK/signal-cli) via JSON-RPC over stdin/stdout.
 It is built on a Tokio async runtime with Ratatui for rendering.
 

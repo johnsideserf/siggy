@@ -97,9 +97,9 @@ async fn main() -> Result<()> {
                 i += 1;
             }
             "--help" => {
-                eprintln!("signal-tui - Terminal Signal client");
+                eprintln!("siggy - Terminal Signal client");
                 eprintln!();
-                eprintln!("Usage: signal-tui [OPTIONS]");
+                eprintln!("Usage: siggy [OPTIONS]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  -a, --account <NUMBER>  Phone number (E.164 format)");
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
                 eprintln!("      --setup             Run first-time setup wizard");
                 eprintln!("      --demo              Launch with dummy data (no signal-cli needed)");
                 eprintln!("      --incognito         No local message storage (in-memory only)");
-                eprintln!("      --debug             Write debug log to signal-tui-debug.log");
+                eprintln!("      --debug             Write debug log to siggy-debug.log");
                 eprintln!("      --help              Show this help");
                 std::process::exit(0);
             }
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
 
     if debug {
         debug_log::enable();
-        debug_log::log("=== signal-tui debug session started ===");
+        debug_log::log("=== siggy debug session started ===");
     }
 
     // Load config
@@ -194,9 +194,28 @@ async fn run_main_flow(
     } else {
         let db_dir = dirs::data_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("signal-tui");
+            .join("siggy");
+
+        // Auto-migrate from old "signal-tui" data directory
+        if !db_dir.exists() {
+            let old_db_dir = dirs::data_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("signal-tui");
+            if old_db_dir.exists() {
+                let _ = std::fs::rename(&old_db_dir, &db_dir);
+            }
+        }
+
         std::fs::create_dir_all(&db_dir)?;
-        let db_path = db_dir.join("signal-tui.db");
+        let db_path = db_dir.join("siggy.db");
+
+        // Auto-migrate old database filename
+        if !db_path.exists() {
+            let old_db_path = db_dir.join("signal-tui.db");
+            if old_db_path.exists() {
+                let _ = std::fs::rename(&old_db_path, &db_path);
+            }
+        }
         db::Database::open(&db_path)?
     };
 
@@ -842,9 +861,9 @@ async fn run_app(
         // Update terminal title with unread count
         let unread = app.total_unread();
         let title = if unread > 0 {
-            format!("signal-tui ({unread})")
+            format!("siggy ({unread})")
         } else {
-            "signal-tui".to_string()
+            "siggy".to_string()
         };
         execute!(terminal.backend_mut(), crossterm::terminal::SetTitle(&title))?;
 
@@ -917,9 +936,9 @@ async fn run_demo_app(
 
         let unread = app.total_unread();
         let title = if unread > 0 {
-            format!("signal-tui ({unread})")
+            format!("siggy ({unread})")
         } else {
-            "signal-tui".to_string()
+            "siggy".to_string()
         };
         execute!(terminal.backend_mut(), crossterm::terminal::SetTitle(&title))?;
 

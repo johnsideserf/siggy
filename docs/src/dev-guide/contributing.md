@@ -68,20 +68,20 @@ Examples: `feature/dark-mode`, `fix/unread-count`, `docs/update-readme`
 ## Reporting bugs
 
 Use the
-[bug report template](https://github.com/johnsideserf/signal-tui/issues/new?template=bug_report.yml).
+[bug report template](https://github.com/johnsideserf/siggy/issues/new?template=bug_report.yml).
 Include:
 
 - Your OS and terminal emulator
-- signal-tui version (`signal-tui --version` or the release tag)
+- siggy version (`siggy --version` or the release tag)
 - Steps to reproduce the issue
 
 ## Suggesting features
 
 Use the
-[feature request template](https://github.com/johnsideserf/signal-tui/issues/new?template=feature_request.yml).
+[feature request template](https://github.com/johnsideserf/siggy/issues/new?template=feature_request.yml).
 Describe the problem you're trying to solve before proposing a solution.
 
 ## License
 
 By contributing, you agree that your contributions will be licensed under
-[GPL-3.0](https://github.com/johnsideserf/signal-tui/blob/master/LICENSE).
+[GPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE).

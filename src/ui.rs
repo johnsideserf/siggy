@@ -710,7 +710,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             (spans, right)
         }
         None => (vec![Span::styled(
-            " signal-tui ".to_string(),
+            " siggy ".to_string(),
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )], String::new()),
     };
@@ -1645,7 +1645,7 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
         )));
     } else if app.loading {
         lines.push(Line::from(Span::styled(
-            "  signal-tui",
+            "  siggy",
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
@@ -1655,7 +1655,7 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
         )));
     } else if app.conversation_order.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  Welcome to signal-tui",
+            "  Welcome to siggy",
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
@@ -1682,7 +1682,7 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "  Welcome to signal-tui",
+            "  Welcome to siggy",
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
@@ -2144,7 +2144,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         ("/mute", "Mute/unmute conversation"),
         ("/contacts", "Browse contacts"),
         ("/settings", "Open settings"),
-        ("/quit", "Exit signal-tui"),
+        ("/quit", "Exit siggy"),
     ];
     let shortcuts: &[(&str, &str)] = &[
         ("Tab / Shift+Tab", "Next / prev conversation"),
@@ -3088,7 +3088,7 @@ fn draw_about(frame: &mut Frame, app: &App, area: Rect) {
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("  signal-tui v{version}"),
+            format!("  siggy v{version}"),
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -3106,7 +3106,7 @@ fn draw_about(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme.fg_secondary),
         )),
         Line::from(Span::styled(
-            "  github.com/johnsideserf/signal-tui",
+            "  github.com/johnsideserf/siggy",
             Style::default().fg(theme.link),
         )),
         Line::from(""),

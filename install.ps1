@@ -1,9 +1,9 @@
 $ErrorActionPreference = "Stop"
 
-$Repo = "johnsideserf/signal-tui"
+$Repo = "johnsideserf/siggy"
 $SignalCliRepo = "AsamK/signal-cli"
 $Target = "x86_64-pc-windows-msvc"
-$InstallDir = "$env:LOCALAPPDATA\signal-tui"
+$InstallDir = "$env:LOCALAPPDATA\siggy"
 
 function Info($msg) { Write-Host ":: $msg" -ForegroundColor Blue }
 function Err($msg) { Write-Host "error: $msg" -ForegroundColor Red; exit 1 }
@@ -20,10 +20,10 @@ $Tag = $Release.tag_name
 if (-not $Tag) { Err "Could not determine latest release tag" }
 Info "Latest release: $Tag"
 
-# --- Download and install signal-tui ---
-$Archive = "signal-tui-$Tag-$Target.zip"
+# --- Download and install siggy ---
+$Archive = "siggy-$Tag-$Target.zip"
 $DownloadUrl = "https://github.com/$Repo/releases/download/$Tag/$Archive"
-$TmpDir = Join-Path $env:TEMP "signal-tui-install"
+$TmpDir = Join-Path $env:TEMP "siggy-install"
 
 if (Test-Path $TmpDir) { Remove-Item -Recurse -Force $TmpDir }
 New-Item -ItemType Directory -Path $TmpDir | Out-Null
@@ -41,9 +41,9 @@ if (-not (Test-Path $InstallDir)) {
 
 Info "Extracting..."
 Expand-Archive -Path "$TmpDir\$Archive" -DestinationPath $TmpDir -Force
-Copy-Item "$TmpDir\signal-tui.exe" "$InstallDir\signal-tui.exe" -Force
+Copy-Item "$TmpDir\siggy.exe" "$InstallDir\siggy.exe" -Force
 
-Info "Installed signal-tui to $InstallDir\signal-tui.exe"
+Info "Installed siggy to $InstallDir\siggy.exe"
 
 # --- Add to PATH ---
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -126,4 +126,4 @@ Remove-Item -Recurse -Force $TmpDir -ErrorAction SilentlyContinue
 
 # --- Done ---
 Write-Host ""
-Info "Done! Restart your terminal, then run 'signal-tui' to get started."
+Info "Done! Restart your terminal, then run 'siggy' to get started."

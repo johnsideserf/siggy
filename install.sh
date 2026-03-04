@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="johnsideserf/signal-tui"
+REPO="johnsideserf/siggy"
 INSTALL_DIR="$HOME/.local/bin"
 SIGNAL_CLI_REPO="AsamK/signal-cli"
 
@@ -49,8 +49,8 @@ fi
 
 info "Latest release: $TAG"
 
-# --- Download and install signal-tui ---
-ARCHIVE="signal-tui-${TAG}-${TARGET}.tar.gz"
+# --- Download and install siggy ---
+ARCHIVE="siggy-${TAG}-${TARGET}.tar.gz"
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$ARCHIVE"
 
 info "Downloading $ARCHIVE..."
@@ -58,9 +58,9 @@ curl -fsSL -o "$TMPDIR/$ARCHIVE" "$DOWNLOAD_URL" || error "Download failed: $DOW
 
 mkdir -p "$INSTALL_DIR"
 tar xzf "$TMPDIR/$ARCHIVE" -C "$INSTALL_DIR"
-chmod +x "$INSTALL_DIR/signal-tui"
+chmod +x "$INSTALL_DIR/siggy"
 
-info "Installed signal-tui to $INSTALL_DIR/signal-tui"
+info "Installed siggy to $INSTALL_DIR/siggy"
 
 # --- Check for signal-cli ---
 if command -v signal-cli >/dev/null 2>&1; then
@@ -126,4 +126,4 @@ esac
 
 # --- Done ---
 echo ""
-info "Done! Run 'signal-tui' to get started."
+info "Done! Run 'siggy' to get started."

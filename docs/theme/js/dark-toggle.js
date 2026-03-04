@@ -1,4 +1,4 @@
-// Dark mode toggle for signal-tui docs
+// Dark mode toggle for siggy docs
 // Injects a sun/moon toggle into the menu bar and persists preference.
 (function () {
     'use strict';

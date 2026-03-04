@@ -48,7 +48,7 @@ These are unsolicited and do not have an `id` field matching any outbound reques
 
 ### RPC responses
 
-When signal-tui sends a request (e.g., `listContacts`, `listGroups`, `send`),
+When siggy sends a request (e.g., `listContacts`, `listGroups`, `send`),
 signal-cli replies with a response that has a matching `id` field and a `result`
 (or `error`) field.
 
