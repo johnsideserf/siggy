@@ -5134,7 +5134,7 @@ fn file_uri_to_path(uri: &str) -> String {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::signal::types::{Contact, Group, Mention, SignalEvent, SignalMessage, StyleType, TextStyle};
+    use crate::signal::types::{Attachment, Contact, Group, Mention, SignalEvent, SignalMessage, StyleType, TextStyle};
     use rstest::{fixture, rstest};
 
     #[fixture]
@@ -7395,5 +7395,221 @@ mod tests {
         app.show_poll_vote = false;
 
         assert!(!app.has_overlay());
+    }
+
+    // --- Helper for building a SignalMessage ---
+
+    fn make_msg(source: &str, body: Option<&str>, group_id: Option<&str>, is_outgoing: bool) -> SignalMessage {
+        SignalMessage {
+            source: source.to_string(),
+            source_name: None,
+            timestamp: chrono::Utc::now(),
+            body: body.map(|s| s.to_string()),
+            attachments: vec![],
+            group_id: group_id.map(|s| s.to_string()),
+            group_name: None,
+            is_outgoing,
+            destination: None,
+            mentions: vec![],
+            text_styles: vec![],
+            quote: None,
+            expires_in_seconds: 0,
+        }
+    }
+
+    // --- Typing indicator tests ---
+
+    #[rstest]
+    fn typing_indicator_adds_and_removes(mut app: App) {
+        app.handle_signal_event(SignalEvent::TypingIndicator {
+            sender: "+1".to_string(),
+            sender_name: Some("Alice".to_string()),
+            is_typing: true,
+        });
+        assert!(app.typing_indicators.contains_key("+1"));
+        assert_eq!(app.contact_names.get("+1").unwrap(), "Alice");
+
+        app.handle_signal_event(SignalEvent::TypingIndicator {
+            sender: "+1".to_string(),
+            sender_name: None,
+            is_typing: false,
+        });
+        assert!(!app.typing_indicators.contains_key("+1"));
+    }
+
+    // --- Error event ---
+
+    #[rstest]
+    fn error_event_sets_status(mut app: App) {
+        app.handle_signal_event(SignalEvent::Error("connection lost".to_string()));
+        assert!(app.status_message.contains("connection lost"));
+    }
+
+    // --- Attachment tests ---
+
+    #[rstest]
+    fn message_with_image_attachment(mut app: App) {
+        let mut msg = make_msg("+1", None, None, false);
+        msg.attachments = vec![Attachment {
+            id: "a1".to_string(),
+            content_type: "image/jpeg".to_string(),
+            filename: Some("photo.jpg".to_string()),
+            local_path: None,
+        }];
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        let conv = &app.conversations["+1"];
+        assert!(conv.messages.iter().any(|m| m.body.contains("[image: photo.jpg]")));
+    }
+
+    #[rstest]
+    fn message_with_non_image_attachment(mut app: App) {
+        let mut msg = make_msg("+1", None, None, false);
+        msg.attachments = vec![Attachment {
+            id: "a1".to_string(),
+            content_type: "application/pdf".to_string(),
+            filename: Some("doc.pdf".to_string()),
+            local_path: None,
+        }];
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        let conv = &app.conversations["+1"];
+        assert!(conv.messages.iter().any(|m| m.body.contains("[attachment: doc.pdf]")));
+    }
+
+    #[rstest]
+    fn message_with_body_and_attachment(mut app: App) {
+        let mut msg = make_msg("+1", Some("look at this"), None, false);
+        msg.attachments = vec![Attachment {
+            id: "a1".to_string(),
+            content_type: "image/png".to_string(),
+            filename: Some("img.png".to_string()),
+            local_path: None,
+        }];
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        let conv = &app.conversations["+1"];
+        // Should have 2 display messages: text body + attachment
+        assert_eq!(conv.messages.len(), 2);
+        assert!(conv.messages[0].body.contains("look at this"));
+        assert!(conv.messages[1].body.contains("[image: img.png]"));
+    }
+
+    #[rstest]
+    fn attachment_without_filename_uses_content_type(mut app: App) {
+        let mut msg = make_msg("+1", None, None, false);
+        msg.attachments = vec![Attachment {
+            id: "a1".to_string(),
+            content_type: "audio/ogg".to_string(),
+            filename: None,
+            local_path: None,
+        }];
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        let conv = &app.conversations["+1"];
+        assert!(conv.messages.iter().any(|m| m.body.contains("[attachment: audio/ogg]")));
+    }
+
+    // --- Bell / notification tests ---
+
+    #[rstest]
+    fn bell_rings_for_background_dm(mut app: App) {
+        // "+1" must be a known contact so conversation is accepted
+        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.get_or_create_conversation("+other", "Other", false);
+        app.active_conversation = Some("+other".to_string());
+        app.notify_direct = true;
+
+        let msg = make_msg("+1", Some("hey"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(app.pending_bell);
+    }
+
+    #[rstest]
+    fn bell_not_set_for_active_conversation(mut app: App) {
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+        app.notify_direct = true;
+
+        let msg = make_msg("+1", Some("hey"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(!app.pending_bell);
+    }
+
+    #[rstest]
+    fn bell_skipped_when_notify_disabled(mut app: App) {
+        app.get_or_create_conversation("+other", "Other", false);
+        app.active_conversation = Some("+other".to_string());
+        app.notify_direct = false;
+
+        let msg = make_msg("+1", Some("hey"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(!app.pending_bell);
+    }
+
+    #[rstest]
+    fn bell_for_group_respects_setting(mut app: App) {
+        app.handle_signal_event(SignalEvent::GroupList(vec![
+            Group { id: "g1".to_string(), name: "Team".to_string(), members: vec![], member_uuids: vec![] },
+        ]));
+        app.get_or_create_conversation("+other", "Other", false);
+        app.active_conversation = Some("+other".to_string());
+
+        // group notifications enabled
+        app.notify_group = true;
+        let msg = make_msg("+1", Some("hi team"), Some("g1"), false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(app.pending_bell);
+
+        // reset and disable
+        app.pending_bell = false;
+        app.notify_group = false;
+        let msg2 = make_msg("+2", Some("again"), Some("g1"), false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg2));
+        assert!(!app.pending_bell);
+    }
+
+    // --- Unread count tests ---
+
+    #[rstest]
+    fn unread_increments_for_background(mut app: App) {
+        // No active conversation
+        app.active_conversation = None;
+        let msg = make_msg("+1", Some("hey"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert_eq!(app.conversations["+1"].unread, 1);
+    }
+
+    #[rstest]
+    fn unread_no_increment_for_active(mut app: App) {
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+        let msg = make_msg("+1", Some("hey"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert_eq!(app.conversations["+1"].unread, 0);
+    }
+
+    // --- Read receipt tests ---
+
+    #[rstest]
+    fn active_conv_queues_read_receipt(mut app: App) {
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+        app.send_read_receipts = true;
+
+        let msg = make_msg("+1", Some("hey"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(!app.pending_read_receipts.is_empty(), "expected read receipt to be queued");
+        let (recipient, _) = &app.pending_read_receipts[0];
+        assert_eq!(recipient, "+1");
+    }
+
+    // --- Expiration timer sync ---
+
+    #[rstest]
+    fn handle_message_syncs_expiration_timer(mut app: App) {
+        app.get_or_create_conversation("+1", "Alice", false);
+        assert_eq!(app.conversations["+1"].expiration_timer, 0);
+
+        let mut msg = make_msg("+1", Some("secret"), None, false);
+        msg.expires_in_seconds = 3600;
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert_eq!(app.conversations["+1"].expiration_timer, 3600);
     }
 }

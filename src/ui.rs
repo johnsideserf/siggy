@@ -34,7 +34,7 @@ const GROUP_MENU_POPUP_WIDTH: u16 = 40;
 const GROUP_MEMBER_MAX_VISIBLE: usize = 15;
 
 /// Map a MessageStatus to its display symbol and color.
-fn status_symbol(status: MessageStatus, nerd_fonts: bool, color: bool, theme: &Theme) -> (&'static str, Color) {
+pub(crate) fn status_symbol(status: MessageStatus, nerd_fonts: bool, color: bool, theme: &Theme) -> (&'static str, Color) {
     let (unicode_sym, nerd_sym, colored) = match status {
         MessageStatus::Failed   => ("\u{2717}", "\u{f055c}", theme.receipt_failed),
         MessageStatus::Sending  => ("\u{25cc}", "\u{f0996}", theme.receipt_sending),
@@ -49,7 +49,7 @@ fn status_symbol(status: MessageStatus, nerd_fonts: bool, color: bool, theme: &T
 }
 
 /// Hash a sender name to one of ~8 distinct colors. "you" always gets sender_self.
-fn sender_color(name: &str, theme: &Theme) -> Color {
+pub(crate) fn sender_color(name: &str, theme: &Theme) -> Color {
     if name == "you" {
         return theme.sender_self;
     }
@@ -58,7 +58,7 @@ fn sender_color(name: &str, theme: &Theme) -> Color {
 }
 
 /// Truncate a string to fit within `max_width`, appending `…` if truncated.
-fn truncate(s: &str, max_width: usize) -> String {
+pub(crate) fn truncate(s: &str, max_width: usize) -> String {
     if s.len() <= max_width {
         s.to_string()
     } else if max_width <= 1 {
@@ -71,7 +71,7 @@ fn truncate(s: &str, max_width: usize) -> String {
 }
 
 /// Build a centered separator line: `───── label ─────`
-fn build_separator(label: &str, width: usize, style: Style) -> Line<'static> {
+pub(crate) fn build_separator(label: &str, width: usize, style: Style) -> Line<'static> {
     let pad_total = width.saturating_sub(label.len());
     let pad_left = pad_total / 2;
     let pad_right = pad_total - pad_left;
@@ -116,7 +116,7 @@ pub struct LinkRegion {
 }
 
 /// Extract a URL from link-styled text.
-fn extract_url(text: &str) -> String {
+pub(crate) fn extract_url(text: &str) -> String {
     for scheme in &["file:///", "https://", "http://"] {
         if let Some(pos) = text.find(scheme) {
             let uri_start = &text[pos..];
@@ -1110,7 +1110,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Build a reaction summary line like "    👍 2  ❤️ 1  😂 1"
-fn build_reaction_summary(reactions: &[Reaction], verbose: bool, theme: &Theme) -> Line<'static> {
+pub(crate) fn build_reaction_summary(reactions: &[Reaction], verbose: bool, theme: &Theme) -> Line<'static> {
     if verbose {
         // Verbose: group by emoji, show sender names
         let mut grouped: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
@@ -2352,7 +2352,7 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Extract a snippet of text centered around the first match of `query`.
-fn search_snippet(body: &str, query: &str, max_len: usize) -> String {
+pub(crate) fn search_snippet(body: &str, query: &str, max_len: usize) -> String {
     let char_count = body.chars().count();
     if char_count <= max_len {
         return body.to_string();
@@ -2482,7 +2482,7 @@ fn highlight_match_spans<'a>(
 }
 
 /// Format a file size in human-readable form (B, K, M, G).
-fn format_file_size(bytes: u64) -> String {
+pub(crate) fn format_file_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes}B")
     } else if bytes < 1024 * 1024 {
@@ -2725,7 +2725,7 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(popup, popup_area);
 }
 
-fn build_poll_display(
+pub(crate) fn build_poll_display(
     poll: &PollData,
     votes: &[PollVote],
     own_account: &str,
@@ -2843,4 +2843,228 @@ fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::signal::types::{MessageStatus, PollData, PollOption, PollVote, Reaction};
+    use crate::theme::default_theme;
+    use rstest::rstest;
+
+    // --- sender_color ---
+
+    #[test]
+    fn sender_color_you_returns_self() {
+        let theme = default_theme();
+        assert_eq!(sender_color("you", &theme), theme.sender_self);
+    }
+
+    #[test]
+    fn sender_color_deterministic() {
+        let theme = default_theme();
+        let c1 = sender_color("Alice", &theme);
+        let c2 = sender_color("Alice", &theme);
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn sender_color_in_palette() {
+        let theme = default_theme();
+        let c = sender_color("Bob", &theme);
+        assert!(theme.sender_palette.contains(&c));
+    }
+
+    // --- truncate ---
+
+    #[rstest]
+    #[case("hi", 10, "hi")]
+    #[case("hello", 5, "hello")]
+    #[case("hello world", 5, "hell\u{2026}")]
+    #[case("abc", 1, "\u{2026}")]
+    #[case("abc", 0, "\u{2026}")]
+    #[case("", 5, "")]
+    fn truncate_cases(#[case] input: &str, #[case] max: usize, #[case] expected: &str) {
+        assert_eq!(truncate(input, max), expected);
+    }
+
+    // --- status_symbol ---
+
+    #[rstest]
+    #[case(MessageStatus::Failed, "\u{2717}")]
+    #[case(MessageStatus::Sending, "\u{25cc}")]
+    #[case(MessageStatus::Sent, "\u{25cb}")]
+    #[case(MessageStatus::Delivered, "\u{2713}")]
+    #[case(MessageStatus::Read, "\u{25cf}")]
+    #[case(MessageStatus::Viewed, "\u{25c9}")]
+    fn status_symbol_variants(#[case] status: MessageStatus, #[case] expected_sym: &str) {
+        let theme = default_theme();
+        let (sym, _) = status_symbol(status, false, true, &theme);
+        assert_eq!(sym, expected_sym);
+    }
+
+    #[test]
+    fn status_symbol_color_vs_muted() {
+        let theme = default_theme();
+        let (_, colored) = status_symbol(MessageStatus::Read, false, true, &theme);
+        let (_, muted) = status_symbol(MessageStatus::Read, false, false, &theme);
+        assert_eq!(colored, theme.receipt_read);
+        assert_eq!(muted, theme.fg_muted);
+    }
+
+    // --- build_separator ---
+
+    #[test]
+    fn build_separator_pads() {
+        let theme = default_theme();
+        let line = build_separator(" Jan 1 ", 40, Style::default().fg(theme.fg_muted));
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text.chars().count(), 40);
+        assert!(text.contains("Jan 1"));
+    }
+
+    // --- extract_url ---
+
+    #[rstest]
+    #[case("https://example.com", "https://example.com")]
+    #[case("http://foo.bar/baz", "http://foo.bar/baz")]
+    #[case("file:///tmp/a.txt", "file:///tmp/a.txt")]
+    #[case("check https://x.com/path here", "https://x.com/path")]
+    #[case("no-scheme.com", "no-scheme.com")]
+    fn extract_url_cases(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(extract_url(input), expected);
+    }
+
+    // --- build_reaction_summary ---
+
+    #[test]
+    fn reaction_summary_counts() {
+        let theme = default_theme();
+        let reactions = vec![
+            Reaction { emoji: "\u{1f44d}".to_string(), sender: "Alice".to_string() },
+            Reaction { emoji: "\u{1f44d}".to_string(), sender: "Bob".to_string() },
+        ];
+        let line = build_reaction_summary(&reactions, false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("2"), "expected count '2' in: {text}");
+    }
+
+    #[test]
+    fn reaction_summary_verbose_names() {
+        let theme = default_theme();
+        let reactions = vec![
+            Reaction { emoji: "\u{2764}".to_string(), sender: "Alice".to_string() },
+        ];
+        let line = build_reaction_summary(&reactions, true, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("Alice"), "expected sender name in: {text}");
+    }
+
+    #[test]
+    fn reaction_summary_empty() {
+        let theme = default_theme();
+        let line = build_reaction_summary(&[], false, &theme);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(text.trim(), "");
+    }
+
+    // --- build_poll_display ---
+
+    #[test]
+    fn poll_display_basic() {
+        let theme = default_theme();
+        let poll = PollData {
+            question: "Favorite?".to_string(),
+            options: vec![
+                PollOption { id: 0, text: "A".to_string() },
+                PollOption { id: 1, text: "B".to_string() },
+            ],
+            allow_multiple: false,
+            closed: false,
+        };
+        let votes = vec![
+            PollVote { voter: "+1".to_string(), voter_name: None, option_indexes: vec![0], vote_count: 1 },
+            PollVote { voter: "+2".to_string(), voter_name: None, option_indexes: vec![0], vote_count: 1 },
+        ];
+        let lines = build_poll_display(&poll, &votes, "+99", &theme);
+        assert_eq!(lines.len(), 3);
+        let summary: String = lines.last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(summary.contains("votes"), "expected 'votes' in: {summary}");
+    }
+
+    #[test]
+    fn poll_display_own_vote_marked() {
+        let theme = default_theme();
+        let poll = PollData {
+            question: "Q?".to_string(),
+            options: vec![PollOption { id: 0, text: "Yes".to_string() }],
+            allow_multiple: false,
+            closed: false,
+        };
+        let votes = vec![
+            PollVote { voter: "+me".to_string(), voter_name: None, option_indexes: vec![0], vote_count: 1 },
+        ];
+        let lines = build_poll_display(&poll, &votes, "+me", &theme);
+        let option_text: String = lines[0].spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(option_text.contains("\u{2713}"), "expected checkmark in: {option_text}");
+    }
+
+    #[test]
+    fn poll_display_closed() {
+        let theme = default_theme();
+        let poll = PollData {
+            question: "Q?".to_string(),
+            options: vec![PollOption { id: 0, text: "X".to_string() }],
+            allow_multiple: false,
+            closed: true,
+        };
+        let lines = build_poll_display(&poll, &[], "+me", &theme);
+        let summary: String = lines.last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(summary.contains("[CLOSED]"), "expected [CLOSED] in: {summary}");
+    }
+
+    #[test]
+    fn poll_display_no_votes() {
+        let theme = default_theme();
+        let poll = PollData {
+            question: "Q?".to_string(),
+            options: vec![PollOption { id: 0, text: "A".to_string() }],
+            allow_multiple: false,
+            closed: false,
+        };
+        let lines = build_poll_display(&poll, &[], "+me", &theme);
+        let option_text: String = lines[0].spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(option_text.contains("0 (0%)"), "expected '0 (0%)' in: {option_text}");
+        let summary: String = lines.last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(summary.contains("0 votes"), "expected '0 votes' in: {summary}");
+    }
+
+    // --- format_file_size ---
+
+    #[rstest]
+    #[case(0, "0B")]
+    #[case(512, "512B")]
+    #[case(1024, "1K")]
+    #[case(2048, "2K")]
+    #[case(1_048_576, "1.0M")]
+    #[case(1_073_741_824, "1.0G")]
+    fn format_file_size_cases(#[case] bytes: u64, #[case] expected: &str) {
+        assert_eq!(format_file_size(bytes), expected);
+    }
+
+    // --- search_snippet ---
+
+    #[test]
+    fn search_snippet_short_passthrough() {
+        let body = "short text";
+        assert_eq!(search_snippet(body, "short", 100), body);
+    }
+
+    #[test]
+    fn search_snippet_centers_on_match() {
+        let body = "a".repeat(100) + "NEEDLE" + &"b".repeat(100);
+        let snippet = search_snippet(&body, "NEEDLE", 30);
+        assert!(snippet.chars().count() <= 30, "snippet too long ({} chars): {snippet}", snippet.chars().count());
+        assert!(snippet.contains("NEEDLE"), "expected query in snippet: {snippet}");
+    }
 }
