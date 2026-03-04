@@ -1450,15 +1450,16 @@ impl App {
                             let options = poll.options.clone();
                             let allow_multiple = poll.allow_multiple;
                             let poll_timestamp = msg.timestamp_ms;
+                            let option_count = options.len();
                             self.poll_vote_pending = Some(PollVotePending {
                                 conv_id,
                                 is_group,
                                 poll_author,
                                 poll_timestamp,
                                 allow_multiple,
-                                options: options.clone(),
+                                options,
                             });
-                            self.poll_vote_selections = vec![false; options.len()];
+                            self.poll_vote_selections = vec![false; option_count];
                             self.poll_vote_index = 0;
                             self.show_poll_vote = true;
                         }
@@ -3196,10 +3197,37 @@ impl App {
     }
 
     fn handle_poll_created(&mut self, conv_id: &str, timestamp: i64, poll_data: PollData) {
-        // The poll arrives as a regular message too — find it and attach poll_data
+        // The poll arrives as a regular message too — find it and attach poll_data.
+        // If the message hasn't arrived yet (race), insert a placeholder so the poll
+        // is still visible.
         if let Some(conv) = self.conversations.get_mut(conv_id) {
             if let Some(msg) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == timestamp) {
                 msg.poll_data = Some(poll_data.clone());
+            } else {
+                let ts = chrono::DateTime::from_timestamp_millis(timestamp)
+                    .unwrap_or_else(Utc::now);
+                conv.messages.push(DisplayMessage {
+                    sender: String::new(),
+                    timestamp: ts,
+                    body: format!("\u{1F4CA} {}", poll_data.question),
+                    is_system: false,
+                    image_lines: None,
+                    image_path: None,
+                    status: None,
+                    timestamp_ms: timestamp,
+                    reactions: Vec::new(),
+                    mention_ranges: Vec::new(),
+                    style_ranges: Vec::new(),
+                    quote: None,
+                    is_edited: false,
+                    is_deleted: false,
+                    is_pinned: false,
+                    sender_id: String::new(),
+                    expires_in_seconds: 0,
+                    expiration_start_ms: 0,
+                    poll_data: Some(poll_data.clone()),
+                    poll_votes: Vec::new(),
+                });
             }
         }
         db_warn(
@@ -4330,6 +4358,7 @@ impl App {
                     };
 
                     // Optimistic local message
+                    let poll_data_for_db = poll_data.clone();
                     if let Some(conv) = self.conversations.get_mut(&conv_id) {
                         conv.messages.push(DisplayMessage {
                             sender: "you".to_string(),
@@ -4360,15 +4389,6 @@ impl App {
                         false, Some(MessageStatus::Sending), local_ts_ms,
                         &self.account.clone(), None, None, None, 0, 0,
                     ), "insert_poll_msg");
-                    // Persist poll_data
-                    let poll_data_for_db = PollData {
-                        question: question.clone(),
-                        options: options.iter().enumerate()
-                            .map(|(i, text)| PollOption { id: i as i64, text: text.clone() })
-                            .collect(),
-                        allow_multiple,
-                        closed: false,
-                    };
                     db_warn(self.db.upsert_poll_data(&conv_id, local_ts_ms, &poll_data_for_db), "upsert_poll_data");
 
                     self.scroll_offset = 0;

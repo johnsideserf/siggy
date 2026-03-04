@@ -2771,10 +2771,16 @@ fn build_poll_display(
             Style::default().fg(theme.fg)
         };
 
+        let label = if opt.text.chars().count() > 12 {
+            let truncated: String = opt.text.chars().take(11).collect();
+            format!("{truncated}\u{2026}")
+        } else {
+            opt.text.clone()
+        };
         lines.push(Line::from(vec![
             Span::styled(format!("  {voted_marker}"), text_style),
             Span::styled(
-                format!("{:<12}", opt.text),
+                format!("{:<12}", label),
                 text_style,
             ),
             Span::styled(bar, Style::default().fg(theme.accent)),
