@@ -396,6 +396,9 @@ pub struct App {
     pub poll_vote_selections: Vec<bool>,
     /// Pending poll vote context
     pub poll_vote_pending: Option<PollVotePending>,
+    /// Buffered poll data for polls whose message hasn't arrived yet (race condition)
+    /// Key: (conv_id, timestamp_ms)
+    pub pending_polls: HashMap<(String, i64), PollData>,
 }
 
 /// A search result entry.
@@ -1988,6 +1991,7 @@ impl App {
             poll_vote_index: 0,
             poll_vote_selections: Vec::new(),
             poll_vote_pending: None,
+            pending_polls: HashMap::new(),
         }
     }
 
@@ -2799,6 +2803,8 @@ impl App {
                             mention_ranges: Vec<(usize, usize)>,
                             style_ranges: Vec<(usize, usize, StyleType)>,
                             quote: Option<Quote>| {
+            // Check for buffered poll data from a race condition (poll event arrived first)
+            let deferred_poll = self.pending_polls.remove(&(conv_id.clone(), msg_ts_ms));
             if let Some(conv) = self.conversations.get_mut(&conv_id) {
                 let pos = conv.messages.partition_point(|m| m.timestamp_ms <= msg_ts_ms);
                 conv.messages.insert(pos, DisplayMessage {
@@ -2820,7 +2826,7 @@ impl App {
                     sender_id: sender_id.clone(),
                     expires_in_seconds: msg_expires_in,
                     expiration_start_ms: msg_expiration_start,
-                    poll_data: None,
+                    poll_data: deferred_poll,
                     poll_votes: Vec::new(),
                 });
                 // Bump last_read_index if we inserted before the read marker
@@ -3198,36 +3204,13 @@ impl App {
 
     fn handle_poll_created(&mut self, conv_id: &str, timestamp: i64, poll_data: PollData) {
         // The poll arrives as a regular message too — find it and attach poll_data.
-        // If the message hasn't arrived yet (race), insert a placeholder so the poll
-        // is still visible.
+        // If the message hasn't arrived yet (race), buffer the poll data so
+        // handle_message can attach it when the message arrives.
         if let Some(conv) = self.conversations.get_mut(conv_id) {
             if let Some(msg) = conv.messages.iter_mut().rev().find(|m| m.timestamp_ms == timestamp) {
                 msg.poll_data = Some(poll_data.clone());
             } else {
-                let ts = chrono::DateTime::from_timestamp_millis(timestamp)
-                    .unwrap_or_else(Utc::now);
-                conv.messages.push(DisplayMessage {
-                    sender: String::new(),
-                    timestamp: ts,
-                    body: format!("\u{1F4CA} {}", poll_data.question),
-                    is_system: false,
-                    image_lines: None,
-                    image_path: None,
-                    status: None,
-                    timestamp_ms: timestamp,
-                    reactions: Vec::new(),
-                    mention_ranges: Vec::new(),
-                    style_ranges: Vec::new(),
-                    quote: None,
-                    is_edited: false,
-                    is_deleted: false,
-                    is_pinned: false,
-                    sender_id: String::new(),
-                    expires_in_seconds: 0,
-                    expiration_start_ms: 0,
-                    poll_data: Some(poll_data.clone()),
-                    poll_votes: Vec::new(),
-                });
+                self.pending_polls.insert((conv_id.to_string(), timestamp), poll_data.clone());
             }
         }
         db_warn(
