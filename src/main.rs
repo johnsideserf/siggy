@@ -655,6 +655,13 @@ async fn dispatch_send(
                 let _ = signal_client.list_identities().await;
             }
         }
+        SendRequest::UpdateProfile { given_name, family_name, about, about_emoji } => {
+            if let Err(e) = signal_client.update_profile(&given_name, &family_name, &about, &about_emoji).await {
+                app.status_message = format!("profile error: {e}");
+            } else {
+                app.status_message = "Profile updated".to_string();
+            }
+        }
     }
 }
 

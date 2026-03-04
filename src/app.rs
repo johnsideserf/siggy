@@ -443,6 +443,18 @@ pub struct App {
     pub pending_polls: HashMap<(String, i64), PollData>,
     /// Number of in-memory messages with expiration > 0 (skip sweeps when zero)
     pub expiring_msg_count: usize,
+    /// About overlay visible
+    pub show_about: bool,
+    /// Profile editor overlay visible
+    pub show_profile: bool,
+    /// Cursor position in profile editor (0-3 = fields, 4 = Save)
+    pub profile_index: usize,
+    /// Whether currently editing a profile field
+    pub profile_editing: bool,
+    /// Profile fields: [given_name, family_name, about, about_emoji]
+    pub profile_fields: [String; 4],
+    /// Temp buffer while editing a profile field
+    pub profile_edit_buffer: String,
 }
 
 /// A search result entry.
@@ -583,6 +595,12 @@ pub enum SendRequest {
     ListIdentities,
     TrustIdentity {
         recipient: String,
+    },
+    UpdateProfile {
+        given_name: String,
+        family_name: String,
+        about: String,
+        about_emoji: String,
     },
 }
 
@@ -2121,6 +2139,12 @@ impl App {
             poll_vote_pending: None,
             pending_polls: HashMap::new(),
             expiring_msg_count: 0,
+            show_about: false,
+            show_profile: false,
+            profile_index: 0,
+            profile_editing: false,
+            profile_fields: [String::new(), String::new(), String::new(), String::new()],
+            profile_edit_buffer: String::new(),
         }
     }
 
@@ -2405,6 +2429,14 @@ impl App {
         }
         if self.group_menu_state.is_some() {
             let send = self.handle_group_menu_key(code);
+            return (true, send);
+        }
+        if self.show_about {
+            self.show_about = false;
+            return (true, None);
+        }
+        if self.show_profile {
+            let send = self.handle_profile_key(code);
             return (true, send);
         }
         if self.show_help {
@@ -3561,6 +3593,75 @@ impl App {
         }
     }
 
+    /// Handle keys in the profile editor overlay.
+    pub fn handle_profile_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+        const FIELD_COUNT: usize = 4;
+        const SAVE_INDEX: usize = FIELD_COUNT;
+
+        if self.profile_editing {
+            // Editing a field
+            match code {
+                KeyCode::Esc => {
+                    // Cancel edit, discard buffer
+                    self.profile_editing = false;
+                }
+                KeyCode::Enter => {
+                    // Confirm edit, write buffer back to field
+                    self.profile_fields[self.profile_index] = self.profile_edit_buffer.clone();
+                    self.profile_editing = false;
+                }
+                KeyCode::Backspace => {
+                    self.profile_edit_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.profile_edit_buffer.push(c);
+                }
+                _ => {}
+            }
+            return None;
+        }
+
+        // Navigation mode
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.profile_index < SAVE_INDEX {
+                    self.profile_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.profile_index > 0 {
+                    self.profile_index -= 1;
+                }
+            }
+            KeyCode::Enter => {
+                if self.profile_index < FIELD_COUNT {
+                    // Start editing the selected field
+                    self.profile_editing = true;
+                    self.profile_edit_buffer = self.profile_fields[self.profile_index].clone();
+                } else {
+                    // Save button
+                    let [given_name, family_name, about, about_emoji] = self.profile_fields.clone();
+                    if given_name.trim().is_empty() {
+                        self.status_message = "Given name is required".to_string();
+                        return None;
+                    }
+                    self.show_profile = false;
+                    return Some(SendRequest::UpdateProfile {
+                        given_name,
+                        family_name,
+                        about,
+                        about_emoji,
+                    });
+                }
+            }
+            KeyCode::Esc => {
+                self.show_profile = false;
+            }
+            _ => {}
+        }
+        None
+    }
+
     pub fn handle_poll_vote_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         let pending = self.poll_vote_pending.as_ref()?;
         let option_count = pending.options.len();
@@ -4574,6 +4675,14 @@ impl App {
                     self.status_message = "no active conversation".to_string();
                 }
             }
+            InputAction::Profile => {
+                self.show_profile = true;
+                self.profile_index = 0;
+                self.profile_editing = false;
+            }
+            InputAction::About => {
+                self.show_about = true;
+            }
             InputAction::Help => {
                 self.show_help = true;
             }
@@ -5261,6 +5370,8 @@ impl App {
             || self.show_theme_picker
             || self.show_pin_duration
             || self.show_poll_vote
+            || self.show_about
+            || self.show_profile
             || self.autocomplete_visible
     }
 
@@ -7699,6 +7810,14 @@ mod tests {
         app.show_poll_vote = true;
         assert!(app.has_overlay());
         app.show_poll_vote = false;
+
+        app.show_about = true;
+        assert!(app.has_overlay());
+        app.show_about = false;
+
+        app.show_profile = true;
+        assert!(app.has_overlay());
+        app.show_profile = false;
 
         assert!(!app.has_overlay());
     }

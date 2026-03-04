@@ -23,6 +23,8 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/theme",    alias: "/t",  args: "",        description: "Change color theme" },
     CommandInfo { name: "/poll",     alias: "",    args: "\"question\" \"opt1\" \"opt2\" [--single]", description: "Create a poll" },
     CommandInfo { name: "/verify",   alias: "/v",  args: "",        description: "Verify contact identity" },
+    CommandInfo { name: "/profile",  alias: "",    args: "",        description: "Edit your Signal profile" },
+    CommandInfo { name: "/about",    alias: "",    args: "",        description: "About signal-tui" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
     CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit signal-tui" },
 ];
@@ -68,6 +70,10 @@ pub enum InputAction {
     Poll { question: String, options: Vec<String>, allow_multiple: bool },
     /// Show identity verification overlay
     Verify,
+    /// Edit Signal profile
+    Profile,
+    /// Show about overlay
+    About,
     /// Unknown command
     Unknown(String),
 }
@@ -136,6 +142,8 @@ pub fn parse_input(input: &str) -> InputAction {
             }
         }
         "/verify" | "/v" => InputAction::Verify,
+        "/profile" => InputAction::Profile,
+        "/about" => InputAction::About,
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
@@ -267,6 +275,8 @@ mod tests {
     #[case("/g", InputAction::Group)]
     #[case("/verify", InputAction::Verify)]
     #[case("/v", InputAction::Verify)]
+    #[case("/profile", InputAction::Profile)]
+    #[case("/about", InputAction::About)]
     #[case("/bell", InputAction::ToggleBell(None))]
     fn command_returns_expected_action(#[case] input: &str, #[case] expected: InputAction) {
         assert_eq!(parse_input(input), expected);

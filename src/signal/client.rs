@@ -794,6 +794,36 @@ impl SignalClient {
         Ok(())
     }
 
+    /// Update the user's Signal profile.
+    pub async fn update_profile(
+        &self,
+        given_name: &str,
+        family_name: &str,
+        about: &str,
+        about_emoji: &str,
+    ) -> Result<()> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), ("updateProfile".to_string(), Instant::now()));
+        }
+        let params = serde_json::json!({
+            "account": self.account,
+            "givenName": given_name,
+            "familyName": family_name,
+            "about": about,
+            "aboutEmoji": about_emoji,
+        });
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "updateProfile".to_string(),
+            id,
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx.send(json).await.context("Failed to send updateProfile to signal-cli stdin")?;
+        Ok(())
+    }
+
     /// Block a contact or group.
     pub async fn block_contact(&self, recipient: &str, is_group: bool) -> Result<()> {
         let id = Uuid::new_v4().to_string();

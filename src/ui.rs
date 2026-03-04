@@ -32,6 +32,8 @@ const SEARCH_POPUP_WIDTH: u16 = 60;
 const SEARCH_MAX_VISIBLE: usize = 15;
 const GROUP_MENU_POPUP_WIDTH: u16 = 40;
 const GROUP_MEMBER_MAX_VISIBLE: usize = 15;
+const ABOUT_POPUP_WIDTH: u16 = 50;
+const PROFILE_POPUP_WIDTH: u16 = 50;
 
 /// Map a MessageStatus to its display symbol and color.
 pub(crate) fn status_symbol(status: MessageStatus, nerd_fonts: bool, color: bool, theme: &Theme) -> (&'static str, Color) {
@@ -527,6 +529,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Poll vote overlay
     if app.show_poll_vote {
         draw_poll_vote_overlay(frame, app, size);
+    }
+
+    // About overlay
+    if app.show_about {
+        draw_about(frame, app, size);
+    }
+
+    // Profile editor overlay
+    if app.show_profile {
+        draw_profile(frame, app, size);
     }
 
     // Collect link regions from the rendered buffer for OSC 8 injection
@@ -3064,6 +3076,128 @@ fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
         format!(" {mode_hint}  Enter: submit  Esc"),
         Style::default().fg(theme.fg_muted),
     )));
+
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
+}
+
+fn draw_about(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let version = env!("CARGO_PKG_VERSION");
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  signal-tui v{version}"),
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  A terminal Signal messenger client",
+            Style::default().fg(theme.fg),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Created by John Sideserf",
+            Style::default().fg(theme.fg_secondary),
+        )),
+        Line::from(Span::styled(
+            "  License: GPL-3.0",
+            Style::default().fg(theme.fg_secondary),
+        )),
+        Line::from(Span::styled(
+            "  github.com/johnsideserf/signal-tui",
+            Style::default().fg(theme.link),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Press any key to close",
+            Style::default().fg(theme.fg_muted),
+        )),
+    ];
+
+    let pref_height = lines.len() as u16 + 2; // +2 for borders
+    let (popup_area, block) = centered_popup(
+        frame, area, ABOUT_POPUP_WIDTH, pref_height, " About ", theme,
+    );
+
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
+}
+
+fn draw_profile(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let labels = ["Given name", "Family name", "About", "About emoji"];
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, label) in labels.iter().enumerate() {
+        let is_selected = i == app.profile_index;
+        let is_editing = is_selected && app.profile_editing;
+
+        let label_style = if is_selected {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+
+        let value = if is_editing {
+            format!("{}\u{2588}", app.profile_edit_buffer) // block cursor
+        } else {
+            let v = &app.profile_fields[i];
+            if v.is_empty() { "(empty)".to_string() } else { v.clone() }
+        };
+
+        let value_style = if is_editing || is_selected {
+            Style::default().bg(theme.bg_selected).fg(theme.fg)
+        } else if app.profile_fields[i].is_empty() {
+            Style::default().fg(theme.fg_muted)
+        } else {
+            Style::default().fg(theme.fg)
+        };
+
+        let row_style = if is_selected {
+            Style::default().bg(theme.bg_selected)
+        } else {
+            Style::default()
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<14} ", label), label_style),
+            Span::styled(value, value_style),
+            // Pad remaining width with bg color for selected row
+            Span::styled("", row_style),
+        ]));
+    }
+
+    // Blank line before Save
+    lines.push(Line::from(""));
+
+    // Save button
+    let save_selected = app.profile_index == 4;
+    let save_style = if save_selected {
+        Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.fg_secondary)
+    };
+    lines.push(Line::from(Span::styled("  [ Save ]", save_style)));
+
+    // Footer
+    lines.push(Line::from(""));
+    let footer = if app.profile_editing {
+        "  Type to edit | Enter confirm | Esc cancel"
+    } else {
+        "  j/k navigate | Enter edit | Esc close"
+    };
+    lines.push(Line::from(Span::styled(
+        footer,
+        Style::default().fg(theme.fg_muted),
+    )));
+
+    let pref_height = lines.len() as u16 + 2; // +2 for borders
+    let (popup_area, block) = centered_popup(
+        frame, area, PROFILE_POPUP_WIDTH, pref_height, " Edit Profile ", theme,
+    );
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
