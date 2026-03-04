@@ -62,6 +62,7 @@ impl TrustLevel {
 #[derive(Debug, Clone)]
 pub struct IdentityInfo {
     pub number: Option<String>,
+    #[allow(dead_code)]
     pub uuid: Option<String>,
     pub fingerprint: String,
     pub safety_number: String,
