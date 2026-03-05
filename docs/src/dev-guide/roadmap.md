@@ -59,17 +59,18 @@
 - [x] Profile editor (`/profile` overlay for Signal profile fields)
 - [x] About overlay (`/about` command showing app info)
 - [x] Sidebar position setting (left or right placement)
+- [x] Publish to crates.io (`cargo install siggy`)
+- [x] Rename to siggy (auto-migration from signal-tui paths)
 
 ## Future
 
 ### Medium priority
 
-- [ ] Publish to crates.io (#11)
 - [ ] Multi-line message input (Shift+Enter for newlines)
+- [ ] Forward messages
 
 ### Low priority
 
 - [ ] Message history pagination (scroll-up to load older messages)
 - [ ] Scroll position memory per conversation
 - [ ] Configurable keybindings
-- [ ] Forward messages

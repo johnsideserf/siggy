@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.0.1
+
+### Security
+
+- **OSC 8 escape injection fix** -- URLs in messages are now sanitized before
+  being embedded in terminal hyperlink escape sequences, preventing crafted
+  URLs from manipulating terminal state (title, colors, screen)
+- **Attachment path traversal fix** -- attachment filenames from signal-cli are
+  now sanitized by replacing path separators and `..` traversal sequences,
+  preventing writes outside the configured download directory
+
+---
+
+## v1.0.0
+
+### Rename to siggy
+
+- **Renamed from signal-tui to siggy** -- the binary, package, config paths,
+  data paths, and database filename are all now "siggy" (#127)
+- **Automatic migration** -- existing config directories, data directories,
+  and database files are seamlessly migrated from the old "signal-tui" paths
+  on first launch. No manual action required
+- **Published to crates.io** -- install with `cargo install siggy` (closes #11)
+
+### Docsite
+
+- **Brand theme** -- docsite color palette updated from gray mIRC to siggy's
+  navy-blue brand colors in both light and dark modes (#128)
+- **Logo integration** -- siggy logo and favicon added to the docsite intro
+  page and menu bar
+
+### Repo hygiene
+
+- **Cargo.lock tracked** -- binary crate now correctly tracks its lockfile
+- **.gitignore cleanup** -- added IDE directories and platform artifacts
+
+---
+
 ## v0.9.0
 
 ### Pinned messages
