@@ -6,6 +6,7 @@
   <a href="https://github.com/johnsideserf/siggy/actions/workflows/ci.yml"><img src="https://github.com/johnsideserf/siggy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/johnsideserf/siggy/releases/latest"><img src="https://img.shields.io/github/v/release/johnsideserf/siggy" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/johnsideserf/siggy" alt="License: GPL-3.0"></a>
+  <a href="https://crates.io/crates/siggy"><img src="https://img.shields.io/crates/v/siggy" alt="crates.io"></a>
   <a href="https://johnsideserf.github.io/siggy/"><img src="https://img.shields.io/badge/docs-siggy-blue" alt="Docs"></a>
 </p>
 
@@ -33,13 +34,15 @@ irm https://raw.githubusercontent.com/johnsideserf/siggy/master/install.ps1 | ie
 
 Both scripts download the latest release binary and check for signal-cli.
 
-### Build from source
+### From crates.io
 
 Requires Rust 1.70+.
 
 ```sh
-cargo install --git https://github.com/johnsideserf/siggy.git
+cargo install siggy
 ```
+
+### Build from source
 
 Or clone and build locally:
 

@@ -1,5 +1,13 @@
 # Installation
 
+## From crates.io
+
+Requires **Rust 1.70+**.
+
+```sh
+cargo install siggy
+```
+
 ## Pre-built binaries
 
 Download the latest release for your platform from the

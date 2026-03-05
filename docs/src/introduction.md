@@ -21,6 +21,12 @@ full-featured messaging interface that runs entirely in your terminal. Built wit
 
 ## Quick start
 
+**From crates.io:**
+
+```sh
+cargo install siggy
+```
+
 **Linux / macOS:**
 
 ```sh

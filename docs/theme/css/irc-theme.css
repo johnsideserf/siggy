@@ -129,11 +129,12 @@ body {
     font-size: 0;
     color: transparent !important;
     background: url('../src/siggy-icon.png') no-repeat left center;
-    background-size: contain;
-    height: 28px;
+    background-size: 22px 22px;
+    height: var(--menu-bar-height);
     min-width: 28px;
-    padding-left: 34px;
-    line-height: 28px;
+    padding-left: 28px;
+    display: flex;
+    align-items: center;
 }
 
 .menu-bar h1.menu-title::after {
@@ -142,6 +143,7 @@ body {
     font-weight: 700;
     color: var(--irc-navy);
     letter-spacing: 0.02em;
+    line-height: 1;
 }
 
 /* ═══════════════════════════════════════════════════════════
