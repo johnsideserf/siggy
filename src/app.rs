@@ -31,16 +31,33 @@ impl App {
 }
 
 /// Fire an OS-level desktop notification (runs on a blocking thread to avoid stalling async).
-fn show_desktop_notification(sender: &str, body: &str, is_group: bool, group_name: Option<&str>) {
-    let title = if is_group {
-        match group_name {
-            Some(gn) => format!("{} — {}", gn, sender),
-            None => sender.to_string(),
+fn show_desktop_notification(sender: &str, body: &str, is_group: bool, group_name: Option<&str>, preview_level: &str) {
+    let (title, preview) = match preview_level {
+        "minimal" => ("New message".to_string(), String::new()),
+        "sender" => {
+            let t = if is_group {
+                match group_name {
+                    Some(gn) => format!("{} — {}", gn, sender),
+                    None => sender.to_string(),
+                }
+            } else {
+                sender.to_string()
+            };
+            (t, "New message".to_string())
         }
-    } else {
-        sender.to_string()
+        _ => {
+            // "full" or any unknown value — current behavior
+            let t = if is_group {
+                match group_name {
+                    Some(gn) => format!("{} — {}", gn, sender),
+                    None => sender.to_string(),
+                }
+            } else {
+                sender.to_string()
+            };
+            (t, body.chars().take(100).collect())
+        }
     };
-    let preview: String = body.chars().take(100).collect();
 
     tokio::task::spawn_blocking(move || {
         let _ = notify_rust::Notification::new()
@@ -260,6 +277,12 @@ pub struct App {
     pub notify_group: bool,
     /// OS-level desktop notifications for incoming messages
     pub desktop_notifications: bool,
+    /// Notification preview level: "full", "sender", or "minimal"
+    pub notification_preview: String,
+    /// Seconds before clipboard is auto-cleared after copying (0 = disabled)
+    pub clipboard_clear_seconds: u64,
+    /// Timestamp when clipboard was last set (for auto-clear)
+    pub clipboard_set_at: Option<std::time::Instant>,
     /// Conversations muted from notifications
     pub muted_conversations: HashSet<String>,
     /// Conversations blocked via signal-cli
@@ -2070,6 +2093,9 @@ impl App {
             notify_direct: true,
             notify_group: true,
             desktop_notifications: false,
+            notification_preview: "full".to_string(),
+            clipboard_clear_seconds: 30,
+            clipboard_set_at: None,
             muted_conversations: HashSet::new(),
             blocked_conversations: HashSet::new(),
             autocomplete_visible: false,
@@ -3158,6 +3184,7 @@ impl App {
                     notif_body,
                     is_group,
                     notif_group.as_deref(),
+                    &self.notification_preview,
                 );
             }
         }
@@ -5382,6 +5409,9 @@ impl App {
             Ok(mut clipboard) => match clipboard.set_text(&text) {
                 Ok(()) => {
                     self.status_message = "Copied to clipboard".to_string();
+                    if self.clipboard_clear_seconds > 0 {
+                        self.clipboard_set_at = Some(std::time::Instant::now());
+                    }
                 }
                 Err(e) => {
                     self.status_message = format!("Clipboard error: {e}");
@@ -5389,6 +5419,18 @@ impl App {
             },
             Err(e) => {
                 self.status_message = format!("Clipboard error: {e}");
+            }
+        }
+    }
+
+    /// Clear the clipboard if auto-clear timer has expired.
+    pub fn check_clipboard_clear(&mut self) {
+        if let Some(set_at) = self.clipboard_set_at {
+            if set_at.elapsed().as_secs() >= self.clipboard_clear_seconds {
+                self.clipboard_set_at = None;
+                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                    let _ = clipboard.set_text("");
+                }
             }
         }
     }

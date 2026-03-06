@@ -720,6 +720,8 @@ async fn run_app(
     app.notify_direct = config.notify_direct;
     app.notify_group = config.notify_group;
     app.desktop_notifications = config.desktop_notifications;
+    app.notification_preview = config.notification_preview.clone();
+    app.clipboard_clear_seconds = config.clipboard_clear_seconds;
     app.inline_images = config.inline_images;
     app.show_link_previews = config.show_link_previews;
     app.native_images = config.native_images;
@@ -873,6 +875,9 @@ async fn run_app(
             app.pending_bell = false;
             execute!(terminal.backend_mut(), crossterm::style::Print("\x07"))?;
         }
+
+        // Auto-clear clipboard after timeout
+        app.check_clipboard_clear();
 
         // Dynamic mouse capture toggle from settings
         if let Some(enabled) = app.pending_mouse_toggle.take() {
