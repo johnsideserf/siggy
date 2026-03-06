@@ -28,6 +28,14 @@ pub struct Config {
     #[serde(default)]
     pub desktop_notifications: bool,
 
+    /// Notification preview level: "full", "sender", or "minimal"
+    #[serde(default = "default_notification_preview")]
+    pub notification_preview: String,
+
+    /// Seconds before clipboard is auto-cleared after copying (0 = disabled)
+    #[serde(default = "default_clipboard_clear_seconds")]
+    pub clipboard_clear_seconds: u64,
+
     /// Show inline halfblock image previews in chat
     #[serde(default = "default_true")]
     pub inline_images: bool,
@@ -81,6 +89,14 @@ fn default_theme() -> String {
     "Default".to_string()
 }
 
+fn default_notification_preview() -> String {
+    "full".to_string()
+}
+
+fn default_clipboard_clear_seconds() -> u64 {
+    30
+}
+
 fn default_signal_cli_path() -> String {
     "signal-cli".to_string()
 }
@@ -100,6 +116,8 @@ impl Default for Config {
             notify_direct: true,
             notify_group: true,
             desktop_notifications: false,
+            notification_preview: default_notification_preview(),
+            clipboard_clear_seconds: default_clipboard_clear_seconds(),
             inline_images: true,
             show_link_previews: true,
             native_images: false,
