@@ -223,6 +223,8 @@ pub struct App {
     pub sidebar_visible: bool,
     /// Scroll offset for messages (0 = bottom)
     pub scroll_offset: usize,
+    /// Saved scroll positions per conversation (scroll_offset, focused_msg_index)
+    pub scroll_positions: HashMap<String, (usize, Option<usize>)>,
     /// Status bar message
     pub status_message: String,
     /// Whether the app should quit
@@ -1249,6 +1251,7 @@ impl App {
                 let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                 self.conversations.remove(&conv_id);
                 self.conversation_order.retain(|id| id != &conv_id);
+                self.scroll_positions.remove(&conv_id);
                 self.db_warn_visible(self.db.delete_conversation(&conv_id), "delete_conversation");
                 self.show_message_request = false;
                 self.active_conversation = None;
@@ -2049,6 +2052,7 @@ impl App {
             history_draft: String::new(),
             sidebar_visible: true,
             scroll_offset: 0,
+            scroll_positions: HashMap::new(),
             status_message: "connecting...".to_string(),
             should_quit: false,
             account,
@@ -4520,6 +4524,7 @@ impl App {
                 self.join_conversation(&target);
             }
             InputAction::Part => {
+                self.save_scroll_position();
                 self.active_conversation = None;
                 self.scroll_offset = 0;
                 self.focused_msg_index = None;
@@ -5153,8 +5158,25 @@ impl App {
         }
     }
 
+    fn save_scroll_position(&mut self) {
+        if let Some(ref id) = self.active_conversation {
+            self.scroll_positions.insert(id.clone(), (self.scroll_offset, self.focused_msg_index));
+        }
+    }
+
+    fn restore_scroll_position(&mut self, conv_id: &str) {
+        if let Some(&(offset, focus)) = self.scroll_positions.get(conv_id) {
+            self.scroll_offset = offset;
+            self.focused_msg_index = focus;
+        } else {
+            self.scroll_offset = 0;
+            self.focused_msg_index = None;
+        }
+    }
+
     fn join_conversation(&mut self, target: &str) {
         self.mark_read();
+        self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
 
@@ -5166,8 +5188,7 @@ impl App {
             if let Some(conv) = self.conversations.get_mut(target) {
                 conv.unread = 0;
             }
-            self.scroll_offset = 0;
-            self.focused_msg_index = None;
+            self.restore_scroll_position(target);
             self.update_status();
             return;
         }
@@ -5184,11 +5205,10 @@ impl App {
             let read_from = self.last_read_index.get(&id).copied().unwrap_or(0);
             self.queue_read_receipts_for_conv(&id, read_from);
             self.active_conversation = Some(id.clone());
-            self.scroll_offset = 0;
-            self.focused_msg_index = None;
             if let Some(conv) = self.conversations.get_mut(&id) {
                 conv.unread = 0;
             }
+            self.restore_scroll_position(&id);
             self.update_status();
             return;
         }
@@ -5210,6 +5230,7 @@ impl App {
             return;
         }
         self.mark_read();
+        self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
         let idx = self
@@ -5225,8 +5246,7 @@ impl App {
         if let Some(conv) = self.conversations.get_mut(&new_id) {
             conv.unread = 0;
         }
-        self.scroll_offset = 0;
-        self.focused_msg_index = None;
+        self.restore_scroll_position(&new_id);
         self.update_status();
     }
 
@@ -5235,6 +5255,7 @@ impl App {
             return;
         }
         self.mark_read();
+        self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
         let len = self.conversation_order.len();
@@ -5251,8 +5272,7 @@ impl App {
         if let Some(conv) = self.conversations.get_mut(&new_id) {
             conv.unread = 0;
         }
-        self.scroll_offset = 0;
-        self.focused_msg_index = None;
+        self.restore_scroll_position(&new_id);
         self.update_status();
     }
 
