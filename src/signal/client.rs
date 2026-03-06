@@ -2185,6 +2185,13 @@ fn parse_attachment(
 
     let dest = download_dir.join(&effective_name);
 
+    // Defense-in-depth: verify resolved path stays within download directory.
+    let canon_dir = download_dir.canonicalize().unwrap_or_else(|_| download_dir.to_path_buf());
+    let canon_dest = dest.canonicalize().unwrap_or_else(|_| canon_dir.join(&effective_name));
+    if !canon_dest.starts_with(&canon_dir) {
+        return None;
+    }
+
     // Try to find the source file: explicit "file" field, or signal-cli's attachment dir
     let local_path = if dest.exists() {
         // Already copied previously

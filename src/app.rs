@@ -5460,6 +5460,11 @@ impl App {
     }
 
     fn open_url(&mut self, url: &str) {
+        // Only allow http/https URLs to prevent local file access via file:// etc.
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            self.status_message = "Only http/https URLs can be opened".to_string();
+            return;
+        }
         if let Err(e) = open::that(url) {
             self.status_message = format!("Failed to open URL: {e}");
         }
@@ -5476,9 +5481,10 @@ fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
 
 /// Shorten a phone number for display: +15551234567 -> +1***4567
 fn short_name(number: &str) -> String {
-    if number.len() > 6 {
-        let last4 = &number[number.len() - 4..];
-        let prefix = &number[..2];
+    let chars: Vec<char> = number.chars().collect();
+    if chars.len() > 6 {
+        let prefix: String = chars[..2].iter().collect();
+        let last4: String = chars[chars.len() - 4..].iter().collect();
         format!("{prefix}***{last4}")
     } else {
         number.to_string()
