@@ -13,7 +13,7 @@ default-theme = "light"
 preferred-dark-theme = "light"
 additional-css = ["theme/css/irc-theme.css"]
 additional-js = ["theme/js/dark-toggle.js"]
-site-url = "/siggy/"
+site-url = "https://siggy.chat/"
 git-repository-url = "https://github.com/johnsideserf/siggy"
 edit-url-template = "https://github.com/johnsideserf/siggy/edit/master/docs/{path}"
 

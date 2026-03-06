@@ -26,7 +26,9 @@ jobs:
           mdbook-version: latest
 
       - name: Build
-        run: mdbook build docs
+        run: |
+          mdbook build docs
+          cp docs/CNAME docs/book/CNAME
 
       - uses: actions/configure-pages@v5
 
