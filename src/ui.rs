@@ -2418,10 +2418,17 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  j/k: navigate  v: verify  Esc: close",
-            Style::default().fg(theme.fg_muted),
-        )));
+        if app.verify_confirming {
+            lines.push(Line::from(Span::styled(
+                "  Compare safety numbers, then press v to confirm",
+                Style::default().fg(theme.warning),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  j/k: navigate  v: verify  Esc: close",
+                Style::default().fg(theme.fg_muted),
+            )));
+        }
     } else {
         // 1:1 view: single identity with full details
         let identity = &app.verify_identities[0];
@@ -2463,10 +2470,17 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(""));
         }
 
-        lines.push(Line::from(Span::styled(
-            "  v: verify key  Esc: close",
-            Style::default().fg(theme.fg_muted),
-        )));
+        if app.verify_confirming {
+            lines.push(Line::from(Span::styled(
+                "  Compare safety numbers, then press v to confirm",
+                Style::default().fg(theme.warning),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "  v: verify key  Esc: close",
+                Style::default().fg(theme.fg_muted),
+            )));
+        }
     }
 
     let popup = Paragraph::new(lines).block(block);

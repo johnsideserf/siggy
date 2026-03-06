@@ -690,11 +690,11 @@ async fn dispatch_send(
         SendRequest::ListIdentities => {
             let _ = signal_client.list_identities().await;
         }
-        SendRequest::TrustIdentity { recipient } => {
-            if let Err(e) = signal_client.trust_identity(&recipient).await {
+        SendRequest::TrustIdentity { recipient, safety_number } => {
+            if let Err(e) = signal_client.trust_identity(&recipient, &safety_number).await {
                 app.status_message = format!("trust error: {e}");
             } else {
-                app.status_message = format!("Trusted {}", app.contact_names.get(&recipient).unwrap_or(&recipient));
+                app.status_message = format!("Verified {}", app.contact_names.get(&recipient).unwrap_or(&recipient));
                 // Re-fetch identities to update trust levels
                 let _ = signal_client.list_identities().await;
             }

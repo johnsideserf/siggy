@@ -290,6 +290,8 @@ pub struct App {
     pub verify_identities: Vec<IdentityInfo>,
     /// Cached trust levels keyed by phone number
     pub identity_trust: HashMap<String, TrustLevel>,
+    /// Confirmation pending for verify action (user must press v twice)
+    pub verify_confirming: bool,
     /// Show inline halfblock image previews in chat
     pub inline_images: bool,
     /// Show link previews (title, description, thumbnail) for URLs
@@ -595,6 +597,7 @@ pub enum SendRequest {
     ListIdentities,
     TrustIdentity {
         recipient: String,
+        safety_number: String,
     },
     UpdateProfile {
         given_name: String,
@@ -1611,6 +1614,7 @@ impl App {
     pub fn handle_verify_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
+                self.verify_confirming = false;
                 if !self.verify_identities.is_empty()
                     && self.verify_index < self.verify_identities.len() - 1
                 {
@@ -1618,23 +1622,38 @@ impl App {
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
+                self.verify_confirming = false;
                 if self.verify_index > 0 {
                     self.verify_index -= 1;
                 }
             }
             KeyCode::Char('v') | KeyCode::Enter => {
-                // Trust the selected identity
                 if let Some(id) = self.verify_identities.get(self.verify_index) {
-                    if let Some(ref number) = id.number {
-                        let recipient = number.clone();
-                        return Some(SendRequest::TrustIdentity { recipient });
+                    if id.safety_number.is_empty() {
+                        self.status_message = "Safety number not available — cannot verify".to_string();
+                        return None;
+                    }
+                    if self.verify_confirming {
+                        // Second press: actually trust with the specific safety number
+                        if let Some(ref number) = id.number {
+                            let recipient = number.clone();
+                            let safety_number = id.safety_number.clone();
+                            self.verify_confirming = false;
+                            return Some(SendRequest::TrustIdentity { recipient, safety_number });
+                        }
+                    } else {
+                        // First press: ask for confirmation
+                        self.verify_confirming = true;
                     }
                 }
             }
             KeyCode::Esc => {
+                self.verify_confirming = false;
                 self.show_verify = false;
             }
-            _ => {}
+            _ => {
+                self.verify_confirming = false;
+            }
         }
         None
     }
@@ -2063,6 +2082,7 @@ impl App {
             verify_index: 0,
             verify_identities: Vec::new(),
             identity_trust: HashMap::new(),
+            verify_confirming: false,
             inline_images: true,
             show_link_previews: true,
             link_regions: Vec::new(),

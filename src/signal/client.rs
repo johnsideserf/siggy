@@ -478,7 +478,7 @@ impl SignalClient {
         Ok(())
     }
 
-    pub async fn trust_identity(&self, recipient: &str) -> Result<()> {
+    pub async fn trust_identity(&self, recipient: &str, safety_number: &str) -> Result<()> {
         let id = Uuid::new_v4().to_string();
         if let Ok(mut map) = self.pending_requests.lock() {
             map.insert(id.clone(), ("trust".to_string(), Instant::now()));
@@ -489,7 +489,7 @@ impl SignalClient {
             id,
             params: Some(serde_json::json!({
                 "recipient": [recipient],
-                "trustAllKnownKeys": true,
+                "verifiedSafetyNumber": safety_number,
                 "account": self.account,
             })),
         };
