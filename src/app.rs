@@ -1033,6 +1033,12 @@ impl App {
             return;
         };
 
+        // Strip SHIFT for Char keys — case is encoded in the character itself
+        let modifiers = if matches!(code, KeyCode::Char(_)) {
+            modifiers - KeyModifiers::SHIFT
+        } else {
+            modifiers
+        };
         let combo = keybindings::KeyCombo { modifiers, code };
         let displaced = self.keybindings.rebind(mode, action, combo.clone());
         self.keybindings_capturing = false;

@@ -95,6 +95,13 @@ impl KeyBindings {
     /// Look up the action for a key press in the given mode.
     /// Global bindings are checked first, then mode-specific.
     pub fn resolve(&self, modifiers: KeyModifiers, code: KeyCode, mode: BindingMode) -> Option<KeyAction> {
+        // For Char keys, strip SHIFT from modifiers since the case is already
+        // encoded in the character itself (crossterm sends 'J' with SHIFT).
+        let modifiers = if matches!(code, KeyCode::Char(_)) {
+            modifiers - KeyModifiers::SHIFT
+        } else {
+            modifiers
+        };
         let combo = KeyCombo { modifiers, code };
         // Global bindings always apply
         if let Some(action) = self.global.get(&combo) {
