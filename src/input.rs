@@ -89,6 +89,10 @@ pub fn parse_input(input: &str) -> InputAction {
     }
 
     if !trimmed.starts_with('/') {
+        // Handle :q and :quit as vim-style quit aliases
+        if trimmed == ":q" || trimmed == ":quit" {
+            return InputAction::Quit;
+        }
         return InputAction::SendText(trimmed.to_string());
     }
 
