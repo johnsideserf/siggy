@@ -2,7 +2,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Wrap,
@@ -646,11 +646,13 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_chat_area(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
+    let max_input_height = (area.height / 2).max(3);
+    let input_height = (app.input_line_count() as u16 + 2).clamp(3, max_input_height);
     let chat_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),   // messages (typing indicator rendered inside)
-            Constraint::Length(3), // input
+            Constraint::Length(input_height), // input
         ])
         .split(area);
 
@@ -1830,30 +1832,68 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(block);
         frame.render_widget(input, area);
     } else {
-        // Scroll the visible window so the cursor is always on screen
-        let scroll_offset = app.input_cursor.saturating_sub(text_width);
-        let visible_end = (scroll_offset + text_width).min(app.input_buffer.len());
-        let visible = &app.input_buffer[scroll_offset..visible_end];
+        let lines: Vec<&str> = app.input_buffer.split('\n').collect();
+        let (cursor_line, cursor_col) = app.cursor_line_col();
+        let visible_lines = area.height.saturating_sub(2) as usize;
+        let vertical_scroll = if cursor_line >= visible_lines {
+            cursor_line - visible_lines + 1
+        } else {
+            0
+        };
 
-        let mut spans: Vec<Span> = Vec::new();
-        if let Some(ref badge_text) = badge {
-            spans.push(Span::styled(
-                badge_text.clone(),
-                Style::default().fg(theme.mention).add_modifier(Modifier::BOLD),
-            ));
+        let mut text_lines: Vec<Line> = Vec::new();
+        for (i, line_str) in lines.iter().enumerate() {
+            let mut spans: Vec<Span> = Vec::new();
+            if i == 0 {
+                if let Some(ref badge_text) = badge {
+                    spans.push(Span::styled(
+                        badge_text.clone(),
+                        Style::default().fg(theme.mention).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                spans.push(Span::styled(prefix, Style::default().fg(theme.fg)));
+            } else {
+                spans.push(Span::styled(
+                    " ".repeat(prefix_len),
+                    Style::default().fg(theme.fg),
+                ));
+            }
+
+            if i == cursor_line {
+                let line_scroll = cursor_col.saturating_sub(text_width);
+                let visible_end = (line_scroll + text_width).min(line_str.len());
+                spans.push(Span::styled(
+                    line_str[line_scroll..visible_end].to_string(),
+                    Style::default().fg(theme.fg),
+                ));
+            } else {
+                let visible_end = text_width.min(line_str.len());
+                spans.push(Span::styled(
+                    line_str[..visible_end].to_string(),
+                    Style::default().fg(theme.fg),
+                ));
+            }
+            text_lines.push(Line::from(spans));
         }
-        spans.push(Span::styled(prefix, Style::default().fg(theme.fg)));
-        spans.push(Span::styled(visible.to_string(), Style::default().fg(theme.fg)));
 
-        let input = Paragraph::new(Line::from(spans)).block(block);
+        let input = Paragraph::new(Text::from(text_lines))
+            .block(block)
+            .scroll((vertical_scroll as u16, 0));
         frame.render_widget(input, area);
     }
 
     // Place cursor (only visible in Insert mode)
     if app.mode == InputMode::Insert {
-        let scroll_offset = app.input_cursor.saturating_sub(text_width);
-        let cursor_x = area.x + 1 + prefix_len as u16 + (app.input_cursor - scroll_offset) as u16;
-        let cursor_y = area.y + 1;
+        let (cursor_line, cursor_col) = app.cursor_line_col();
+        let visible_lines = area.height.saturating_sub(2) as usize;
+        let vertical_scroll = if cursor_line >= visible_lines {
+            cursor_line - visible_lines + 1
+        } else {
+            0
+        };
+        let line_scroll = cursor_col.saturating_sub(text_width);
+        let cursor_x = area.x + 1 + prefix_len as u16 + (cursor_col - line_scroll) as u16;
+        let cursor_y = area.y + 1 + (cursor_line - vertical_scroll) as u16;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }

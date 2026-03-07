@@ -2709,11 +2709,11 @@ impl App {
                 self.mode = InputMode::Insert;
             }
             KeyCode::Char('I') => {
-                self.input_cursor = 0;
+                self.input_cursor = self.current_line_start();
                 self.mode = InputMode::Insert;
             }
             KeyCode::Char('A') => {
-                self.input_cursor = self.input_buffer.len();
+                self.input_cursor = self.current_line_end();
                 self.mode = InputMode::Insert;
             }
             KeyCode::Char('o') => {
@@ -2730,10 +2730,10 @@ impl App {
                 }
             }
             KeyCode::Char('0') => {
-                self.input_cursor = 0;
+                self.input_cursor = self.current_line_start();
             }
             KeyCode::Char('$') => {
-                self.input_cursor = self.input_buffer.len();
+                self.input_cursor = self.current_line_end();
             }
             KeyCode::Char('w') => {
                 let buf = &self.input_buffer;
@@ -2776,7 +2776,8 @@ impl App {
                 }
             }
             KeyCode::Char('D') => {
-                self.input_buffer.truncate(self.input_cursor);
+                let line_end = self.current_line_end();
+                self.input_buffer.drain(self.input_cursor..line_end);
             }
             KeyCode::Char('/') => {
                 self.input_buffer = "/".to_string();
@@ -2899,6 +2900,22 @@ impl App {
                     self.typing_sent = false;
                     self.typing_last_keypress = None;
                     return self.build_typing_request(true);
+                }
+                None
+            }
+            (m, KeyCode::Enter) if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::SHIFT) => {
+                // Insert newline for multi-line input
+                self.input_buffer.insert(self.input_cursor, '\n');
+                self.input_cursor += 1;
+                self.autocomplete_visible = false;
+                // Typing indicator
+                self.typing_last_keypress = Some(Instant::now());
+                if !self.typing_sent
+                    && !self.input_buffer.starts_with('/')
+                    && self.active_conversation.as_ref().is_some_and(|id| !self.blocked_conversations.contains(id))
+                {
+                    self.typing_sent = true;
+                    return self.build_typing_request(false);
                 }
                 None
             }
@@ -5213,19 +5230,36 @@ impl App {
                 true
             }
             KeyCode::Home => {
-                self.input_cursor = 0;
+                self.input_cursor = self.current_line_start();
                 true
             }
             KeyCode::End => {
-                self.input_cursor = self.input_buffer.len();
+                self.input_cursor = self.current_line_end();
                 true
             }
             KeyCode::Up => {
-                self.history_up();
+                let (line, col) = self.cursor_line_col();
+                if line > 0 {
+                    let lines: Vec<&str> = self.input_buffer.split('\n').collect();
+                    let target_col = col.min(lines[line - 1].len());
+                    let offset: usize = lines.iter().take(line - 1).map(|l| l.len() + 1).sum();
+                    self.input_cursor = offset + target_col;
+                } else {
+                    self.history_up();
+                }
                 true
             }
             KeyCode::Down => {
-                self.history_down();
+                let (line, col) = self.cursor_line_col();
+                let total_lines = self.input_line_count();
+                if line < total_lines - 1 {
+                    let lines: Vec<&str> = self.input_buffer.split('\n').collect();
+                    let target_col = col.min(lines[line + 1].len());
+                    let offset: usize = lines.iter().take(line + 1).map(|l| l.len() + 1).sum();
+                    self.input_cursor = offset + target_col;
+                } else {
+                    self.history_down();
+                }
                 true
             }
             KeyCode::Char(c) => {
@@ -5237,13 +5271,46 @@ impl App {
         }
     }
 
+    /// Returns the number of lines in the input buffer.
+    pub fn input_line_count(&self) -> usize {
+        self.input_buffer.matches('\n').count() + 1
+    }
+
+    /// Returns (line_index, column) of the cursor within the input buffer.
+    pub fn cursor_line_col(&self) -> (usize, usize) {
+        let before = &self.input_buffer[..self.input_cursor];
+        let line = before.matches('\n').count();
+        let col = match before.rfind('\n') {
+            Some(pos) => self.input_cursor - pos - 1,
+            None => self.input_cursor,
+        };
+        (line, col)
+    }
+
+    /// Returns the byte offset of the start of the current line.
+    fn current_line_start(&self) -> usize {
+        self.input_buffer[..self.input_cursor]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0)
+    }
+
+    /// Returns the byte offset of the end of the current line (before the newline or buffer end).
+    fn current_line_end(&self) -> usize {
+        self.input_buffer[self.input_cursor..]
+            .find('\n')
+            .map(|p| self.input_cursor + p)
+            .unwrap_or(self.input_buffer.len())
+    }
+
     /// Handle a bracketed paste event (Ctrl+V or terminal paste).
     /// Inserts the entire pasted string at once, avoiding per-character overhead.
     pub fn handle_paste(&mut self, text: String) -> Option<SendRequest> {
         if self.mode != InputMode::Insert || self.has_overlay() {
             return None;
         }
-        // Insert pasted text at cursor position
+        // Normalize line endings and insert pasted text at cursor position
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
         self.input_buffer.insert_str(self.input_cursor, &text);
         self.input_cursor += text.len();
         // Single autocomplete + typing indicator update
@@ -6332,6 +6399,134 @@ mod tests {
 
         assert!(app.apply_input_edit(KeyCode::Down));
         assert_eq!(app.input_buffer, "draft");
+    }
+
+    // --- Multi-line input tests ---
+
+    #[rstest]
+    fn input_line_count_single_line(mut app: App) {
+        app.input_buffer = "hello".to_string();
+        assert_eq!(app.input_line_count(), 1);
+    }
+
+    #[rstest]
+    fn input_line_count_multi_line(mut app: App) {
+        app.input_buffer = "hello\nworld\nfoo".to_string();
+        assert_eq!(app.input_line_count(), 3);
+    }
+
+    #[rstest]
+    fn cursor_line_col_first_line(mut app: App) {
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 3;
+        assert_eq!(app.cursor_line_col(), (0, 3));
+    }
+
+    #[rstest]
+    fn cursor_line_col_second_line(mut app: App) {
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 8; // "world" index 2
+        assert_eq!(app.cursor_line_col(), (1, 2));
+    }
+
+    #[rstest]
+    fn cursor_line_col_at_newline(mut app: App) {
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 6; // start of "world"
+        assert_eq!(app.cursor_line_col(), (1, 0));
+    }
+
+    #[rstest]
+    fn up_navigates_between_lines(mut app: App) {
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 8; // line 1, col 2
+        app.apply_input_edit(KeyCode::Up);
+        assert_eq!(app.input_cursor, 2); // line 0, col 2
+    }
+
+    #[rstest]
+    fn down_navigates_between_lines(mut app: App) {
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 2; // line 0, col 2
+        app.apply_input_edit(KeyCode::Down);
+        assert_eq!(app.input_cursor, 8); // line 1, col 2
+    }
+
+    #[rstest]
+    fn up_clamps_to_shorter_line(mut app: App) {
+        app.input_buffer = "hi\nhello world".to_string();
+        app.input_cursor = 12; // line 1, col 9
+        app.apply_input_edit(KeyCode::Up);
+        assert_eq!(app.input_cursor, 2); // line 0, col 2 (clamped to "hi" length)
+    }
+
+    #[rstest]
+    fn down_clamps_to_shorter_line(mut app: App) {
+        app.input_buffer = "hello world\nhi".to_string();
+        app.input_cursor = 9; // line 0, col 9
+        app.apply_input_edit(KeyCode::Down);
+        assert_eq!(app.input_cursor, 14); // line 1, col 2 (clamped to "hi" length)
+    }
+
+    #[rstest]
+    fn up_on_first_line_uses_history(mut app: App) {
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 3; // line 0, col 3
+        app.input_history = vec!["recalled".to_string()];
+        app.apply_input_edit(KeyCode::Up);
+        assert_eq!(app.input_buffer, "recalled");
+    }
+
+    #[rstest]
+    fn down_on_last_line_falls_through_to_history(mut app: App) {
+        // Single-line buffer on last line → Down should use history_down
+        app.input_buffer = "current".to_string();
+        app.input_cursor = 3;
+        app.input_history = vec!["old".to_string()];
+        app.history_index = Some(0);
+        // history_down from index 0 with 1 item → restores draft
+        // but we didn't save a draft via history_up, so draft is ""
+        app.apply_input_edit(KeyCode::Down);
+        assert_eq!(app.history_index, None); // exited history browsing
+    }
+
+    #[rstest]
+    fn home_end_line_aware(mut app: App) {
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 8; // line 1, col 2
+        app.apply_input_edit(KeyCode::Home);
+        assert_eq!(app.input_cursor, 6); // start of line 1
+        app.apply_input_edit(KeyCode::End);
+        assert_eq!(app.input_cursor, 11); // end of line 1
+    }
+
+    #[rstest]
+    fn alt_enter_inserts_newline(mut app: App) {
+        app.mode = InputMode::Insert;
+        app.input_buffer = "hello".to_string();
+        app.input_cursor = 5;
+        app.handle_insert_key(KeyModifiers::ALT, KeyCode::Enter);
+        assert_eq!(app.input_buffer, "hello\n");
+        assert_eq!(app.input_cursor, 6);
+    }
+
+    #[rstest]
+    fn enter_sends_multiline_message(mut app: App) {
+        app.mode = InputMode::Insert;
+        app.get_or_create_conversation("+1", "Alice", false);
+        app.active_conversation = Some("+1".to_string());
+        app.input_buffer = "hello\nworld".to_string();
+        app.input_cursor = 11;
+        let result = app.handle_insert_key(KeyModifiers::NONE, KeyCode::Enter);
+        assert!(result.is_some()); // should produce a SendRequest
+        assert!(app.input_buffer.is_empty()); // buffer cleared after send
+    }
+
+    #[rstest]
+    fn paste_normalizes_line_endings(mut app: App) {
+        app.mode = InputMode::Insert;
+        app.handle_paste("hello\r\nworld\rfoo".to_string());
+        assert_eq!(app.input_buffer, "hello\nworld\nfoo");
     }
 
     // --- Receipt handling tests ---
