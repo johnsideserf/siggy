@@ -791,6 +791,11 @@ async fn run_app(
             emit_native_images(terminal.backend_mut(), &mut app)?;
         }
 
+        // Load older messages when scrolled to the top
+        if app.at_scroll_top {
+            app.load_more_messages();
+        }
+
         // Poll for events with a short timeout so we stay responsive to signal events
         let has_terminal_event = event::poll(POLL_TIMEOUT)?;
 

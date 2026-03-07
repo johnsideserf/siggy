@@ -1078,6 +1078,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     app.scroll_offset = app.scroll_offset.min(base_scroll);
     let mut scroll_y = base_scroll - app.scroll_offset;
 
+    // Signal when user has scrolled to the top of loaded content
+    app.at_scroll_top = app.scroll_offset >= base_scroll
+        && base_scroll > 0
+        && app.active_conversation.as_ref()
+            .is_some_and(|id| app.has_more_messages.contains(id));
+
     // Determine the focused message for highlight and full-timestamp display in Normal mode.
     // Check focused_msg_index too so J/K navigation works even when content fits the viewport
     // (base_scroll == 0 clamps scroll_offset to 0, but J/K focus should persist).

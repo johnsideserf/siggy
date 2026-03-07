@@ -337,6 +337,10 @@ pub struct App {
     pub prev_active_conversation: Option<String>,
     /// Incognito mode — in-memory DB, no local persistence
     pub incognito: bool,
+    /// Conversations that have more messages in the database to load
+    pub has_more_messages: HashSet<String>,
+    /// Set by the renderer when the active conversation is scrolled to the top and has more
+    pub at_scroll_top: bool,
     /// Show delivery/read receipt status symbols on outgoing messages
     pub show_receipts: bool,
     /// Use colored status symbols (vs monochrome DarkGray)
@@ -2229,6 +2233,8 @@ impl App {
             native_image_cache: HashMap::new(),
             prev_active_conversation: None,
             incognito: false,
+            has_more_messages: HashSet::new(),
+            at_scroll_top: false,
             show_receipts: true,
             color_receipts: true,
             nerd_fonts: false,
@@ -2310,8 +2316,11 @@ impl App {
     }
 
     /// Load conversations and messages from the database on startup
+    /// Number of messages loaded per page (initial load + pagination batches).
+    const PAGE_SIZE: usize = 100;
+
     pub fn load_from_db(&mut self) -> anyhow::Result<()> {
-        let conv_data = self.db.load_conversations(500)?;
+        let conv_data = self.db.load_conversations(Self::PAGE_SIZE)?;
         let order = self.db.load_conversation_order()?;
 
         for mut conv in conv_data {
@@ -2364,6 +2373,10 @@ impl App {
                 }
             }
 
+            // Mark conversations that may have more messages in DB
+            if msg_count >= Self::PAGE_SIZE {
+                self.has_more_messages.insert(id.clone());
+            }
             self.conversations.insert(id.clone(), conv);
             // Derive last_read_index from unread count
             if msg_count > 0 {
@@ -2392,6 +2405,87 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Load older messages for the active conversation when scrolled to the top.
+    pub fn load_more_messages(&mut self) {
+        self.at_scroll_top = false;
+        let conv_id = match self.active_conversation.as_ref() {
+            Some(id) if self.has_more_messages.contains(id) => id.clone(),
+            _ => return,
+        };
+
+        let already_loaded = self.conversations.get(&conv_id)
+            .map(|c| c.messages.len()).unwrap_or(0);
+
+        let new_msgs = match self.db.load_messages_page(&conv_id, Self::PAGE_SIZE, already_loaded) {
+            Ok(msgs) => msgs,
+            Err(_) => return,
+        };
+
+        if new_msgs.len() < Self::PAGE_SIZE {
+            self.has_more_messages.remove(&conv_id);
+        }
+
+        if new_msgs.is_empty() {
+            return;
+        }
+
+        let prepend_count = new_msgs.len();
+
+        // Post-process: promote stale Sending → Sent, re-render images
+        let mut processed: Vec<DisplayMessage> = new_msgs.into_iter().map(|mut msg| {
+            if msg.status == Some(MessageStatus::Sending) {
+                msg.status = Some(MessageStatus::Sent);
+            }
+            if msg.body.starts_with("[image:") {
+                let path_str = if let Some(uri_pos) = msg.body.find("file:///") {
+                    let uri_slice = msg.body[uri_pos..].trim_end_matches(')');
+                    Some(file_uri_to_path(uri_slice))
+                } else if let Some(arrow_pos) = msg.body.find(" -> ") {
+                    Some(msg.body[arrow_pos + 4..].trim_end_matches(']').to_string())
+                } else {
+                    None
+                };
+                if let Some(p) = path_str {
+                    let path = Path::new(&p);
+                    if path.exists() {
+                        msg.image_path = Some(p.clone());
+                        if self.inline_images {
+                            msg.image_lines = image_render::render_image(path, 40);
+                        }
+                    }
+                }
+            }
+            if let Some(ref preview) = msg.preview {
+                if self.show_link_previews && self.inline_images {
+                    if let Some(ref p) = preview.image_path {
+                        let path = Path::new(p);
+                        if path.exists() {
+                            msg.preview_image_lines = image_render::render_image(path, 30);
+                            msg.preview_image_path = Some(p.clone());
+                        }
+                    }
+                }
+            }
+            msg
+        }).collect();
+
+        // Prepend to conversation
+        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+            processed.append(&mut conv.messages);
+            conv.messages = processed;
+        }
+
+        // Shift message indexes that reference this conversation
+        if let Some(read_idx) = self.last_read_index.get_mut(&conv_id) {
+            *read_idx += prepend_count;
+        }
+        if self.active_conversation.as_ref() == Some(&conv_id) {
+            if let Some(ref mut fi) = self.focused_msg_index {
+                *fi += prepend_count;
+            }
+        }
     }
 
     /// Resize sidebar by delta, clamped between 14..=40
@@ -6527,6 +6621,78 @@ mod tests {
         app.mode = InputMode::Insert;
         app.handle_paste("hello\r\nworld\rfoo".to_string());
         assert_eq!(app.input_buffer, "hello\nworld\nfoo");
+    }
+
+    // --- Pagination tests ---
+
+    #[rstest]
+    fn load_from_db_marks_has_more(mut app: App) {
+        // Insert exactly PAGE_SIZE messages
+        let conv_id = "+pagination";
+        app.db.upsert_conversation(conv_id, "PagTest", false).unwrap();
+        for i in 0..App::PAGE_SIZE {
+            app.db.insert_message(
+                conv_id, "Alice",
+                &format!("2025-01-01T00:{:02}:{:02}Z", i / 60, i % 60),
+                &format!("msg{i}"),
+                false, None, i as i64 * 1000,
+            ).unwrap();
+        }
+        app.load_from_db().unwrap();
+        assert!(app.has_more_messages.contains(conv_id));
+    }
+
+    #[rstest]
+    fn load_from_db_no_more_when_under_page_size(mut app: App) {
+        let conv_id = "+small";
+        app.db.upsert_conversation(conv_id, "Small", false).unwrap();
+        app.db.insert_message(conv_id, "Alice", "2025-01-01T00:00:00Z", "only one", false, None, 0).unwrap();
+        app.load_from_db().unwrap();
+        assert!(!app.has_more_messages.contains(conv_id));
+    }
+
+    #[rstest]
+    fn load_more_messages_prepends(mut app: App) {
+        let conv_id = "+paginate";
+        app.db.upsert_conversation(conv_id, "Test", false).unwrap();
+        // Insert 150 messages (more than PAGE_SIZE=100)
+        for i in 0..150 {
+            app.db.insert_message(
+                conv_id, "Alice",
+                &format!("2025-01-01T{:02}:{:02}:00Z", i / 60, i % 60),
+                &format!("msg{i}"),
+                false, None, i as i64 * 1000,
+            ).unwrap();
+        }
+        app.load_from_db().unwrap();
+        app.active_conversation = Some(conv_id.to_string());
+
+        // Should have 100 messages loaded, has_more set
+        assert_eq!(app.conversations[conv_id].messages.len(), 100);
+        assert!(app.has_more_messages.contains(conv_id));
+
+        // The loaded messages should be the 100 most recent (msg50..msg149)
+        assert_eq!(app.conversations[conv_id].messages[0].body, "msg50");
+        assert_eq!(app.conversations[conv_id].messages[99].body, "msg149");
+
+        // Set last_read_index and focused_msg_index to verify they shift
+        app.last_read_index.insert(conv_id.to_string(), 90);
+        app.focused_msg_index = Some(95);
+
+        // Trigger load_more
+        app.load_more_messages();
+
+        // Should now have 150 messages, oldest first
+        assert_eq!(app.conversations[conv_id].messages.len(), 150);
+        assert_eq!(app.conversations[conv_id].messages[0].body, "msg0");
+        assert_eq!(app.conversations[conv_id].messages[149].body, "msg149");
+
+        // Indexes should have shifted by 50 (the prepend count)
+        assert_eq!(app.last_read_index[conv_id], 140);
+        assert_eq!(app.focused_msg_index, Some(145));
+
+        // No more messages to load
+        assert!(!app.has_more_messages.contains(conv_id));
     }
 
     // --- Receipt handling tests ---

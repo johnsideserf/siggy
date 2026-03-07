@@ -258,6 +258,117 @@ impl Database {
         Ok(())
     }
 
+    /// Load a page of messages for a conversation, ordered chronologically (oldest first).
+    /// `offset` skips the N most recent messages (for pagination).
+    pub fn load_messages_page(&self, conv_id: &str, limit: usize, offset: usize) -> Result<Vec<DisplayMessage>> {
+        let mut msg_stmt = self.conn.prepare(
+            "SELECT sender, timestamp, body, is_system, status, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, pinned, poll_data, link_preview FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY timestamp_ms DESC, rowid DESC LIMIT ?2 OFFSET ?3",
+        )?;
+
+        let mut messages: Vec<DisplayMessage> = msg_stmt
+            .query_map(params![conv_id, limit as i64, offset as i64], |row| {
+                let sender: String = row.get(0)?;
+                let ts_str: String = row.get(1)?;
+                let body: String = row.get(2)?;
+                let is_system: bool = row.get::<_, i32>(3)? != 0;
+                let status_i32: i32 = row.get(4)?;
+                let timestamp_ms: i64 = row.get(5)?;
+                let is_edited: bool = row.get::<_, i32>(6)? != 0;
+                let is_deleted: bool = row.get::<_, i32>(7)? != 0;
+                let quote_author: Option<String> = row.get(8)?;
+                let quote_body: Option<String> = row.get(9)?;
+                let quote_ts_ms: Option<i64> = row.get(10)?;
+                let sender_id: String = row.get(11)?;
+                let expires_in_seconds: i64 = row.get(12)?;
+                let expiration_start_ms: i64 = row.get(13)?;
+                let is_pinned: bool = row.get::<_, i32>(14)? != 0;
+                let poll_data_json: Option<String> = row.get(15)?;
+                let link_preview_json: Option<String> = row.get(16)?;
+                Ok((sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json, link_preview_json))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json, link_preview_json)| {
+                let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                    .ok()?
+                    .with_timezone(&chrono::Utc);
+                let quote = match (quote_author, quote_body, quote_ts_ms) {
+                    (Some(author), Some(body), Some(ts)) => Some(crate::app::Quote {
+                        author_id: author.clone(),
+                        author,
+                        body: body.replace('\u{FFFC}', ""),
+                        timestamp_ms: ts,
+                    }),
+                    _ => None,
+                };
+                let poll_data = poll_data_json.and_then(|j| serde_json::from_str::<PollData>(&j).ok());
+                let preview = link_preview_json.and_then(|j| serde_json::from_str::<LinkPreview>(&j).ok());
+                Some(DisplayMessage {
+                    sender,
+                    timestamp,
+                    body,
+                    is_system,
+                    image_lines: None,
+                    image_path: None,
+                    status: MessageStatus::from_i32(status_i32),
+                    timestamp_ms,
+                    reactions: Vec::new(),
+                    mention_ranges: Vec::new(),
+                    style_ranges: Vec::new(),
+                    quote,
+                    is_edited,
+                    is_deleted,
+                    is_pinned,
+                    sender_id,
+                    expires_in_seconds,
+                    expiration_start_ms,
+                    poll_data,
+                    poll_votes: Vec::new(),
+                    preview,
+                    preview_image_lines: None,
+                    preview_image_path: None,
+                })
+            })
+            .collect();
+
+        // Reverse so oldest first
+        messages.reverse();
+
+        // Attach reactions
+        let mut ts_to_idx: HashMap<i64, Vec<usize>> = HashMap::new();
+        for (i, m) in messages.iter().enumerate() {
+            ts_to_idx.entry(m.timestamp_ms).or_default().push(i);
+        }
+        if let Ok(reactions) = self.load_reactions(conv_id) {
+            for (target_ts, target_author, emoji, sender) in reactions {
+                let idx = ts_to_idx.get(&target_ts).and_then(|idxs| {
+                    idxs.iter().find(|&&i| {
+                        messages[i].sender == target_author || messages[i].sender == "you"
+                    }).or_else(|| idxs.first()).copied()
+                });
+                if let Some(msg) = idx.and_then(|i| messages.get_mut(i)) {
+                    if let Some(existing) = msg.reactions.iter_mut().find(|r| r.sender == sender) {
+                        existing.emoji = emoji;
+                    } else {
+                        msg.reactions.push(Reaction { emoji, sender });
+                    }
+                }
+            }
+        }
+
+        // Attach poll votes
+        for msg in &mut messages {
+            if msg.poll_data.is_some() {
+                if let Ok(votes) = self.load_poll_votes(conv_id, msg.timestamp_ms) {
+                    msg.poll_votes = votes;
+                }
+            }
+        }
+
+        Ok(messages)
+    }
+
     /// Load all conversations with their most recent messages (up to `msg_limit`).
     pub fn load_conversations(&self, msg_limit: usize) -> Result<Vec<Conversation>> {
         let mut stmt = self
@@ -279,115 +390,7 @@ impl Database {
         let mut result = Vec::with_capacity(convs.len());
 
         for (id, name, is_group, expiration_timer, accepted) in convs {
-            // Load last N messages
-            let mut msg_stmt = self.conn.prepare(
-                "SELECT sender, timestamp, body, is_system, status, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, pinned, poll_data, link_preview FROM messages
-                 WHERE conversation_id = ?1
-                 ORDER BY timestamp_ms DESC, rowid DESC LIMIT ?2",
-            )?;
-
-            let mut messages: Vec<DisplayMessage> = msg_stmt
-                .query_map(params![id, msg_limit as i64], |row| {
-                    let sender: String = row.get(0)?;
-                    let ts_str: String = row.get(1)?;
-                    let body: String = row.get(2)?;
-                    let is_system: bool = row.get::<_, i32>(3)? != 0;
-                    let status_i32: i32 = row.get(4)?;
-                    let timestamp_ms: i64 = row.get(5)?;
-                    let is_edited: bool = row.get::<_, i32>(6)? != 0;
-                    let is_deleted: bool = row.get::<_, i32>(7)? != 0;
-                    let quote_author: Option<String> = row.get(8)?;
-                    let quote_body: Option<String> = row.get(9)?;
-                    let quote_ts_ms: Option<i64> = row.get(10)?;
-                    let sender_id: String = row.get(11)?;
-                    let expires_in_seconds: i64 = row.get(12)?;
-                    let expiration_start_ms: i64 = row.get(13)?;
-                    let is_pinned: bool = row.get::<_, i32>(14)? != 0;
-                    let poll_data_json: Option<String> = row.get(15)?;
-                    let link_preview_json: Option<String> = row.get(16)?;
-                    Ok((sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json, link_preview_json))
-                })?
-                .filter_map(|r| r.ok())
-                .filter_map(|(sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json, link_preview_json)| {
-                    let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                        .ok()?
-                        .with_timezone(&chrono::Utc);
-                    let quote = match (quote_author, quote_body, quote_ts_ms) {
-                        (Some(author), Some(body), Some(ts)) => Some(crate::app::Quote {
-                            author_id: author.clone(),
-                            author,
-                            body: body.replace('\u{FFFC}', ""),
-                            timestamp_ms: ts,
-                        }),
-                        _ => None,
-                    };
-                    let poll_data = poll_data_json.and_then(|j| serde_json::from_str::<PollData>(&j).ok());
-                    let preview = link_preview_json.and_then(|j| serde_json::from_str::<LinkPreview>(&j).ok());
-                    Some(DisplayMessage {
-                        sender,
-                        timestamp,
-                        body,
-                        is_system,
-                        image_lines: None,
-                        image_path: None,
-                        status: MessageStatus::from_i32(status_i32),
-                        timestamp_ms,
-                        reactions: Vec::new(),
-                        mention_ranges: Vec::new(),
-                        style_ranges: Vec::new(),
-                        quote,
-                        is_edited,
-                        is_deleted,
-                        is_pinned,
-                        sender_id,
-                        expires_in_seconds,
-                        expiration_start_ms,
-                        poll_data,
-                        poll_votes: Vec::new(),
-                        preview,
-                        preview_image_lines: None,
-                        preview_image_path: None,
-                    })
-                })
-                .collect();
-
-            // Reverse so oldest first
-            messages.reverse();
-
-            // Build timestamp → index map for O(1) reaction attachment.
-            // Multiple messages can share a timestamp, so we store all matching
-            // indexes and prefer the one whose sender matches the target_author.
-            let mut ts_to_idx: HashMap<i64, Vec<usize>> = HashMap::new();
-            for (i, m) in messages.iter().enumerate() {
-                ts_to_idx.entry(m.timestamp_ms).or_default().push(i);
-            }
-            if let Ok(reactions) = self.load_reactions(&id) {
-                for (target_ts, target_author, emoji, sender) in reactions {
-                    let idx = ts_to_idx.get(&target_ts).and_then(|idxs| {
-                        // Prefer author+timestamp match, fall back to first timestamp match
-                        idxs.iter().find(|&&i| {
-                            messages[i].sender == target_author || messages[i].sender == "you"
-                        }).or_else(|| idxs.first()).copied()
-                    });
-                    if let Some(msg) = idx.and_then(|i| messages.get_mut(i)) {
-                        if let Some(existing) = msg.reactions.iter_mut().find(|r| r.sender == sender) {
-                            existing.emoji = emoji;
-                        } else {
-                            msg.reactions.push(Reaction { emoji, sender });
-                        }
-                    }
-                }
-            }
-
-            // Attach poll votes from DB to matching poll messages
-            for msg in &mut messages {
-                if msg.poll_data.is_some() {
-                    if let Ok(votes) = self.load_poll_votes(&id, msg.timestamp_ms) {
-                        msg.poll_votes = votes;
-                    }
-                }
-            }
-
+            let messages = self.load_messages_page(&id, msg_limit, 0)?;
             let unread = self.unread_count(&id).unwrap_or(0);
 
             result.push(Conversation {
@@ -993,6 +996,35 @@ mod tests {
 
         // Timestamp between second and third
         assert_eq!(db.max_rowid_up_to_timestamp("+1", 2500).unwrap(), Some(r2));
+    }
+
+    #[rstest]
+    fn load_messages_page_pagination(db: Database) {
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        for i in 0..5 {
+            db.insert_message(
+                "+1", "Alice",
+                &format!("2025-01-01T00:0{i}:00Z"),
+                &format!("msg{i}"),
+                false, None, i * 1000,
+            ).unwrap();
+        }
+
+        // Load first page (most recent 3)
+        let page1 = db.load_messages_page("+1", 3, 0).unwrap();
+        assert_eq!(page1.len(), 3);
+        assert_eq!(page1[0].body, "msg2"); // oldest of the 3 most recent
+        assert_eq!(page1[2].body, "msg4"); // newest
+
+        // Load second page (next 2 older)
+        let page2 = db.load_messages_page("+1", 3, 3).unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_eq!(page2[0].body, "msg0"); // oldest overall
+        assert_eq!(page2[1].body, "msg1");
+
+        // Load third page (nothing left)
+        let page3 = db.load_messages_page("+1", 3, 5).unwrap();
+        assert!(page3.is_empty());
     }
 
     #[rstest]
