@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.1
+
+### Bug fixes
+
+- **Autocomplete popup crash** -- fixed a panic when opening the autocomplete
+  popup (`/` commands, `@` mentions) in a small terminal window. The popup
+  now clamps to available space and skips rendering if the terminal is too small
+
+---
+
 ## v1.2.0
 
 ### New features
