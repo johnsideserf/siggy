@@ -1093,6 +1093,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Determine the focused message for highlight and full-timestamp display in Normal mode.
     // Check focused_msg_index too so J/K navigation works even when content fits the viewport
     // (base_scroll == 0 clamps scroll_offset to 0, but J/K focus should persist).
+    //
+    // `render_focus` is used for highlighting; it may differ from app.focused_msg_index when
+    // j/k line-scrolling (where we derive focus for display but don't persist it, to avoid
+    // the "ensure visible" logic snapping the viewport back on the next frame).
+    let render_focus;
     if app.mode == InputMode::Normal && (app.scroll_offset > 0 || app.focused_msg_index.is_some()) {
         if let Some(fi) = app.focused_msg_index {
             // J/K already set focused_msg_index — ensure it's visible by adjusting scroll.
@@ -1124,15 +1129,19 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
             app.focused_message_time = messages.get(fi).map(|m| m.timestamp);
+            render_focus = Some(fi);
         } else {
-            // j/k line-scroll without J/K — derive focus from viewport bottom
+            // j/k line-scroll without J/K — derive focus from viewport for display only.
+            // Do NOT store into focused_msg_index; that would cause the "ensure visible"
+            // logic on the next frame to snap the viewport back to the bottom.
             let idx = find_focused_msg_index(&lines, &line_msg_idx, inner_width, scroll_y, available_height);
-            app.focused_msg_index = idx;
             app.focused_message_time = idx.and_then(|i| messages.get(i)).map(|m| m.timestamp);
+            render_focus = idx;
         }
     } else {
         app.focused_msg_index = None;
         app.focused_message_time = None;
+        render_focus = None;
     };
 
     // Compute screen positions for native protocol image overlay (before lines is consumed)
@@ -1186,7 +1195,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Highlight all lines belonging to the focused message
-    if let Some(focused_idx) = app.focused_msg_index {
+    if let Some(focused_idx) = render_focus {
         for (i, line) in lines.iter_mut().enumerate() {
             if line_msg_idx.get(i) == Some(&Some(focused_idx)) {
                 let patched: Vec<Span> = line.spans.drain(..).map(|mut s| {
