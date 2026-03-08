@@ -1183,11 +1183,16 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     0
                 };
 
+                let full_height = (img_end - img_start) as u16;
+                let crop_top = (vis_start as i64 - screen_start) as u16;
+
                 app.visible_images.push(VisibleImage {
                     x: inner.x + 2, // account for 2-char indent
                     y: inner.y + vis_start,
                     width: img_width,
                     height: vis_end - vis_start,
+                    full_height,
+                    crop_top,
                     path: path.clone(),
                 });
             }

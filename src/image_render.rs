@@ -35,9 +35,9 @@ pub fn detect_protocol() -> ImageProtocol {
 
 /// Pre-resize an image and encode as PNG for native terminal protocol rendering.
 ///
-/// Returns the base64-encoded PNG data, sized to look good at the given cell
-/// dimensions. Assumes ~8px per cell width and ~16px per cell height.
-pub fn encode_native_png(path: &Path, cell_width: u32, cell_height: u32) -> Option<String> {
+/// Returns `(base64_data, pixel_width, pixel_height)` sized to look good at the
+/// given cell dimensions. Assumes ~8px per cell width and ~16px per cell height.
+pub fn encode_native_png(path: &Path, cell_width: u32, cell_height: u32) -> Option<(String, u32, u32)> {
     let img = image::open(path).ok()?;
     let (orig_w, orig_h) = img.dimensions();
     if orig_w == 0 || orig_h == 0 {
@@ -65,7 +65,7 @@ pub fn encode_native_png(path: &Path, cell_width: u32, cell_height: u32) -> Opti
         .ok()?;
 
     use base64::Engine;
-    Some(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
+    Some((base64::engine::general_purpose::STANDARD.encode(buf.into_inner()), new_w, new_h))
 }
 
 /// Render an image file as halfblock-character lines for display in a terminal.

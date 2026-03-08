@@ -20,7 +20,7 @@ use crossterm::{
     event::{self, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, Event, KeyEventKind},
     execute, queue,
     style::{Print, ResetColor, SetForegroundColor},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -457,10 +457,30 @@ fn emit_native_images(
     app: &mut App,
 ) -> Result<()> {
     let protocol = app.image_protocol;
-    if app.visible_images.is_empty() || protocol == image_render::ImageProtocol::Halfblock {
+    if protocol == image_render::ImageProtocol::Halfblock {
         return Ok(());
     }
+
+    // Skip if visible images haven't changed since last frame
+    if app.visible_images == app.prev_visible_images {
+        return Ok(());
+    }
+
     use std::io::Write;
+
+    // Delete old Kitty placements before rendering new ones,
+    // so images that scroll out of view are properly cleared.
+    if protocol == image_render::ImageProtocol::Kitty {
+        write!(backend, "\x1b_Ga=d,q=2\x1b\\")?;
+    }
+
+    if app.visible_images.is_empty() {
+        app.prev_visible_images.clear();
+        if protocol == image_render::ImageProtocol::Kitty {
+            backend.flush()?;
+        }
+        return Ok(());
+    }
 
     // Take images out to avoid borrow conflict with native_image_cache
     let images = std::mem::take(&mut app.visible_images);
@@ -468,14 +488,14 @@ fn emit_native_images(
     queue!(backend, SavePosition)?;
 
     for img in &images {
-        // Get or compute cached base64 PNG data
-        let b64 = if let Some(cached) = app.native_image_cache.get(&img.path) {
+        // Get or compute cached base64 PNG data (always at full image dimensions)
+        let (b64, _px_w, px_h) = if let Some(cached) = app.native_image_cache.get(&img.path) {
             cached.clone()
         } else {
             let encoded = image_render::encode_native_png(
                 std::path::Path::new(&img.path),
                 img.width as u32,
-                img.height as u32,
+                img.full_height as u32,
             );
             match encoded {
                 Some(data) => {
@@ -492,6 +512,22 @@ fn emit_native_images(
             image_render::ImageProtocol::Kitty => {
                 // f=100 = detect format, a=T = transmit+display
                 // c/r = display size in cells, C=1 = don't move cursor
+                // y/h = source crop in pixels for partially visible images
+                let mut crop_params = String::new();
+                if img.crop_top > 0 || img.height < img.full_height {
+                    let y_px = if img.full_height > 0 {
+                        img.crop_top as u32 * px_h / img.full_height as u32
+                    } else {
+                        0
+                    };
+                    let h_px = if img.full_height > 0 {
+                        (img.height as u32 * px_h / img.full_height as u32).max(1)
+                    } else {
+                        px_h
+                    };
+                    crop_params = format!(",y={y_px},h={h_px}");
+                }
+
                 let chunks: Vec<&[u8]> = b64.as_bytes().chunks(4096).collect();
                 for (i, chunk) in chunks.iter().enumerate() {
                     let m = if i == chunks.len() - 1 { 0 } else { 1 };
@@ -499,7 +535,7 @@ fn emit_native_images(
                     if i == 0 {
                         write!(
                             backend,
-                            "\x1b_Gf=100,a=T,c={},r={},C=1,m={m};{chunk_str}\x1b\\",
+                            "\x1b_Gf=100,a=T,c={},r={},C=1,q=2{crop_params},m={m};{chunk_str}\x1b\\",
                             img.width, img.height
                         )?;
                     } else {
@@ -520,6 +556,8 @@ fn emit_native_images(
 
     queue!(backend, RestorePosition)?;
     backend.flush()?;
+
+    app.prev_visible_images = images;
     Ok(())
 }
 
@@ -796,12 +834,15 @@ async fn run_app(
     loop {
         // Only redraw when state has changed (avoids resetting cursor blink timer every 50ms)
         if needs_redraw {
+            // Wrap entire render (clear + text + image overlay) in synchronized
+            // update so the terminal renders everything atomically.
+            queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+
             // Force full redraw when active conversation changes (clears native image artifacts)
             if app.native_images && app.active_conversation != app.prev_active_conversation {
                 app.prev_active_conversation = app.active_conversation.clone();
                 terminal.clear()?;
             }
-
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
             let has_post_draw = !app.link_regions.is_empty() || app.native_images;
             if has_post_draw && app.mode == InputMode::Insert {
@@ -812,8 +853,9 @@ async fn run_app(
                 emit_native_images(terminal.backend_mut(), &mut app)?;
             }
             if has_post_draw && app.mode == InputMode::Insert {
-                execute!(terminal.backend_mut(), Show)?;
+                queue!(terminal.backend_mut(), Show)?;
             }
+            execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
             needs_redraw = false;
         }
 
@@ -982,11 +1024,12 @@ async fn run_demo_app(
 
     loop {
         if needs_redraw {
+            queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+
             if app.native_images && app.active_conversation != app.prev_active_conversation {
                 app.prev_active_conversation = app.active_conversation.clone();
                 terminal.clear()?;
             }
-
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
             let has_post_draw = !app.link_regions.is_empty() || app.native_images;
             if has_post_draw && app.mode == InputMode::Insert {
@@ -997,8 +1040,9 @@ async fn run_demo_app(
                 emit_native_images(terminal.backend_mut(), &mut app)?;
             }
             if has_post_draw && app.mode == InputMode::Insert {
-                execute!(terminal.backend_mut(), Show)?;
+                queue!(terminal.backend_mut(), Show)?;
             }
+            execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
             needs_redraw = false;
         }
 

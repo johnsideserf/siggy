@@ -91,11 +91,16 @@ fn show_desktop_notification(sender: &str, body: &str, is_group: bool, group_nam
 }
 
 /// An image visible on screen, for native protocol overlay rendering.
+#[derive(PartialEq, Eq)]
 pub struct VisibleImage {
     pub x: u16,
     pub y: u16,
     pub width: u16,
     pub height: u16,
+    /// Total image height in cells (before viewport clipping).
+    pub full_height: u16,
+    /// Cells cropped from the top when the image is partially scrolled out.
+    pub crop_top: u16,
     pub path: String,
 }
 
@@ -351,10 +356,12 @@ pub struct App {
     pub image_protocol: ImageProtocol,
     /// Images visible on screen for native protocol overlay (cleared each frame)
     pub visible_images: Vec<VisibleImage>,
+    /// Previous frame's visible images, for skipping redundant image redraws
+    pub prev_visible_images: Vec<VisibleImage>,
     /// Experimental: use native terminal image protocols (Kitty/iTerm2) instead of halfblock
     pub native_images: bool,
-    /// Cache of base64-encoded pre-resized PNGs for native protocol (path → base64)
-    pub native_image_cache: HashMap<String, String>,
+    /// Cache of pre-resized PNGs for native protocol (path → (base64, pixel_w, pixel_h))
+    pub native_image_cache: HashMap<String, (String, u32, u32)>,
     /// Previous active conversation ID, for detecting chat switches
     pub prev_active_conversation: Option<String>,
     /// Incognito mode — in-memory DB, no local persistence
@@ -2463,6 +2470,7 @@ impl App {
             link_url_map: HashMap::new(),
             image_protocol: image_render::detect_protocol(),
             visible_images: Vec::new(),
+            prev_visible_images: Vec::new(),
             native_images: false,
             native_image_cache: HashMap::new(),
             prev_active_conversation: None,
