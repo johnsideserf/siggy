@@ -49,6 +49,7 @@ pub enum TrustLevel {
 }
 
 impl TrustLevel {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "UNTRUSTED" => TrustLevel::Untrusted,

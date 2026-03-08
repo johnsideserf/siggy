@@ -1108,7 +1108,7 @@ impl SignalClient {
     }
 }
 
-fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&str>) -> Option<SignalEvent> {
+pub fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&str>) -> Option<SignalEvent> {
     match method {
         "send" => {
             let id = rpc_id?.to_string();
@@ -1216,7 +1216,7 @@ fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&st
     }
 }
 
-fn parse_signal_event(
+pub fn parse_signal_event(
     resp: &JsonRpcResponse,
     download_dir: &std::path::Path,
 ) -> Option<SignalEvent> {
