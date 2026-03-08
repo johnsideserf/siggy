@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::{
-    cursor::{MoveTo, RestorePosition, SavePosition},
+    cursor::{Hide, MoveTo, RestorePosition, SavePosition, Show},
     event::{self, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, Event, KeyEventKind},
     execute, queue,
     style::{Print, ResetColor, SetForegroundColor},
@@ -801,9 +801,16 @@ async fn run_app(
 
         // Render
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        let cursor_visible = app.mode == InputMode::Insert; // used to hide cursor during post-draw writes so terminals don't reset the blink timer
+        if cursor_visible {
+            queue!(terminal.backend_mut(), Hide)?;
+        }
         emit_osc8_links(terminal.backend_mut(), &app.link_regions, app.theme.link)?;
         if app.native_images {
             emit_native_images(terminal.backend_mut(), &mut app)?;
+        }
+        if cursor_visible {
+            execute!(terminal.backend_mut(), Show)?;
         }
 
         // Load older messages when scrolled to the top
@@ -967,9 +974,16 @@ async fn run_demo_app(
         }
 
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        let cursor_visible = app.mode == InputMode::Insert;
+        if cursor_visible {
+            queue!(terminal.backend_mut(), Hide)?;
+        }
         emit_osc8_links(terminal.backend_mut(), &app.link_regions, app.theme.link)?;
         if app.native_images {
             emit_native_images(terminal.backend_mut(), &mut app)?;
+        }
+        if cursor_visible {
+            execute!(terminal.backend_mut(), Show)?;
         }
 
         let has_terminal_event = event::poll(POLL_TIMEOUT)?;
