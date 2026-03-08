@@ -6174,13 +6174,20 @@ fn path_to_file_uri(path: &str) -> String {
     }
 }
 
-/// Extract a local file path from a file:/// URI string (which may have trailing text).
+/// Extract a local file path from a file:/// URI. On Unix the third slash is the
+/// root path separator, so it must be preserved; on Windows it's just the scheme.
 fn file_uri_to_path(uri: &str) -> String {
     let uri = uri.trim();
-    let stripped = uri.strip_prefix("file:///").unwrap_or(
-        uri.strip_prefix("file://").unwrap_or(uri),
-    );
-    stripped.to_string()
+    if let Some(rest) = uri.strip_prefix("file:///") {
+        #[cfg(windows)]
+        { rest.to_string() }
+        #[cfg(not(windows))]
+        { format!("/{rest}")}
+    } else if let Some(rest) = uri.strip_prefix("file://") {
+        rest.to_string()
+    } else {
+        uri.to_string()
+    }
 }
 
 #[cfg(test)]
