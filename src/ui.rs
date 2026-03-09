@@ -2152,7 +2152,7 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
 fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let height = SETTINGS_POPUP_HEIGHT + 3; // extra lines for preview + theme + keybindings entries
+    let height = SETTINGS_POPUP_HEIGHT + 4; // extra lines for preview + theme + keybindings + hint
     let (popup_area, block) = centered_popup(
         frame, area, SETTINGS_POPUP_WIDTH, height, " Settings ", theme,
     );
