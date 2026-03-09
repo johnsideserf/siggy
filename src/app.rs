@@ -694,6 +694,7 @@ pub enum SendRequest {
 /// A single settings toggle entry: label, getter, setter, and optional config persistence.
 pub struct SettingDef {
     pub label: &'static str,
+    pub hint: &'static str,
     get: fn(&App) -> bool,
     set: fn(&mut App, bool),
     save: Option<fn(&mut crate::config::Config, bool)>,
@@ -703,6 +704,7 @@ pub struct SettingDef {
 pub const SETTINGS: &[SettingDef] = &[
     SettingDef {
         label: "Direct message notifications",
+        hint: "Play a sound for incoming direct messages",
         get: |a| a.notify_direct,
         set: |a, v| a.notify_direct = v,
         save: Some(|c, v| c.notify_direct = v),
@@ -710,6 +712,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Group message notifications",
+        hint: "Play a sound for incoming group messages",
         get: |a| a.notify_group,
         set: |a, v| a.notify_group = v,
         save: Some(|c, v| c.notify_group = v),
@@ -717,6 +720,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Desktop notifications",
+        hint: "Show system notifications for new messages",
         get: |a| a.desktop_notifications,
         set: |a, v| a.desktop_notifications = v,
         save: Some(|c, v| c.desktop_notifications = v),
@@ -724,6 +728,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Sidebar visible",
+        hint: "Show the conversation list sidebar",
         get: |a| a.sidebar_visible,
         set: |a, v| a.sidebar_visible = v,
         save: None, // runtime-only, not persisted
@@ -731,6 +736,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Inline image previews",
+        hint: "Render image attachments as previews in chat",
         get: |a| a.inline_images,
         set: |a, v| a.inline_images = v,
         save: Some(|c, v| c.inline_images = v),
@@ -738,6 +744,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Link previews",
+        hint: "Show title and thumbnail for URLs",
         get: |a| a.show_link_previews,
         set: |a, v| a.show_link_previews = v,
         save: Some(|c, v| c.show_link_previews = v),
@@ -745,6 +752,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Native images (experimental)",
+        hint: "Requires Kitty, Ghostty, WezTerm, or iTerm2",
         get: |a| a.native_images,
         set: |a, v| a.native_images = v,
         save: Some(|c, v| c.native_images = v),
@@ -752,6 +760,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Read receipts",
+        hint: "Show delivery and read status on messages",
         get: |a| a.show_receipts,
         set: |a, v| a.show_receipts = v,
         save: Some(|c, v| c.show_receipts = v),
@@ -759,6 +768,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Receipt colors",
+        hint: "Colorize receipt indicators",
         get: |a| a.color_receipts,
         set: |a, v| a.color_receipts = v,
         save: Some(|c, v| c.color_receipts = v),
@@ -766,6 +776,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Nerd Font icons",
+        hint: "Use Nerd Font glyphs (requires a Nerd Font)",
         get: |a| a.nerd_fonts,
         set: |a, v| a.nerd_fonts = v,
         save: Some(|c, v| c.nerd_fonts = v),
@@ -773,6 +784,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Verbose reactions",
+        hint: "Show names instead of just emoji counts",
         get: |a| a.reaction_verbose,
         set: |a, v| a.reaction_verbose = v,
         save: Some(|c, v| c.reaction_verbose = v),
@@ -780,6 +792,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Send read receipts",
+        hint: "Let contacts know when you read messages",
         get: |a| a.send_read_receipts,
         set: |a, v| a.send_read_receipts = v,
         save: Some(|c, v| c.send_read_receipts = v),
@@ -787,6 +800,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Mouse support",
+        hint: "Enable mouse click and scroll support",
         get: |a| a.mouse_enabled,
         set: |a, v| a.mouse_enabled = v,
         save: Some(|c, v| c.mouse_enabled = v),
@@ -794,6 +808,7 @@ pub const SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         label: "Sidebar on right",
+        hint: "Move the sidebar to the right side",
         get: |a| a.sidebar_on_right,
         set: |a, v| a.sidebar_on_right = v,
         save: Some(|c, v| c.sidebar_on_right = v),

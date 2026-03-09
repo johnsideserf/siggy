@@ -23,7 +23,7 @@ const MIN_CHAT_WIDTH: u16 = 30;
 const MSG_WINDOW_MULTIPLIER: usize = 10;
 
 // Popup dimensions
-const SETTINGS_POPUP_WIDTH: u16 = 42;
+const SETTINGS_POPUP_WIDTH: u16 = 50;
 const SETTINGS_POPUP_HEIGHT: u16 = 17;
 const CONTACTS_POPUP_WIDTH: u16 = 50;
 const CONTACTS_MAX_VISIBLE: usize = 20;
@@ -2233,10 +2233,21 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(app.keybindings.profile_name.clone(), kb_value_style),
     ]));
 
+    // Hint line for the currently selected item
+    let hint = if app.settings_index < SETTINGS.len() {
+        SETTINGS[app.settings_index].hint
+    } else {
+        match app.settings_index - SETTINGS.len() {
+            0 => "Control message content in notifications",
+            1 => "Switch between color themes",
+            2 => "Switch between keybinding presets",
+            _ => "",
+        }
+    };
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  Esc to close  |  Space to toggle",
-        Style::default().fg(theme.fg_muted),
+        format!("  {hint}"),
+        Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
     )));
 
     let popup = Paragraph::new(lines).block(block);
