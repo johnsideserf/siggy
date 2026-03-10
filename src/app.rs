@@ -541,6 +541,14 @@ pub struct App {
     pub profile_fields: [String; 4],
     /// Temp buffer while editing a profile field
     pub profile_edit_buffer: String,
+    /// Next Kitty image ID to assign (starts at 1).
+    pub next_kitty_image_id: u32,
+    /// Map from image path to Kitty image ID.
+    pub kitty_image_ids: HashMap<String, u32>,
+    /// Set of image IDs already transmitted to the terminal.
+    pub kitty_transmitted: HashSet<u32>,
+    /// Images to transmit this frame: (id, path, cell_cols, cell_rows).
+    pub kitty_pending_transmits: Vec<(u32, String, u16, u16)>,
 }
 
 /// A search result entry.
@@ -2562,6 +2570,10 @@ impl App {
             profile_editing: false,
             profile_fields: [String::new(), String::new(), String::new(), String::new()],
             profile_edit_buffer: String::new(),
+            next_kitty_image_id: 1,
+            kitty_image_ids: HashMap::new(),
+            kitty_transmitted: HashSet::new(),
+            kitty_pending_transmits: Vec::new(),
         }
     }
 
@@ -2851,6 +2863,14 @@ impl App {
             return self.build_typing_request(true);
         }
         None
+    }
+
+    /// Clear Kitty image state so images are retransmitted.
+    /// Call on conversation switch (different images) and resize (different cell dimensions).
+    pub fn clear_kitty_state(&mut self) {
+        self.kitty_transmitted.clear();
+        self.kitty_pending_transmits.clear();
+        self.native_image_cache.clear();
     }
 
     /// Reset typing state and queue a stop request if we were typing.
@@ -5805,6 +5825,7 @@ impl App {
         self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
+        self.clear_kitty_state();
 
         // Try exact match first
         if self.conversations.contains_key(target) {
@@ -5859,6 +5880,7 @@ impl App {
         self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
+        self.clear_kitty_state();
         let idx = self
             .active_conversation
             .as_ref()
@@ -5884,6 +5906,7 @@ impl App {
         self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
+        self.clear_kitty_state();
         let len = self.conversation_order.len();
         let idx = self
             .active_conversation

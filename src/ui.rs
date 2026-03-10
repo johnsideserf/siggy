@@ -13,7 +13,7 @@ use ratatui::{
 use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
 use crate::keybindings::{self, BindingMode, KeyAction};
 use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction, StyleType, TrustLevel};
-use crate::image_render::ImageProtocol;
+use crate::image_render::{self, ImageProtocol};
 use crate::input::{COMMANDS, format_compact_duration};
 use crate::theme::Theme;
 
@@ -1217,6 +1217,10 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .scroll((scroll_y as u16, 0));
     frame.render_widget(paragraph, inner);
 
+    if use_native && app.image_protocol == ImageProtocol::Kitty {
+        patch_kitty_placeholders(frame, app);
+    }
+
     // Scrollbar on right border, inset to preserve rounded corners
     if content_height > available_height {
         let scrollbar_area = Rect::new(
@@ -1230,6 +1234,46 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(None)
             .end_symbol(None);
         frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
+}
+
+/// Patch ratatui buffer cells with Kitty Unicode Placeholder characters.
+///
+/// Replaces the halfblock cells with U+10EEEE + row/column diacritics so the
+/// terminal renders image data at the cell level (instead of GPU overlays).
+fn patch_kitty_placeholders(frame: &mut Frame, app: &mut App) {
+    for img in &app.visible_images {
+        let id = if let Some(&existing) = app.kitty_image_ids.get(&img.path) {
+            existing
+        } else {
+            let new_id = app.next_kitty_image_id;
+            app.next_kitty_image_id += 1;
+            app.kitty_image_ids.insert(img.path.clone(), new_id);
+            new_id
+        };
+        let fg = image_render::kitty_id_color(id);
+
+        for row_offset in 0..img.height {
+            let image_row = (img.crop_top + row_offset) as usize;
+            for col in 0..img.width {
+                let symbol = image_render::placeholder_symbol(image_row, col as usize);
+                let pos = Position::new(img.x + col, img.y + row_offset);
+                if let Some(cell) = frame.buffer_mut().cell_mut(pos) {
+                    cell.reset();
+                    cell.set_symbol(&symbol);
+                    cell.set_fg(fg);
+                }
+            }
+        }
+
+        if !app.kitty_transmitted.contains(&id) {
+            app.kitty_pending_transmits.push((
+                id,
+                img.path.clone(),
+                img.width,
+                img.full_height,
+            ));
+        }
     }
 }
 

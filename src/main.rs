@@ -11,6 +11,7 @@ mod signal;
 mod theme;
 mod ui;
 
+use std::collections::HashMap;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -450,8 +451,31 @@ fn emit_osc8_links(
     Ok(())
 }
 
-/// Write native terminal image protocol escape sequences to overlay
-/// pre-resized images on top of the halfblock placeholders.
+/// Look up or encode and cache a PNG for the given image path and cell dimensions.
+/// Returns the base64-encoded PNG data, or `None` if the image can't be loaded.
+fn get_or_cache_png(
+    cache: &mut HashMap<String, (String, u32, u32)>,
+    path: &str,
+    cell_cols: u32,
+    cell_rows: u32,
+) -> Option<String> {
+    if let Some(cached) = cache.get(path) {
+        return Some(cached.0.clone());
+    }
+    let data = image_render::encode_native_png(std::path::Path::new(path), cell_cols, cell_rows)?;
+    let b64 = data.0.clone();
+    cache.insert(path.to_string(), data);
+    Some(b64)
+}
+
+/// Write native terminal image protocol escape sequences.
+///
+/// For Kitty: process `kitty_pending_transmits` — transmit image data and create
+/// virtual placements. The actual display uses Unicode Placeholder cells embedded
+/// in the ratatui buffer by `render_placeholder()`.
+///
+/// For iTerm2: overlay pre-resized images on top of the halfblock placeholders
+/// using cursor-positioned inline image sequences.
 fn emit_native_images(
     backend: &mut CrosstermBackend<io::Stdout>,
     app: &mut App,
@@ -461,97 +485,76 @@ fn emit_native_images(
         return Ok(());
     }
 
-    // Skip if visible images haven't changed since last frame
+    use std::io::Write;
+
+    if protocol == image_render::ImageProtocol::Kitty {
+        // Kitty Unicode Placeholders: transmit pending images and create virtual placements.
+        // The placeholder cells (U+10EEEE) are already in the ratatui buffer.
+        let pending = std::mem::take(&mut app.kitty_pending_transmits);
+        if pending.is_empty() {
+            return Ok(());
+        }
+
+        for (id, path, cols, rows) in &pending {
+            let b64 = match get_or_cache_png(&mut app.native_image_cache, path, *cols as u32, *rows as u32) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            // Transmit image data (a=t = transmit only, no display)
+            let chunks: Vec<&[u8]> = b64.as_bytes().chunks(4096).collect();
+            for (i, chunk) in chunks.iter().enumerate() {
+                let m = if i == chunks.len() - 1 { 0 } else { 1 };
+                let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
+                if i == 0 {
+                    write!(
+                        backend,
+                        "\x1b_Gf=100,a=t,i={id},q=2,m={m};{chunk_str}\x1b\\",
+                    )?;
+                } else {
+                    write!(backend, "\x1b_Gm={m};{chunk_str}\x1b\\")?;
+                }
+            }
+
+            // Create virtual placement (U=1 enables Unicode Placeholder mode)
+            write!(
+                backend,
+                "\x1b_Ga=p,U=1,i={id},c={cols},r={rows},q=2\x1b\\",
+            )?;
+
+            app.kitty_transmitted.insert(*id);
+        }
+
+        backend.flush()?;
+        return Ok(());
+    }
+
     if app.visible_images == app.prev_visible_images {
         return Ok(());
     }
 
-    use std::io::Write;
-
-    // Delete old Kitty placements before rendering new ones,
-    // so images that scroll out of view are properly cleared.
-    if protocol == image_render::ImageProtocol::Kitty {
-        write!(backend, "\x1b_Ga=d,q=2\x1b\\")?;
-    }
-
     if app.visible_images.is_empty() {
         app.prev_visible_images.clear();
-        if protocol == image_render::ImageProtocol::Kitty {
-            backend.flush()?;
-        }
         return Ok(());
     }
 
-    // Take images out to avoid borrow conflict with native_image_cache
     let images = std::mem::take(&mut app.visible_images);
 
     queue!(backend, SavePosition)?;
 
     for img in &images {
-        // Get or compute cached base64 PNG data (always at full image dimensions)
-        let (b64, _px_w, px_h) = if let Some(cached) = app.native_image_cache.get(&img.path) {
-            cached.clone()
-        } else {
-            let encoded = image_render::encode_native_png(
-                std::path::Path::new(&img.path),
-                img.width as u32,
-                img.full_height as u32,
-            );
-            match encoded {
-                Some(data) => {
-                    app.native_image_cache.insert(img.path.clone(), data.clone());
-                    data
-                }
-                None => continue,
-            }
+        let b64 = match get_or_cache_png(&mut app.native_image_cache, &img.path, img.width as u32, img.full_height as u32) {
+            Some(b) => b,
+            None => continue,
         };
 
         queue!(backend, MoveTo(img.x, img.y))?;
 
-        match protocol {
-            image_render::ImageProtocol::Kitty => {
-                // f=100 = detect format, a=T = transmit+display
-                // c/r = display size in cells, C=1 = don't move cursor
-                // y/h = source crop in pixels for partially visible images
-                let mut crop_params = String::new();
-                if img.crop_top > 0 || img.height < img.full_height {
-                    let y_px = if img.full_height > 0 {
-                        img.crop_top as u32 * px_h / img.full_height as u32
-                    } else {
-                        0
-                    };
-                    let h_px = if img.full_height > 0 {
-                        (img.height as u32 * px_h / img.full_height as u32).max(1)
-                    } else {
-                        px_h
-                    };
-                    crop_params = format!(",y={y_px},h={h_px}");
-                }
-
-                let chunks: Vec<&[u8]> = b64.as_bytes().chunks(4096).collect();
-                for (i, chunk) in chunks.iter().enumerate() {
-                    let m = if i == chunks.len() - 1 { 0 } else { 1 };
-                    let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
-                    if i == 0 {
-                        write!(
-                            backend,
-                            "\x1b_Gf=100,a=T,c={},r={},C=1,q=2{crop_params},m={m};{chunk_str}\x1b\\",
-                            img.width, img.height
-                        )?;
-                    } else {
-                        write!(backend, "\x1b_Gm={m};{chunk_str}\x1b\\")?;
-                    }
-                }
-            }
-            image_render::ImageProtocol::Iterm2 => {
-                write!(
-                    backend,
-                    "\x1b]1337;File=inline=1;width={};height={};preserveAspectRatio=0:{b64}\x07",
-                    img.width, img.height
-                )?;
-            }
-            image_render::ImageProtocol::Halfblock => {}
-        }
+        write!(
+            backend,
+            "\x1b]1337;File=inline=1;width={};height={};preserveAspectRatio=0:{b64}\x07",
+            img.width, img.height
+        )?;
     }
 
     queue!(backend, RestorePosition)?;
@@ -904,6 +907,9 @@ async fn run_app(
                         dispatch_send(signal_client, &mut app, req).await;
                     }
                 }
+                Event::Resize(..) => {
+                    app.clear_kitty_state();
+                }
                 _ => {}
             }
         }
@@ -1073,6 +1079,9 @@ async fn run_demo_app(
                 }
                 Event::Paste(text) => {
                     app.handle_paste(text);
+                }
+                Event::Resize(..) => {
+                    app.clear_kitty_state();
                 }
                 _ => {}
             }
