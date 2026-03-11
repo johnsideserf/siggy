@@ -553,6 +553,8 @@ pub struct App {
     pub kitty_transmitted: HashSet<u32>,
     /// Images to transmit this frame: (id, path, cell_cols, cell_rows).
     pub kitty_pending_transmits: Vec<(u32, String, u16, u16)>,
+    /// Cache of cropped image base64 for iTerm2: (path, crop_top, height) → base64.
+    pub iterm2_crop_cache: HashMap<(String, u16, u16), String>,
 }
 
 /// A search result entry.
@@ -2595,6 +2597,7 @@ impl App {
             kitty_image_ids: HashMap::new(),
             kitty_transmitted: HashSet::new(),
             kitty_pending_transmits: Vec::new(),
+            iterm2_crop_cache: HashMap::new(),
         }
     }
 
@@ -2886,12 +2889,13 @@ impl App {
         None
     }
 
-    /// Clear Kitty image state so images are retransmitted.
+    /// Clear image state so images are retransmitted.
     /// Call on conversation switch (different images) and resize (different cell dimensions).
     pub fn clear_kitty_state(&mut self) {
         self.kitty_transmitted.clear();
         self.kitty_pending_transmits.clear();
         self.native_image_cache.clear();
+        self.iterm2_crop_cache.clear();
     }
 
     /// Reset typing state and queue a stop request if we were typing.

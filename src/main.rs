@@ -548,6 +548,23 @@ fn emit_native_images(
             None => continue,
         };
 
+        // Crop when partially scrolled out of view, with caching to avoid
+        // re-encoding every frame (which causes flicker in iTerm2).
+        let b64 = if img.crop_top > 0 || img.height < img.full_height {
+            let crop_key = (img.path.clone(), img.crop_top, img.height);
+            if let Some(cached) = app.iterm2_crop_cache.get(&crop_key) {
+                cached.clone()
+            } else {
+                let px_h = app.native_image_cache.get(&img.path).map(|c| c.2).unwrap_or(0);
+                let cropped = image_render::crop_png_vertical(&b64, px_h, img.full_height, img.crop_top, img.height)
+                    .unwrap_or(b64);
+                app.iterm2_crop_cache.insert(crop_key, cropped.clone());
+                cropped
+            }
+        } else {
+            b64
+        };
+
         queue!(backend, MoveTo(img.x, img.y))?;
 
         write!(

@@ -68,6 +68,43 @@ pub fn encode_native_png(path: &Path, cell_width: u32, cell_height: u32) -> Opti
     Some((base64::engine::general_purpose::STANDARD.encode(buf.into_inner()), new_w, new_h))
 }
 
+
+/// Crop and re-encode a cached full-size PNG for partial display.
+///
+/// Given the base64-encoded full image and its pixel height, returns a new
+/// base64 PNG cropped to the visible vertical slice. Used by iTerm2 which
+/// has no native source-crop parameter.
+pub fn crop_png_vertical(
+    b64_full: &str,
+    px_h: u32,
+    full_height_cells: u16,
+    crop_top_cells: u16,
+    visible_height_cells: u16,
+) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64_full).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?;
+    let (w, _) = img.dimensions();
+
+    let y_px = if full_height_cells > 0 {
+        crop_top_cells as u32 * px_h / full_height_cells as u32
+    } else {
+        0
+    };
+    let h_px = if full_height_cells > 0 {
+        (visible_height_cells as u32 * px_h / full_height_cells as u32).max(1)
+    } else {
+        px_h
+    };
+    let h_px = h_px.min(px_h.saturating_sub(y_px));
+
+    let cropped = img.crop_imm(0, y_px, w, h_px);
+
+    let mut buf = Cursor::new(Vec::new());
+    cropped.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
+}
+
 /// 256 combining diacritics for encoding row/column values 0-255 per the Kitty spec.
 /// Source: https://sw.kovidgoyal.net/kitty/_downloads/f0a0de9ec8d9ff4456206db8e0814937/rowcolumn-diacritics.txt
 const DIACRITICS: [char; 256] = [
