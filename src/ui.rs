@@ -687,8 +687,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             // Timer indicator when disappearing messages are enabled
             if conv.expiration_timer > 0 {
                 let timer_label = format_compact_duration(conv.expiration_timer);
+                let icon = if app.nerd_fonts { "\u{F0150}" } else { "\u{23F1}" };
                 spans.push(Span::styled(
-                    format!("\u{23F1} {timer_label} "),
+                    format!("{icon} {timer_label} "),
                     Style::default().fg(theme.fg_muted),
                 ));
             }
@@ -893,8 +894,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             if msg.expires_in_seconds > 0 {
+                let icon = if app.nerd_fonts { "\u{F0150}" } else { "\u{23F1}" };
                 spans.push(Span::styled(
-                    format!("\u{23F1}[{}] ", time),
+                    format!("{icon} [{}] ", time),
                     Style::default().fg(theme.fg_muted),
                 ));
             } else {
