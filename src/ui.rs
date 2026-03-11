@@ -1974,6 +1974,20 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden: bool) {
     let theme = &app.theme;
+
+    // Override status bar with quit confirmation prompt
+    if app.quit_confirm {
+        let bar = Line::from(Span::styled(
+            " Unsent message in buffer. Press quit again to confirm.",
+            Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(
+            Paragraph::new(bar).style(Style::default().bg(theme.statusbar_bg)),
+            area,
+        );
+        return;
+    }
+
     let mut segments: Vec<Span> = Vec::new();
 
     // Mode indicator

@@ -273,6 +273,8 @@ pub struct App {
     pub status_message: String,
     /// Whether the app should quit
     pub should_quit: bool,
+    /// Pending quit confirmation (unsent text in input buffer)
+    pub quit_confirm: bool,
     /// Our own account number for identifying outgoing messages
     #[allow(dead_code)]
     pub account: String,
@@ -2458,6 +2460,7 @@ impl App {
             scroll_positions: HashMap::new(),
             status_message: "connecting...".to_string(),
             should_quit: false,
+            quit_confirm: false,
             account,
             sidebar_width: 22,
             sidebar_on_right: false,
@@ -2911,9 +2914,18 @@ impl App {
     /// Handle global keys that work in both Normal and Insert mode.
     /// Returns true if the key was consumed.
     pub fn handle_global_key(&mut self, modifiers: KeyModifiers, code: KeyCode) -> bool {
-        match self.keybindings.resolve(modifiers, code, BindingMode::Global) {
+        let action = self.keybindings.resolve(modifiers, code, BindingMode::Global);
+        if self.quit_confirm && !matches!(action, Some(KeyAction::Quit)) {
+            self.quit_confirm = false;
+            self.update_status();
+        }
+        match action {
             Some(KeyAction::Quit) => {
-                self.should_quit = true;
+                if self.input_buffer.is_empty() || self.quit_confirm {
+                    self.should_quit = true;
+                } else {
+                    self.quit_confirm = true;
+                }
                 true
             }
             Some(KeyAction::NextConversation) if !self.autocomplete_visible => {
@@ -5124,7 +5136,11 @@ impl App {
                 self.update_status();
             }
             InputAction::Quit => {
-                self.should_quit = true;
+                if self.input_buffer.is_empty() || self.quit_confirm {
+                    self.should_quit = true;
+                } else {
+                    self.quit_confirm = true;
+                }
             }
             InputAction::ToggleSidebar => {
                 self.sidebar_visible = !self.sidebar_visible;
