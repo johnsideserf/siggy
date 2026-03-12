@@ -3773,6 +3773,8 @@ impl App {
             msg.source.clone()
         };
 
+        self.move_conversation_to_top(&conv_id);
+
         // Store source_name in contact lookup for future resolution (typing indicators, etc.)
         if !msg.is_outgoing {
             if let Some(ref name) = msg.source_name {
@@ -6477,6 +6479,16 @@ impl App {
         if let Err(e) = open::that(url) {
             self.status_message = format!("Failed to open URL: {e}");
         }
+    }
+
+    fn move_conversation_to_top(&mut self, id: &str) {
+        let pos = match self.conversation_order.iter().position(|c| c == id) {
+            Some(pos) => pos,
+            None => return,
+        };
+        
+        self.conversation_order.remove(pos);
+        self.conversation_order.insert(0, id.to_string());
     }
 }
 
