@@ -9426,7 +9426,7 @@ mod tests {
         let path = app.pending_attachment.as_ref().unwrap();
         assert!(path.exists(), "PNG file should have been written to disk");
         assert!(path.to_string_lossy().contains("clipboard_"));
-        assert!(path.extension().map_or(false, |e| e == "png"));
+        assert!(path.extension().is_some_and(|e| e == "png"));
 
         // Clean up
         let _ = std::fs::remove_file(path);
