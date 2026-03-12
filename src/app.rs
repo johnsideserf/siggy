@@ -5675,6 +5675,10 @@ impl App {
                     self.status_message = "No active conversation".to_string();
                 }
             }
+            InputAction::Paste => {
+                // Clipboard paste — not yet implemented
+                self.status_message = "/paste: clipboard paste not yet implemented".to_string();
+            }
             InputAction::Unknown(msg) => {
                 self.status_message = msg;
             }

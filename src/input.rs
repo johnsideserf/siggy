@@ -15,6 +15,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/block",    alias: "",    args: "",        description: "Block current contact/group" },
     CommandInfo { name: "/unblock",  alias: "",    args: "",        description: "Unblock current contact/group" },
     CommandInfo { name: "/attach",   alias: "/a",  args: "",        description: "Attach a file" },
+    CommandInfo { name: "/paste",    alias: "/pb", args: "",        description: "Paste from clipboard (text, image, or file)" },
     CommandInfo { name: "/search",   alias: "/s",  args: "<query>", description: "Search messages" },
     CommandInfo { name: "/contacts", alias: "/c",  args: "",        description: "Browse contacts" },
     CommandInfo { name: "/settings", alias: "",    args: "",        description: "Open settings" },
@@ -59,6 +60,8 @@ pub enum InputAction {
     Contacts,
     /// Open file browser to attach a file
     Attach,
+    /// Paste clipboard contents (image, file path, or text)
+    Paste,
     /// Search messages in current (or all) conversations
     Search(String),
     /// Set disappearing message timer (raw duration string)
@@ -122,6 +125,7 @@ pub fn parse_input(input: &str) -> InputAction {
         "/block" => InputAction::Block,
         "/unblock" => InputAction::Unblock,
         "/attach" | "/a" => InputAction::Attach,
+        "/paste" | "/pb" => InputAction::Paste,
         "/search" | "/s" => {
             if arg.is_empty() {
                 InputAction::Unknown("/search requires a query".to_string())
@@ -273,6 +277,8 @@ mod tests {
     #[case("/settings", InputAction::Settings)]
     #[case("/attach", InputAction::Attach)]
     #[case("/a", InputAction::Attach)]
+    #[case("/paste", InputAction::Paste)]
+    #[case("/pb", InputAction::Paste)]
     #[case("/contacts", InputAction::Contacts)]
     #[case("/c", InputAction::Contacts)]
     #[case("/help", InputAction::Help)]
