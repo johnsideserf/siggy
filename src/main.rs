@@ -887,8 +887,7 @@ async fn run_app(
             needs_redraw = false;
         }
 
-        // Progressive image rendering (2 images per frame to avoid freezing)
-        // Progressive image rendering (renders a few cached images per frame)
+        // Background image rendering: drain completed renders and spawn new ones
         if app.ensure_active_images() {
             needs_redraw = true;
         }
