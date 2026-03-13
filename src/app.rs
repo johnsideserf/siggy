@@ -266,8 +266,15 @@ impl Conversation {
 
 /// Application state
 pub struct App {
+    /// All conversations keyed by phone number (1:1) or group ID (groups).
+    /// Populated: startup from SQLite (load_from_db), then get_or_create_conversation()
+    /// on incoming messages, group list events, and outgoing syncs.
+    /// Invalidation: individual conversations may be deleted via message request UI.
+    /// Never fully cleared during runtime.
     pub conversations: HashMap<String, Conversation>,
-    /// Ordered list of conversation IDs for sidebar display
+    /// Ordered list of conversation IDs for sidebar display.
+    /// Populated: startup from SQLite. Reordered via move_conversation_to_top() on
+    /// incoming/outgoing messages. New conversations appended at the end.
     pub conversation_order: Vec<String>,
     /// Currently selected conversation ID
     pub active_conversation: Option<String>,
@@ -300,9 +307,13 @@ pub struct App {
     pub sidebar_width: u16,
     /// Display sidebar on the right side instead of left
     pub sidebar_on_right: bool,
-    /// Per-conversation typing indicators: conv_id → (sender_phone, expiry timestamp)
+    /// Per-conversation typing indicators: conv_id → (sender_phone, expiry timestamp).
+    /// Populated: TypingIndicator events (is_typing=true inserts, is_typing=false removes).
+    /// Invalidation: entries expire after 5 seconds via cleanup_typing() called each tick.
     pub typing_indicators: HashMap<String, (String, Instant)>,
-    /// Last-read message index per conversation (for unread marker)
+    /// Last-read message index per conversation (for unread marker).
+    /// Populated: startup from DB unread counts, then bumped on message insertion and
+    /// read sync events. Persisted to SQLite via read_markers table.
     pub last_read_index: HashMap<String, usize>,
     /// Whether we are connected to signal-cli
     pub connected: bool,
@@ -318,7 +329,13 @@ pub struct App {
     pub db: Database,
     /// Persistent error from signal-cli connection failure
     pub connection_error: Option<String>,
-    /// Contact/group name lookup (number/id → display name) for name resolution
+    /// Contact/group name lookup (number/id → display name) for name resolution.
+    /// Populated: startup (ContactList + GroupList events), then incrementally from
+    /// message envelopes (sourceName), typing indicators, reactions, pins, and poll votes.
+    /// Invalidation: additive-only (new entries added, old entries never removed or updated).
+    /// Stale data: if a contact changes their profile name, the old name persists until
+    /// a message arrives with the new sourceName. signal-cli's listContacts may return
+    /// name=None for contacts whose profile isn't cached, so envelope names fill the gaps.
     pub contact_names: HashMap<String, String>,
     /// Bell pending — set by handle_message, drained by main loop
     pub pending_bell: bool,
@@ -364,7 +381,9 @@ pub struct App {
     pub verify_index: usize,
     /// Identity info entries filtered for the current overlay
     pub verify_identities: Vec<IdentityInfo>,
-    /// Cached trust levels keyed by phone number
+    /// Cached trust levels keyed by phone number.
+    /// Populated: IdentityList events (full clear + repopulate on each event).
+    /// Refreshed: startup via list_identities() RPC, and after verify/trust actions.
     pub identity_trust: HashMap<String, TrustLevel>,
     /// Confirmation pending for verify action (user must press v twice)
     pub verify_confirming: bool,
@@ -384,7 +403,11 @@ pub struct App {
     pub prev_visible_images: Vec<VisibleImage>,
     /// Experimental: use native terminal image protocols (Kitty/iTerm2) instead of halfblock
     pub native_images: bool,
-    /// Cache of pre-resized PNGs for native protocol (path → (base64, pixel_w, pixel_h))
+    /// Cache of pre-resized PNGs for native protocol (path → (base64, pixel_w, pixel_h)).
+    /// Populated: on-demand during native image rendering (get_or_cache_png in main.rs).
+    /// Invalidation: cleared on conversation switch or terminal resize (clear_kitty_state).
+    /// Stale data: if an image file changes on disk, the cached version persists until
+    /// the next conversation switch. Keyed by path only (no modification time check).
     pub native_image_cache: HashMap<String, (String, u32, u32)>,
     /// Previous active conversation ID, for detecting chat switches
     pub prev_active_conversation: Option<String>,
@@ -402,9 +425,13 @@ pub struct App {
     pub color_receipts: bool,
     /// Use Nerd Font glyphs for status symbols
     pub nerd_fonts: bool,
-    /// Pending send RPCs: rpc_id → (conv_id, local_timestamp_ms)
+    /// Pending send RPCs: rpc_id → (conv_id, local_timestamp_ms).
+    /// Populated: dispatch_send() on message send. Entries removed on SendTimestamp (success)
+    /// or SendFailed (error). Used to correlate signal-cli responses with local messages.
     pub pending_sends: HashMap<String, (String, i64)>,
-    /// Receipts that arrived before their matching SendTimestamp — replayed after each SendTimestamp
+    /// Receipts that arrived before their matching SendTimestamp.
+    /// Populated: handle_receipt() when no matching pending_send exists yet.
+    /// Drained: replayed immediately after each SendTimestamp event confirms a send.
     pub pending_receipts: Vec<(String, String, Vec<i64>)>,
     /// Timestamp of the message at the scroll cursor (set during draw, cleared at scroll_offset=0)
     pub focused_message_time: Option<DateTime<Utc>>,
@@ -416,11 +443,16 @@ pub struct App {
     pub reaction_picker_index: usize,
     /// Show verbose reaction display (usernames instead of counts)
     pub reaction_verbose: bool,
-    /// Groups indexed by group_id (with member lists for @mention autocomplete)
+    /// Groups indexed by group_id (with member lists for @mention autocomplete).
+    /// Populated: startup via GroupList event from list_groups() RPC.
+    /// Invalidation: full replacement on each GroupList event. Never cleared otherwise.
+    /// Stale data: group membership changes on other devices only appear after restart.
     pub groups: HashMap<String, Group>,
-    /// UUID → display name mapping (built from contact list)
+    /// UUID → display name mapping (built from contact list).
+    /// Populated: startup via ContactList event. Additive-only, never cleared.
     pub uuid_to_name: HashMap<String, String>,
-    /// Phone number → UUID mapping (for sending mentions)
+    /// Phone number → UUID mapping (for sending mentions).
+    /// Populated: startup via ContactList and GroupList events. Additive-only, never cleared.
     pub number_to_uuid: HashMap<String, String>,
     /// Current autocomplete mode (Command vs Mention)
     pub autocomplete_mode: AutocompleteMode,
@@ -555,15 +587,20 @@ pub struct App {
     pub profile_fields: [String; 4],
     /// Temp buffer while editing a profile field
     pub profile_edit_buffer: String,
-    /// Next Kitty image ID to assign (starts at 1).
+    /// Next Kitty image ID to assign (monotonically increasing, starts at 1).
     pub next_kitty_image_id: u32,
-    /// Map from image path to Kitty image ID.
+    /// Map from image path to Kitty image ID. Grows unbounded during session.
+    /// IDs are assigned during placeholder patching in ui.rs and never reclaimed.
     pub kitty_image_ids: HashMap<String, u32>,
     /// Set of image IDs already transmitted to the terminal.
+    /// Cleared on conversation switch or resize (clear_kitty_state).
     pub kitty_transmitted: HashSet<u32>,
     /// Images to transmit this frame: (id, path, cell_cols, cell_rows).
+    /// Populated during ui.rs rendering, drained by emit_native_images() in main.rs.
     pub kitty_pending_transmits: Vec<(u32, String, u16, u16)>,
-    /// Cache of cropped image base64 for iTerm2: (path, crop_top, height) → base64.
+    /// Cache of cropped image base64 for iTerm2: (path, crop_top, height) -> base64.
+    /// Populated on-demand during iTerm2 rendering. Grows unbounded during session.
+    /// Cleared on conversation switch or resize (clear_kitty_state).
     pub iterm2_crop_cache: HashMap<(String, u16, u16), String>,
     /// Current settings profile name
     pub settings_profile_name: String,
