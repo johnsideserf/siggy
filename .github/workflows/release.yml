@@ -90,3 +90,15 @@ jobs:
         with:
           generate_release_notes: true
           files: siggy-*
+
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/update-homebrew
+        with:
+          tag: ${{ github.ref_name }}
+          tap-token: ${{ secrets.TAP_TOKEN }}

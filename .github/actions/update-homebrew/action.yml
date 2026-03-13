@@ -1,0 +1,73 @@
+name: Update Homebrew Tap
+description: Updates Formula/siggy.rb in johnsideserf/homebrew-siggy with new version and checksums
+
+inputs:
+  tag:
+    description: Release tag (e.g. v1.5.0)
+    required: true
+  tap-token:
+    description: PAT with contents:write on johnsideserf/homebrew-siggy
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Download macOS release archives
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.tap-token }}
+      run: |
+        gh release download "${{ inputs.tag }}" \
+          --repo johnsideserf/siggy \
+          --pattern "siggy-${{ inputs.tag }}-aarch64-apple-darwin.tar.gz" \
+          --pattern "siggy-${{ inputs.tag }}-x86_64-apple-darwin.tar.gz"
+
+    - name: Download source tarball
+      shell: bash
+      run: |
+        curl -sL -o "siggy-${{ inputs.tag }}-source.tar.gz" \
+          "https://github.com/johnsideserf/siggy/archive/refs/tags/${{ inputs.tag }}.tar.gz"
+
+    - name: Compute checksums
+      id: checksums
+      shell: bash
+      run: |
+        echo "arm64_mac=$(sha256sum "siggy-${{ inputs.tag }}-aarch64-apple-darwin.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        echo "x86_mac=$(sha256sum "siggy-${{ inputs.tag }}-x86_64-apple-darwin.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        echo "source=$(sha256sum "siggy-${{ inputs.tag }}-source.tar.gz" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+    - name: Update Homebrew formula
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        SHA_ARM64_MAC: ${{ steps.checksums.outputs.arm64_mac }}
+        SHA_X86_MAC: ${{ steps.checksums.outputs.x86_mac }}
+        SHA_SOURCE: ${{ steps.checksums.outputs.source }}
+        TAP_TOKEN: ${{ inputs.tap-token }}
+      run: |
+        VERSION="${TAG#v}"
+        git clone "https://x-access-token:${TAP_TOKEN}@github.com/johnsideserf/homebrew-siggy.git" tap
+        cd tap
+
+        F=Formula/siggy.rb
+
+        # Update version
+        sed -i "s/version \"[^\"]*\"/version \"${VERSION}\"/" "$F"
+
+        # Update arm64 mac url + sha256
+        sed -i "/Hardware::CPU.arm?/{n;s|url \"[^\"]*\"|url \"https://github.com/johnsideserf/siggy/releases/download/${TAG}/siggy-${TAG}-aarch64-apple-darwin.tar.gz\"|}" "$F"
+        sed -i "/aarch64-apple-darwin/{n;s/sha256 \"[^\"]*\"/sha256 \"${SHA_ARM64_MAC}\"/}" "$F"
+
+        # Update x86_64 mac url + sha256
+        sed -i "/Hardware::CPU.intel?/{n;s|url \"[^\"]*\"|url \"https://github.com/johnsideserf/siggy/releases/download/${TAG}/siggy-${TAG}-x86_64-apple-darwin.tar.gz\"|}" "$F"
+        sed -i "/x86_64-apple-darwin/{n;s/sha256 \"[^\"]*\"/sha256 \"${SHA_X86_MAC}\"/}" "$F"
+
+        # Update source tarball url + sha256
+        sed -i "s|/archive/refs/tags/v[^/]*.tar.gz|/archive/refs/tags/${TAG}.tar.gz|" "$F"
+        sed -i "/archive\/refs\/tags/{n;s/sha256 \"[^\"]*\"/sha256 \"${SHA_SOURCE}\"/}" "$F"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add Formula/siggy.rb
+        git commit -m "Update siggy to ${TAG}"
+        git push
