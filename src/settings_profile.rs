@@ -143,6 +143,8 @@ pub fn all_settings_profiles() -> Vec<SettingsProfile> {
 }
 
 /// Find a profile by name. Falls back to Default if not found.
+/// Only used in tests, so marked with cfg(test).
+#[cfg(test)]
 pub fn find_settings_profile(name: &str) -> SettingsProfile {
     all_settings_profiles()
         .into_iter()
