@@ -1,0 +1,34 @@
+---
+source: src/ui.rs
+expression: output
+---
+ Chats               │╭ siggy ─────────────────────────────────────────────────────────────────────╮
+  ? +15550007777     ││                                                                            │
+  • ##Family         ││  Welcome to siggy                                                          │
+  • Carol            ││                                                                            │
+    ##Rust Devs      ││  Getting started                                                           │
+    Bob              ││  Tab / Shift+Tab    cycle through conversations                            │
+    Alice            ││  /join <contact>    open a conversation by name or number                  │
+    Dave             ││  Esc                switch to Normal mode (vim keys)                       │
+                     ││                                                                            │
+                     ││  Useful commands                                                           │
+                     ││  /contacts          browse synced contacts                                 │
+                     ││  /settings          configure preferences                                  │
+                     ││  /help              all commands and keybindings                           │
+                     ││                                                                            │
+                     ││  Ctrl+←/→ to resize sidebar                                                │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+                     │╭────────────────────────────────────────────────────────────────────────────╮
+                     ││  Type a message...                                                         │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+ [INSERT] │  ● connected │ no conversation │ 7 chats

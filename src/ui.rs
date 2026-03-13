@@ -4030,3 +4030,109 @@ mod tests {
         assert!(snippet.contains("NEEDLE"), "expected query in snippet: {snippet}");
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::app::{App, InputMode};
+    use crate::db::Database;
+    use crate::image_render::ImageProtocol;
+    use chrono::NaiveDate;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// Fixed date for deterministic timestamps in snapshots.
+    fn fixed_date() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2025, 1, 15).unwrap()
+    }
+
+    /// Create a fully-populated demo App with deterministic data.
+    fn demo_app() -> App {
+        let db = Database::open_in_memory().unwrap();
+        let mut app = App::new("+15559999999".to_string(), db);
+        app.connected = true;
+        app.loading = false;
+        app.is_demo = true;
+        app.date_separators = false;
+        app.image_protocol = ImageProtocol::Halfblock;
+        app.populate_demo_data(fixed_date());
+        app
+    }
+
+    /// Render the app into a TestBackend and return the buffer contents as a string.
+    fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| draw(frame, app))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut output = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = &buffer[(x, y)];
+                output.push_str(cell.symbol());
+            }
+            // Trim trailing spaces for cleaner snapshots
+            let trimmed = output.trim_end();
+            output.truncate(trimmed.len());
+            output.push('\n');
+        }
+        output
+    }
+
+    #[test]
+    fn test_sidebar_layout() {
+        let mut app = demo_app();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_chat_messages() {
+        let mut app = demo_app();
+        // Alice is already the active conversation
+        assert_eq!(app.active_conversation.as_deref(), Some("+15550001111"));
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_normal_vs_insert_mode() {
+        let mut app = demo_app();
+
+        app.mode = InputMode::Insert;
+        let insert_output = render_to_string(&mut app, 100, 30);
+
+        app.mode = InputMode::Normal;
+        let normal_output = render_to_string(&mut app, 100, 30);
+
+        // They should differ (mode indicator in status bar)
+        assert_ne!(insert_output, normal_output);
+        insta::assert_snapshot!("insert_mode", insert_output);
+        insta::assert_snapshot!("normal_mode", normal_output);
+    }
+
+    #[test]
+    fn test_no_active_conversation() {
+        let mut app = demo_app();
+        app.active_conversation = None;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_help_overlay() {
+        let mut app = demo_app();
+        app.show_help = true;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_narrow_terminal() {
+        let mut app = demo_app();
+        // Below SIDEBAR_AUTO_HIDE_WIDTH (60), sidebar should auto-hide
+        let output = render_to_string(&mut app, 50, 20);
+        insta::assert_snapshot!(output);
+    }
+}

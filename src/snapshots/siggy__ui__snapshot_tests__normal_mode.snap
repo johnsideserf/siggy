@@ -1,0 +1,34 @@
+---
+source: src/ui.rs
+expression: normal_output
+---
+ Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
+  ? +15550007777     ││[08:00] <Alice> Good morning! How's your day going?                         │
+  • ##Family         ││    👍  1                                                                    │
+  • Carol            ││● [08:05] <you> Just getting started, coffee in hand                        │
+    ##Rust Devs      ││    ❤️  1                                                                    │
+    Bob              ││[08:10] <Alice> Nice! I've been up since 6, went for a run                  │
+▸   Alice            ││● [08:15] <you> Impressive. I can barely get out of bed before 7            │
+    Dave             ││[08:20] <Alice> Ha! It gets easier once you build the habit                 │
+                     ││● [08:25] <you> That's what everyone says...                                │
+                     ││[08:30] <Alice> Trust me, after a week it becomes automatic                 │
+                     ││  ╭ <you> Just getting started, coffee in hand                              │
+                     ││[08:35] <Alice> Honestly same, I need my coffee first too                   │
+                     ││✓ [08:40] <you> Are you free this weekend?                                  │
+                     ││[08:42] <Alice> Yeah! What did you have in mind?                            │
+                     ││[08:45] <Alice> There's this farmers market: https://localmarket.example.com│
+                     ││  ├ Downtown Farmers Market                                                 │
+                     ││  ├ Fresh produce, artisan goods, and live music every Saturday…            │
+                     ││  ╰ https://localmarket.example.com                                         │
+                     ││○ [08:47] <you> Oh nice, what time should we go?                            │
+                     ││✓ [08:48] <Alice> Opens at 8, but 9 is fine. Less crowded.                  │
+                     ││○ [08:50] <you> Perfect, let's do 9                                         │
+                     ││○ [08:52] <Alice> I'll pick you up at 8:45                                  │
+                     ││○ [08:55] <you> (edited) Actually make it 8:30, I want to browse early      │
+                     ││[08:57] <Alice> Even better! See you Saturday                               │
+                     ││    🎉  1                                                                    │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+                     │╭────────────────────────────────────────────────────────────────────────────╮
+                     ││  Press i to type, / for commands                                           │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+ [NORMAL] │  ● connected │ Alice │ 7 chats

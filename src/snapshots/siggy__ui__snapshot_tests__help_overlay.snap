@@ -1,0 +1,34 @@
+---
+source: src/ui.rs
+expression: output
+---
+ Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
+  ? +15550007777     ││╭ Help ──────────────────────────────────────────────╮                      │
+  • ##Family         │││  Commands                                          │                      │
+  • Carol            │││  /join <name>        Switch to a conversation      │                      │
+    ##Rust Devs      │││  /part               Leave current conversation    │                      │
+    Bob              │││  /attach             Attach a file                 │ run                  │
+▸   Alice            │││  /search <query>     Search messages               │d before 7            │
+    Dave             │││  /sidebar            Toggle sidebar visibility     │habit                 │
+                     │││  /bell [type]        Toggle notifications          │                      │
+                     │││  /mute               Mute/unmute conversation      │matic                 │
+                     │││  /contacts           Browse contacts               │                      │
+                     │││  /settings           Open settings                 │too                   │
+                     │││  /keybindings        Configure keybindings         │                      │
+                     │││  /quit               Exit siggy                    │                      │
+                     │││                                                    │ocalmarket.example.com│
+                     │││  Shortcuts                                         │                      │
+                     │││  Tab / Shift+Tab     Next / prev conversation      │ Saturday…            │
+                     │││  Up / Down           Recall input history          │                      │
+                     │││  @                   Mention autocomplete          │                      │
+                     │││  PgUp / PgDn         Scroll messages               │ded.                  │
+                     │││  Ctrl+Left / Ctrl+RightResize sidebar              │                      │
+                     │││  Ctrl+c              Quit                          │                      │
+                     │││                                                    │ to browse early      │
+                     │││  Keybindings [Default]                             │                      │
+                     │││  Esc                 Normal mode                   │                      │
+                     │╰│  i / a / I / A / o   Insert mode                   │──────────────────────╯
+                     │╭│  j / k               Scroll up / down              │──────────────────────╮
+                     │││  J / K               Prev / next message           │                      │
+                     │╰╰────────────────────────────────────────────────────╯──────────────────────╯
+ [INSERT] │  ● connected │ Alice │ 7 chats
