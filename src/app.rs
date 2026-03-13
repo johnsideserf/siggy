@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use crate::db::Database;
 use crate::image_render;
+use crate::domain::FilePickerState;
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -426,20 +427,8 @@ pub struct App {
     pub pending_mentions: Vec<(String, Option<String>)>,
     /// Demo mode — prevents config writes
     pub is_demo: bool,
-    /// File browser overlay visible
-    pub show_file_browser: bool,
-    /// Current directory in file browser
-    pub file_browser_dir: PathBuf,
-    /// Directory entries: (name, is_dir, size_bytes)
-    pub file_browser_entries: Vec<(String, bool, u64)>,
-    /// Cursor position in file browser
-    pub file_browser_index: usize,
-    /// Type-to-filter text for file browser
-    pub file_browser_filter: String,
-    /// Filtered indices into file_browser_entries
-    pub file_browser_filtered: Vec<usize>,
-    /// Error message from directory read
-    pub file_browser_error: Option<String>,
+    /// File browser overlay state
+    pub file_picker: FilePickerState,
     /// File selected for sending as attachment
     pub pending_attachment: Option<PathBuf>,
     /// Directory for temporary clipboard paste files (PID-scoped to avoid conflicts)
@@ -2551,124 +2540,13 @@ impl App {
             self.status_message = "No active conversation. Use /join <name> first.".to_string();
             return;
         }
-        self.show_file_browser = true;
-        self.file_browser_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        self.file_browser_index = 0;
-        self.file_browser_filter.clear();
-        self.file_browser_error = None;
-        self.refresh_file_browser_entries();
-    }
-
-    /// Read the current directory and populate file_browser_entries.
-    fn refresh_file_browser_entries(&mut self) {
-        self.file_browser_entries.clear();
-        self.file_browser_error = None;
-        match std::fs::read_dir(&self.file_browser_dir) {
-            Ok(entries) => {
-                let mut dirs: Vec<(String, bool, u64)> = Vec::new();
-                let mut files: Vec<(String, bool, u64)> = Vec::new();
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    let meta = entry.metadata();
-                    let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                    if is_dir {
-                        dirs.push((name, true, 0));
-                    } else {
-                        files.push((name, false, size));
-                    }
-                }
-                dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-                files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-                self.file_browser_entries.extend(dirs);
-                self.file_browser_entries.extend(files);
-            }
-            Err(e) => {
-                self.file_browser_error = Some(format!("Cannot read directory: {e}"));
-            }
-        }
-        self.refresh_file_browser_filter();
-    }
-
-    /// Rebuild the filtered index list based on current filter text.
-    fn refresh_file_browser_filter(&mut self) {
-        let filter_lower = self.file_browser_filter.to_lowercase();
-        self.file_browser_filtered = self
-            .file_browser_entries
-            .iter()
-            .enumerate()
-            .filter(|(_, (name, _, _))| {
-                filter_lower.is_empty() || name.to_lowercase().contains(&filter_lower)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if self.file_browser_filtered.is_empty() {
-            self.file_browser_index = 0;
-        } else if self.file_browser_index >= self.file_browser_filtered.len() {
-            self.file_browser_index = self.file_browser_filtered.len() - 1;
-        }
+        self.file_picker.open();
     }
 
     /// Handle a key press while the file browser overlay is open.
     pub fn handle_file_browser_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.file_browser_filtered.is_empty()
-                    && self.file_browser_index < self.file_browser_filtered.len() - 1
-                {
-                    self.file_browser_index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.file_browser_index = self.file_browser_index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                if let Some(&entry_idx) = self.file_browser_filtered.get(self.file_browser_index) {
-                    let (name, is_dir, _) = self.file_browser_entries[entry_idx].clone();
-                    if is_dir {
-                        self.file_browser_dir = self.file_browser_dir.join(&name);
-                        self.file_browser_index = 0;
-                        self.file_browser_filter.clear();
-                        self.refresh_file_browser_entries();
-                    } else {
-                        let path = self.file_browser_dir.join(&name);
-                        self.pending_attachment = Some(path);
-                        self.show_file_browser = false;
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                if !self.file_browser_filter.is_empty() {
-                    self.file_browser_filter.pop();
-                    self.refresh_file_browser_filter();
-                } else {
-                    self.file_browser_navigate_up();
-                }
-            }
-            KeyCode::Char('-') => {
-                self.file_browser_navigate_up();
-            }
-            KeyCode::Esc => {
-                self.show_file_browser = false;
-            }
-            KeyCode::Char(c) => {
-                self.file_browser_filter.push(c);
-                self.refresh_file_browser_filter();
-            }
-            _ => {}
-        }
-    }
-
-    /// Navigate to the parent directory in the file browser.
-    fn file_browser_navigate_up(&mut self) {
-        if let Some(parent) = self.file_browser_dir.parent() {
-            let parent = parent.to_path_buf();
-            if parent != self.file_browser_dir {
-                self.file_browser_dir = parent;
-                self.file_browser_index = 0;
-                self.file_browser_filter.clear();
-                self.refresh_file_browser_entries();
-            }
+        if let Some(path) = self.file_picker.handle_key(code) {
+            self.pending_attachment = Some(path);
         }
     }
 
@@ -2811,13 +2689,7 @@ impl App {
             mention_trigger_pos: 0,
             pending_mentions: Vec::new(),
             is_demo: false,
-            show_file_browser: false,
-            file_browser_dir: dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
-            file_browser_entries: Vec::new(),
-            file_browser_index: 0,
-            file_browser_filter: String::new(),
-            file_browser_filtered: Vec::new(),
-            file_browser_error: None,
+            file_picker: FilePickerState::default(),
             pending_attachment: None,
             paste_temp_path: {
                 let dir = std::env::temp_dir().join(format!("siggy-paste-{}", std::process::id()));
@@ -3247,7 +3119,7 @@ impl App {
             let send = self.handle_delete_confirm_key(code);
             return (true, send);
         }
-        if self.show_file_browser {
+        if self.file_picker.visible {
             self.handle_file_browser_key(code);
             return (true, None);
         }
@@ -6471,7 +6343,7 @@ impl App {
             || self.show_help
             || self.show_contacts
             || self.show_search
-            || self.show_file_browser
+            || self.file_picker.visible
             || self.show_action_menu
             || self.show_reaction_picker
             || self.show_delete_confirm
@@ -8287,7 +8159,7 @@ mod tests {
 
         app.active_conversation = None;
         app.open_file_browser();
-        assert!(!app.show_file_browser);
+        assert!(!app.file_picker.visible);
         assert!(app.status_message.contains("No active conversation"));
     }
 
@@ -9111,9 +8983,9 @@ mod tests {
         assert!(app.has_overlay());
         app.show_search = false;
 
-        app.show_file_browser = true;
+        app.file_picker.visible = true;
         assert!(app.has_overlay());
-        app.show_file_browser = false;
+        app.file_picker.visible = false;
 
         app.show_action_menu = true;
         assert!(app.has_overlay());

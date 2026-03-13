@@ -488,7 +488,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // File browser overlay
-    if app.show_file_browser {
+    if app.file_picker.visible {
         draw_file_browser(frame, app, size);
     }
 
@@ -2992,14 +2992,14 @@ pub(crate) fn format_file_size(bytes: u64) -> String {
 fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let visible_count = FILE_BROWSER_MAX_VISIBLE.min(
-        if app.file_browser_filtered.is_empty() { 1 } else { app.file_browser_filtered.len() }
+        if app.file_picker.filtered.is_empty() { 1 } else { app.file_picker.filtered.len() }
     );
     let pref_height = visible_count as u16 + 5; // border + header + footer
 
-    let title = if app.file_browser_filter.is_empty() {
+    let title = if app.file_picker.filter.is_empty() {
         " Attach File ".to_string()
     } else {
-        format!(" Attach File [{}] ", app.file_browser_filter)
+        format!(" Attach File [{}] ", app.file_picker.filter)
     };
 
     let (popup_area, block) = centered_popup(
@@ -3015,37 +3015,37 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     // Current path header
-    let dir_display = app.file_browser_dir.to_string_lossy();
+    let dir_display = app.file_picker.dir.to_string_lossy();
     let dir_truncated = truncate(&dir_display, inner_w.saturating_sub(2));
     lines.push(Line::from(Span::styled(
         format!("  {dir_truncated}"),
         Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
     )));
 
-    if let Some(ref err) = app.file_browser_error {
+    if let Some(ref err) = app.file_picker.error {
         lines.push(Line::from(Span::styled(
             format!("  {}", truncate(err, inner_w.saturating_sub(2))),
             Style::default().fg(theme.error),
         )));
-    } else if app.file_browser_filtered.is_empty() {
+    } else if app.file_picker.filtered.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Empty directory",
             Style::default().fg(theme.fg_muted),
         )));
     } else {
         // Scroll the list so the selected item is always visible
-        let scroll_offset = if app.file_browser_index >= visible_rows {
-            app.file_browser_index - visible_rows + 1
+        let scroll_offset = if app.file_picker.index >= visible_rows {
+            app.file_picker.index - visible_rows + 1
         } else {
             0
         };
 
-        let end = (scroll_offset + visible_rows).min(app.file_browser_filtered.len());
+        let end = (scroll_offset + visible_rows).min(app.file_picker.filtered.len());
 
-        for (i, &entry_idx) in app.file_browser_filtered[scroll_offset..end].iter().enumerate() {
+        for (i, &entry_idx) in app.file_picker.filtered[scroll_offset..end].iter().enumerate() {
             let actual_index = scroll_offset + i;
-            let is_selected = actual_index == app.file_browser_index;
-            let (ref name, is_dir, size) = app.file_browser_entries[entry_idx];
+            let is_selected = actual_index == app.file_picker.index;
+            let (ref name, is_dir, size) = app.file_picker.entries[entry_idx];
 
             let size_str = if is_dir {
                 String::new()
