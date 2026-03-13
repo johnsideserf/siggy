@@ -483,7 +483,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Search overlay
-    if app.show_search {
+    if app.search.visible {
         draw_search(frame, app, size);
     }
 
@@ -2744,13 +2744,13 @@ fn format_safety_number(sn: &str) -> Vec<String> {
 
 fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let max_visible = SEARCH_MAX_VISIBLE.min(app.search_results.len().max(1));
+    let max_visible = SEARCH_MAX_VISIBLE.min(app.search.results.len().max(1));
     let pref_height = max_visible as u16 + 5; // +3 border/title +2 footer
 
-    let title = if app.search_query.is_empty() {
+    let title = if app.search.query.is_empty() {
         " Search ".to_string()
     } else {
-        format!(" Search [{}] ", app.search_query)
+        format!(" Search [{}] ", app.search.query)
     };
 
     let (popup_area, block) = centered_popup(
@@ -2762,8 +2762,8 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     let visible_rows = inner_height.saturating_sub(footer_lines);
 
     // Scroll the list so the selected item is always visible
-    let scroll_offset = if app.search_index >= visible_rows {
-        app.search_index - visible_rows + 1
+    let scroll_offset = if app.search.index >= visible_rows {
+        app.search.index - visible_rows + 1
     } else {
         0
     };
@@ -2771,8 +2771,8 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let inner_w = popup_area.width.saturating_sub(2) as usize;
 
-    if app.search_results.is_empty() {
-        let msg = if app.search_query.is_empty() {
+    if app.search.results.is_empty() {
+        let msg = if app.search.query.is_empty() {
             "  Type to search..."
         } else {
             "  No results found"
@@ -2782,11 +2782,11 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme.fg_muted),
         )));
     } else {
-        let end = (scroll_offset + visible_rows).min(app.search_results.len());
+        let end = (scroll_offset + visible_rows).min(app.search.results.len());
 
-        for (i, result) in app.search_results[scroll_offset..end].iter().enumerate() {
+        for (i, result) in app.search.results[scroll_offset..end].iter().enumerate() {
             let actual_index = scroll_offset + i;
-            let is_selected = actual_index == app.search_index;
+            let is_selected = actual_index == app.search.index;
 
             // Format: [conv_name] sender: body_snippet
             let conv_prefix = if app.active_conversation.is_some() {
@@ -2799,7 +2799,7 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
             let prefix = format!("  {conv_prefix}{sender_display}: ");
             let body_max = inner_w.saturating_sub(prefix.len());
             // Show a snippet of the body around the match
-            let body_snippet = search_snippet(&result.body, &app.search_query, body_max);
+            let body_snippet = search_snippet(&result.body, &app.search.query, body_max);
 
             let prefix_style = if is_selected {
                 Style::default().bg(theme.bg_selected).fg(theme.accent)
@@ -2814,7 +2814,7 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
 
             // Build spans with highlighted match
             let mut spans = vec![Span::styled(prefix, prefix_style)];
-            spans.extend(highlight_match_spans(&body_snippet, &app.search_query, body_style, is_selected, theme));
+            spans.extend(highlight_match_spans(&body_snippet, &app.search.query, body_style, is_selected, theme));
 
             lines.push(Line::from(spans));
         }
@@ -2826,10 +2826,10 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     lines.push(Line::from(""));
-    let count_text = if app.search_results.is_empty() {
+    let count_text = if app.search.results.is_empty() {
         String::new()
     } else {
-        format!("  {}/{}", app.search_index + 1, app.search_results.len())
+        format!("  {}/{}", app.search.index + 1, app.search.results.len())
     };
     lines.push(Line::from(vec![
         Span::styled(
