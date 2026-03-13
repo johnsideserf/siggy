@@ -1,12 +1,12 @@
 name: Update Homebrew Tap
-description: Updates Formula/siggy.rb in shwoop/homebrew-siggy with new version and checksums
+description: Updates Formula/siggy.rb in johnsideserf/homebrew-siggy with new version and checksums
 
 inputs:
   tag:
     description: Release tag (e.g. v1.5.0)
     required: true
   tap-token:
-    description: PAT with contents:write on shwoop/homebrew-siggy
+    description: PAT with contents:write on johnsideserf/homebrew-siggy
     required: true
 
 runs:
@@ -46,7 +46,7 @@ runs:
         TAP_TOKEN: ${{ inputs.tap-token }}
       run: |
         VERSION="${TAG#v}"
-        git clone "https://x-access-token:${TAP_TOKEN}@github.com/shwoop/homebrew-siggy.git" tap
+        git clone "https://x-access-token:${TAP_TOKEN}@github.com/johnsideserf/homebrew-siggy.git" tap
         cd tap
 
         F=Formula/siggy.rb
