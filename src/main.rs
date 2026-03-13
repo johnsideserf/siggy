@@ -9,6 +9,7 @@ mod link;
 mod settings_profile;
 mod setup;
 mod signal;
+mod domain;
 mod theme;
 mod ui;
 
