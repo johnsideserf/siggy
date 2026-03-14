@@ -31,4 +31,4 @@ emojis = "0.8"
 
 [dev-dependencies]
 insta = "1"
-rstest = "0.25"
+rstest = "0.26"
