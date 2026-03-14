@@ -447,6 +447,8 @@ pub struct App {
     pub show_reaction_picker: bool,
     /// Selected index in the reaction picker
     pub reaction_picker_index: usize,
+    /// Show emoji reactions on messages
+    pub show_reactions: bool,
     /// Show verbose reaction display (usernames instead of counts)
     pub reaction_verbose: bool,
     /// Groups indexed by group_id (with member lists for @mention autocomplete).
@@ -861,6 +863,14 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.nerd_fonts,
         set: |a, v| a.nerd_fonts = v,
         save: Some(|c, v| c.nerd_fonts = v),
+        on_toggle: None,
+    },
+    SettingDef {
+        label: "Show reactions",
+        hint: "Show emoji reactions on messages",
+        get: |a| a.show_reactions,
+        set: |a, v| a.show_reactions = v,
+        save: Some(|c, v| c.show_reactions = v),
         on_toggle: None,
     },
     SettingDef {
@@ -2673,6 +2683,7 @@ impl App {
             jump_stack: Vec::new(),
             show_reaction_picker: false,
             reaction_picker_index: 0,
+            show_reactions: true,
             reaction_verbose: false,
             groups: HashMap::new(),
             uuid_to_name: HashMap::new(),

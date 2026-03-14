@@ -17,16 +17,16 @@ expression: output
                      ││✓ │  [x] Read receipts                             │                        │
                      ││[0│  [x] Receipt colors                            │                        │
                      ││[0│  [ ] Nerd Font icons                           │/localmarket.example.com│
-                     ││  │  [ ] Verbose reactions                         │                        │
-                     ││  │  [x] Send read receipts                        │ry Saturday…            │
-                     ││  │  [x] Mouse support                             │                        │
-                     ││○ │  [ ] Sidebar on right                          │                        │
-                     ││✓ │  Notification preview: full                    │owded.                  │
+                     ││  │  [x] Show reactions                            │                        │
+                     ││  │  [ ] Verbose reactions                         │ry Saturday…            │
+                     ││  │  [x] Send read receipts                        │                        │
+                     ││○ │  [x] Mouse support                             │                        │
+                     ││✓ │  [ ] Sidebar on right                          │owded.                  │
+                     ││○ │  Notification preview: full                    │                        │
                      ││○ │  Theme: Default                                │                        │
-                     ││○ │  Keybindings: Default                          │                        │
-                     ││○ │  Profile: Default                              │nt to browse early      │
-                     ││[0│                                                │                        │
-                     ││  │  Play a sound for incoming direct messages     │                        │
+                     ││○ │  Keybindings: Default                          │nt to browse early      │
+                     ││[0│  Profile: Default                              │                        │
+                     ││  │                                                │                        │
                      │╰──╰────────────────────────────────────────────────╯────────────────────────╯
                      │╭────────────────────────────────────────────────────────────────────────────╮
                      ││  Type a message...                                                         │

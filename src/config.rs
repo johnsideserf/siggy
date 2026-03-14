@@ -64,6 +64,10 @@ pub struct Config {
     #[serde(default)]
     pub nerd_fonts: bool,
 
+    /// Show emoji reactions on messages
+    #[serde(default = "default_true")]
+    pub show_reactions: bool,
+
     /// Show verbose reaction display (usernames instead of counts)
     #[serde(default)]
     pub reaction_verbose: bool,
@@ -149,6 +153,7 @@ impl Default for Config {
             show_receipts: true,
             color_receipts: true,
             nerd_fonts: false,
+            show_reactions: true,
             reaction_verbose: false,
             send_read_receipts: true,
             mouse_enabled: true,

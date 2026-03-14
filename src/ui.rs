@@ -1077,8 +1077,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
 
-            // Render reaction summary line (skip for deleted)
-            if !msg.is_deleted && !msg.reactions.is_empty() {
+            // Render reaction summary line (skip for deleted or when reactions hidden)
+            if app.show_reactions && !msg.is_deleted && !msg.reactions.is_empty() {
                 lines.push(build_reaction_summary(&msg.reactions, app.reaction_verbose, theme));
                 line_msg_idx.push(Some(msg_index));
             }
