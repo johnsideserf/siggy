@@ -5637,6 +5637,9 @@ impl App {
             InputAction::Paste => {
                 return self.handle_paste_command();
             }
+            InputAction::Export(limit) => {
+                self.export_chat_history(limit);
+            }
             InputAction::Unknown(msg) => {
                 self.status_message = msg;
             }
@@ -6542,6 +6545,74 @@ impl App {
         }
         if let Err(e) = open::that(url) {
             self.status_message = format!("Failed to open URL: {e}");
+        }
+    }
+
+    /// Export the active conversation's messages to a plain text file.
+    fn export_chat_history(&mut self, limit: Option<usize>) {
+        let conv_id = match self.active_conversation.as_ref() {
+            Some(id) => id.clone(),
+            None => {
+                self.status_message = "No active conversation to export".to_string();
+                return;
+            }
+        };
+        let conv = match self.conversations.get(&conv_id) {
+            Some(c) => c,
+            None => return,
+        };
+
+        let messages = &conv.messages;
+        let export_msgs: &[DisplayMessage] = match limit {
+            Some(n) => &messages[messages.len().saturating_sub(n)..],
+            None => messages,
+        };
+
+        if export_msgs.is_empty() {
+            self.status_message = "No messages to export".to_string();
+            return;
+        }
+
+        // Build plain text output
+        let mut output = String::new();
+        let safe_name: String = conv.name.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let date = chrono::Local::now().format("%Y-%m-%d");
+        let filename = format!("siggy-export-{safe_name}-{date}.txt");
+
+        output.push_str(&format!("Chat export: {}\n", conv.name));
+        output.push_str(&format!("Exported: {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M")));
+        output.push_str(&format!("Messages: {}\n", export_msgs.len()));
+        output.push_str(&"-".repeat(60));
+        output.push('\n');
+
+        for msg in export_msgs {
+            let time = msg.timestamp.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+            if msg.is_system {
+                output.push_str(&format!("[{time}] * {}\n", msg.body));
+            } else {
+                let prefix = if msg.is_edited { "(edited) " } else { "" };
+                output.push_str(&format!("[{time}] <{}> {prefix}{}\n", msg.sender, msg.body));
+                if let Some(ref q) = msg.quote {
+                    output.push_str(&format!("  > <{}> {}\n", q.author, q.body));
+                }
+            }
+        }
+
+        // Write to download dir or home
+        let dir = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let path = dir.join(&filename);
+
+        match std::fs::write(&path, &output) {
+            Ok(()) => {
+                self.status_message = format!("Exported {} messages to {}", export_msgs.len(), path.display());
+            }
+            Err(e) => {
+                self.status_message = format!("Export failed: {e}");
+            }
         }
     }
 

@@ -27,6 +27,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/profile",  alias: "",    args: "",        description: "Edit your Signal profile" },
     CommandInfo { name: "/about",    alias: "",    args: "",        description: "About siggy" },
     CommandInfo { name: "/keybindings", alias: "/kb", args: "",    description: "Configure keybindings" },
+    CommandInfo { name: "/export",   alias: "",    args: "[n]",     description: "Export chat history to text file" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
     CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit siggy" },
 ];
@@ -80,6 +81,8 @@ pub enum InputAction {
     About,
     /// Open keybindings overlay
     Keybindings,
+    /// Export chat history to a text file (optional: last N messages)
+    Export(Option<usize>),
     /// Unknown command
     Unknown(String),
 }
@@ -156,6 +159,16 @@ pub fn parse_input(input: &str) -> InputAction {
         "/profile" => InputAction::Profile,
         "/about" => InputAction::About,
         "/keybindings" | "/kb" => InputAction::Keybindings,
+        "/export" => {
+            if arg.is_empty() {
+                InputAction::Export(None)
+            } else {
+                match arg.parse::<usize>() {
+                    Ok(n) => InputAction::Export(Some(n)),
+                    Err(_) => InputAction::Unknown("/export takes an optional number (e.g. /export 100)".to_string()),
+                }
+            }
+        }
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
