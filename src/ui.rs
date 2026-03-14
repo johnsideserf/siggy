@@ -4135,4 +4135,132 @@ mod snapshot_tests {
         let output = render_to_string(&mut app, 50, 20);
         insta::assert_snapshot!(output);
     }
+
+    // --- Phase 2: Message features ---
+
+    #[test]
+    fn test_quote_replies() {
+        // Alice conversation has a quoted reply at message index 7
+        let mut app = demo_app();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_link_preview() {
+        // Alice's farmer's market link preview renders title/description
+        let mut app = demo_app();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_edited_message() {
+        // Alice conversation has an edited message - verify "(edited)" label
+        let mut app = demo_app();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_styled_text() {
+        // Bob conversation: bold and monospace styled text
+        let mut app = demo_app();
+        app.active_conversation = Some("+15550002222".to_string());
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_reactions() {
+        // Alice conversation: messages with thumbs up, heart, party emoji reactions
+        let mut app = demo_app();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_poll() {
+        // Rust Devs group: poll rendering with question, options, vote counts
+        let mut app = demo_app();
+        app.active_conversation = Some("group_rustdevs".to_string());
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_pinned_message() {
+        // Rust Devs group: "(pinned)" label on the pinned message
+        let mut app = demo_app();
+        app.active_conversation = Some("group_rustdevs".to_string());
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_unread_marker() {
+        // Family group has 2 unread out of 5 messages, last_read_index = 3
+        let mut app = demo_app();
+        app.active_conversation = Some("group_family".to_string());
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    // --- Phase 3: Overlays ---
+
+    #[test]
+    fn test_settings_overlay() {
+        let mut app = demo_app();
+        app.show_settings = true;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_about_overlay() {
+        let mut app = demo_app();
+        app.show_about = true;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    // --- Phase 4: Edge cases ---
+
+    #[test]
+    fn test_empty_conversation() {
+        use crate::app::Conversation;
+        let mut app = demo_app();
+        let empty_id = "+15550009999".to_string();
+        app.conversations.insert(empty_id.clone(), Conversation {
+            name: "Empty".to_string(),
+            id: empty_id.clone(),
+            messages: Vec::new(),
+            unread: 0,
+            is_group: false,
+            expiration_timer: 0,
+            accepted: true,
+        });
+        app.conversation_order.push(empty_id.clone());
+        app.active_conversation = Some(empty_id);
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_message_request() {
+        // Eve's conversation is unaccepted (message request)
+        let mut app = demo_app();
+        app.active_conversation = Some("+15550007777".to_string());
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_disappearing_messages() {
+        // Dave's conversation has disappearing messages with timer icons
+        let mut app = demo_app();
+        app.active_conversation = Some("+15550004444".to_string());
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
 }

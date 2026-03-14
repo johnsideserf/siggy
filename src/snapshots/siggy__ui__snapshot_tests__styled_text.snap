@@ -1,0 +1,34 @@
+---
+source: src/ui.rs
+expression: output
+---
+ Chats               │╭ Bob ───────────────────────────────────────────────────────────────────────╮
+  ? +15550007777     ││[10:05] <Bob> Can you review my PR? It's the auth refactor                  │
+  • ##Family         ││[10:08] <Bob> The key change is in verify_token() — switched from HMAC to   │
+  • Carol            ││Ed25519                                                                     │
+    ##Rust Devs      ││● [10:12] <you> Looks good! Left a few comments on the error handling       │
+▸   Bob              ││[10:15] <Bob> Thanks! I'll address those. Also the migration is             │
+    Alice            ││backwards-compatible so no rush on deploy                                   │
+    Dave             ││  ╭ <you> Looks good! Left a few comments on the error hand…                │
+                     ││[10:20] <Bob> Fixed those error handling bits, PTAL                         │
+                     ││✓ [10:25] <you> LGTM, approved!                                             │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+                     │╭────────────────────────────────────────────────────────────────────────────╮
+                     ││  Type a message...                                                         │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+ [INSERT] │  ● connected │ Bob │ 7 chats

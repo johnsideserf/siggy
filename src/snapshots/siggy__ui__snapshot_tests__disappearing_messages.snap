@@ -1,0 +1,34 @@
+---
+source: src/ui.rs
+expression: output
+---
+ Chats               │╭ Dave ⏱ 1d ─────────────────────────────────────────────────────────────────╮
+  ? +15550007777     ││  Disappearing messages set to 1 day                                        │
+  • ##Family         ││⏱ [08:00] <Dave> Meetup is at the usual place, 7pm                          │
+  • Carol            ││● ⏱ [08:05] <you> Got it, I'll be there                                     │
+    ##Rust Devs      ││⏱ [08:06] <Dave> Bring your laptop if you want to hack on stuff             │
+    Bob              ││                                                                            │
+    Alice            ││                                                                            │
+▸   Dave             ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+                     │╭────────────────────────────────────────────────────────────────────────────╮
+                     ││  Type a message...                                                         │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+ [INSERT] │  ● connected │ Dave │ 7 chats

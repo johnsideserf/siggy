@@ -1,0 +1,34 @@
+---
+source: src/ui.rs
+expression: output
+---
+ Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
+  ? +15550007777     ││[08:00] <Alice> Good morning! How's your day going?                         │
+  • ##Family         ││    👍  1                                                                    │
+  • Carol            ││● ╭ Settings ──────────────────────────────────────╮                        │
+    ##Rust Devs      ││  │  [x] Direct message notifications              │                        │
+    Bob              ││[0│  [x] Group message notifications               │ a run                  │
+▸   Alice            ││● │  [ ] Desktop notifications                     │bed before 7            │
+    Dave             ││[0│  [x] Sidebar visible                           │e habit                 │
+                     ││● │  [x] Inline image previews                     │                        │
+                     ││[0│  [x] Link previews                             │tomatic                 │
+                     ││  │  [ ] Native images (experimental)              │                        │
+                     ││[0│  [ ] Date separators                           │t too                   │
+                     ││✓ │  [x] Read receipts                             │                        │
+                     ││[0│  [x] Receipt colors                            │                        │
+                     ││[0│  [ ] Nerd Font icons                           │/localmarket.example.com│
+                     ││  │  [ ] Verbose reactions                         │                        │
+                     ││  │  [x] Send read receipts                        │ry Saturday…            │
+                     ││  │  [x] Mouse support                             │                        │
+                     ││○ │  [ ] Sidebar on right                          │                        │
+                     ││✓ │  Notification preview: full                    │owded.                  │
+                     ││○ │  Theme: Default                                │                        │
+                     ││○ │  Keybindings: Default                          │                        │
+                     ││○ │  Profile: Default                              │nt to browse early      │
+                     ││[0│                                                │                        │
+                     ││  │  Play a sound for incoming direct messages     │                        │
+                     │╰──╰────────────────────────────────────────────────╯────────────────────────╯
+                     │╭────────────────────────────────────────────────────────────────────────────╮
+                     ││  Type a message...                                                         │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+ [INSERT] │  ● connected │ Alice │ 7 chats

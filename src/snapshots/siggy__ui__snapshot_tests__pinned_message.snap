@@ -1,0 +1,34 @@
+---
+source: src/ui.rs
+expression: output
+---
+ Chats               │╭ ##Rust Devs ───────────────────────────────────────────────────────────────╮
+  ? +15550007777     ││📌  Alice: Has anyone tried the new async trait syntax?                      │
+  • ##Family         ││[10:30] <Alice> (pinned) Has anyone tried the new async trait syntax?       │
+  • Carol            ││    📌  1                                                                    │
+▸   ##Rust Devs      ││[10:32] <Bob> Yeah, it's so much cleaner than the pin-based approach        │
+    Bob              ││[10:35] <Dave> I'm still wrapping my head around it                         │
+    Alice            ││● [10:40] <you> The desugaring docs helped me a lot                         │
+    Dave             ││    ❤️  1  👍  2                                                              │
+                     ││[10:42] <Alice> Can you share the link? @Bob might want it too              │
+                     ││✓ [10:43] <you> Here you go: https://blog.rust-lang.org/async-traits        │
+                     ││  ├ Async Trait Methods in Stable Rust                                      │
+                     ││  ├ A deep dive into the stabilization of async fn in traits                │
+                     ││  ╰ https://blog.rust-lang.org/async-traits                                 │
+                     ││[10:50] <Dave>                                                              │
+                     ││    Tokio       ███████░░░  3 (75%)                                         │
+                     ││    async-std   ░░░░░░░░░░  0 (0%)                                          │
+                     ││    smol        ██░░░░░░░░  1 (25%)                                         │
+                     ││    4 votes · single choice                                                 │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     ││                                                                            │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+                     │╭────────────────────────────────────────────────────────────────────────────╮
+                     ││  Type a message...                                                         │
+                     │╰────────────────────────────────────────────────────────────────────────────╯
+ [INSERT] │  ● connected │ ##Rust Devs │ 7 chats
