@@ -1037,7 +1037,7 @@ async fn run_app(
         }
 
         // Expire stale typing indicators
-        if app.cleanup_typing() {
+        if app.typing.cleanup() {
             needs_redraw = true;
         }
 

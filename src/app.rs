@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use crate::db::Database;
 use crate::image_render;
-use crate::domain::{FilePickerState, SearchAction, SearchState};
+use crate::domain::{FilePickerState, SearchAction, SearchState, TypingState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -307,10 +307,8 @@ pub struct App {
     pub sidebar_width: u16,
     /// Display sidebar on the right side instead of left
     pub sidebar_on_right: bool,
-    /// Per-conversation typing indicators: conv_id → (sender_phone, expiry timestamp).
-    /// Populated: TypingIndicator events (is_typing=true inserts, is_typing=false removes).
-    /// Invalidation: entries expire after 5 seconds via cleanup_typing() called each tick.
-    pub typing_indicators: HashMap<String, (String, Instant)>,
+    /// Typing indicator state (inbound indicators + outbound typing tracking).
+    pub typing: TypingState,
     /// Last-read message index per conversation (for unread marker).
     /// Populated: startup from DB unread counts, then bumped on message insertion and
     /// read sync events. Persisted to SQLite via read_markers table.
@@ -484,10 +482,6 @@ pub struct App {
     pub editing_message: Option<(i64, String)>,
     /// Search overlay state
     pub search: SearchState,
-    /// Whether we've sent a typing-started indicator for the current input
-    pub typing_sent: bool,
-    /// When the last keypress happened (for typing timeout)
-    pub typing_last_keypress: Option<Instant>,
     /// Queued typing-stop request from conversation switches (drained by main loop)
     pub pending_typing_stop: Option<SendRequest>,
     /// Send read receipts to message senders when viewing conversations
@@ -2552,7 +2546,7 @@ impl App {
             account,
             sidebar_width: 22,
             sidebar_on_right: false,
-            typing_indicators: HashMap::new(),
+            typing: TypingState::default(),
             last_read_index: HashMap::new(),
             connected: false,
             loading: true,
@@ -2638,8 +2632,6 @@ impl App {
             show_delete_confirm: false,
             editing_message: None,
             search: SearchState::default(),
-            typing_sent: false,
-            typing_last_keypress: None,
             pending_typing_stop: None,
             send_read_receipts: true,
             pending_read_receipts: Vec::new(),
@@ -2920,15 +2912,6 @@ impl App {
             .push((sender_id.to_string(), vec![timestamp_ms]));
     }
 
-    /// Remove typing indicators older than 5 seconds
-    pub fn cleanup_typing(&mut self) -> bool {
-        let before = self.typing_indicators.len();
-        let now = Instant::now();
-        self.typing_indicators
-            .retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 5);
-        self.typing_indicators.len() != before
-    }
-
     /// Build a Typing SendRequest for the active conversation, or None if no conversation is active.
     fn build_typing_request(&self, stop: bool) -> Option<SendRequest> {
         let conv_id = self.active_conversation.as_ref()?;
@@ -2947,19 +2930,11 @@ impl App {
     /// Check if the typing indicator has timed out (5 seconds since last keypress).
     /// Returns a typing-stop SendRequest if so, and resets state.
     pub fn check_typing_timeout(&mut self) -> Option<SendRequest> {
-        if !self.typing_sent {
-            return None;
+        if self.typing.check_timeout() {
+            self.build_typing_request(true)
+        } else {
+            None
         }
-        let elapsed = self
-            .typing_last_keypress
-            .map(|t| t.elapsed() > std::time::Duration::from_secs(5))
-            .unwrap_or(false);
-        if elapsed {
-            self.typing_sent = false;
-            self.typing_last_keypress = None;
-            return self.build_typing_request(true);
-        }
-        None
     }
 
     /// Clear image state so images are retransmitted.
@@ -2974,11 +2949,9 @@ impl App {
     /// Reset typing state and queue a stop request if we were typing.
     /// Call this before switching conversations.
     fn reset_typing_with_stop(&mut self) {
-        if self.typing_sent {
+        if self.typing.reset() {
             self.pending_typing_stop = self.build_typing_request(true);
         }
-        self.typing_sent = false;
-        self.typing_last_keypress = None;
     }
 
     /// Handle global keys that work in both Normal and Insert mode.
@@ -3307,9 +3280,7 @@ impl App {
                 self.autocomplete_visible = false;
                 self.reply_target = None;
                 self.editing_message = None;
-                if self.typing_sent {
-                    self.typing_sent = false;
-                    self.typing_last_keypress = None;
+                if self.typing.reset() {
                     return self.build_typing_request(true);
                 }
                 None
@@ -3318,20 +3289,18 @@ impl App {
                 self.input_buffer.insert(self.input_cursor, '\n');
                 self.input_cursor += 1;
                 self.autocomplete_visible = false;
-                self.typing_last_keypress = Some(Instant::now());
-                if !self.typing_sent
+                self.typing.last_keypress = Some(Instant::now());
+                if !self.typing.sent
                     && !self.input_buffer.starts_with('/')
                     && self.active_conversation.as_ref().is_some_and(|id| !self.blocked_conversations.contains(id))
                 {
-                    self.typing_sent = true;
+                    self.typing.sent = true;
                     return self.build_typing_request(false);
                 }
                 None
             }
             Some(KeyAction::SendMessage) => {
-                let was_typing = self.typing_sent;
-                self.typing_sent = false;
-                self.typing_last_keypress = None;
+                let was_typing = self.typing.reset();
                 let result = self.handle_input();
                 if result.is_some() {
                     result
@@ -3453,18 +3422,18 @@ impl App {
                     self.update_autocomplete();
                 }
                 if matches!(code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete) {
-                    self.typing_last_keypress = Some(Instant::now());
-                    if self.input_buffer.is_empty() && self.typing_sent {
-                        self.typing_sent = false;
-                        self.typing_last_keypress = None;
+                    self.typing.last_keypress = Some(Instant::now());
+                    if self.input_buffer.is_empty() && self.typing.sent {
+                        self.typing.sent = false;
+                        self.typing.last_keypress = None;
                         return self.build_typing_request(true);
                     }
-                    if !self.typing_sent
+                    if !self.typing.sent
                         && !self.input_buffer.is_empty()
                         && !self.input_buffer.starts_with('/')
                         && self.active_conversation.as_ref().is_some_and(|id| !self.blocked_conversations.contains(id))
                     {
-                        self.typing_sent = true;
+                        self.typing.sent = true;
                         return self.build_typing_request(false);
                     }
                 }
@@ -3495,9 +3464,9 @@ impl App {
                 // Key by group ID for group messages, sender phone for 1:1
                 let conv_key = group_id.as_ref().unwrap_or(&sender).clone();
                 if is_typing {
-                    self.typing_indicators.insert(conv_key, (sender.clone(), Instant::now()));
+                    self.typing.indicators.insert(conv_key, (sender.clone(), Instant::now()));
                 } else {
-                    self.typing_indicators.remove(&conv_key);
+                    self.typing.indicators.remove(&conv_key);
                 }
             }
             SignalEvent::ReactionReceived {
@@ -5880,13 +5849,13 @@ impl App {
         self.input_cursor += text.len();
         // Single autocomplete + typing indicator update
         self.update_autocomplete();
-        self.typing_last_keypress = Some(Instant::now());
-        if !self.typing_sent
+        self.typing.last_keypress = Some(Instant::now());
+        if !self.typing.sent
             && !self.input_buffer.is_empty()
             && !self.input_buffer.starts_with('/')
             && self.active_conversation.as_ref().is_some_and(|id| !self.blocked_conversations.contains(id))
         {
-            self.typing_sent = true;
+            self.typing.sent = true;
             return self.build_typing_request(false);
         }
         None
@@ -9494,7 +9463,7 @@ mod tests {
             is_typing: true,
             group_id: None,
         });
-        assert!(app.typing_indicators.contains_key("+1"));
+        assert!(app.typing.indicators.contains_key("+1"));
         assert_eq!(app.contact_names.get("+1").unwrap(), "Alice");
 
         app.handle_signal_event(SignalEvent::TypingIndicator {
@@ -9503,7 +9472,7 @@ mod tests {
             is_typing: false,
             group_id: None,
         });
-        assert!(!app.typing_indicators.contains_key("+1"));
+        assert!(!app.typing.indicators.contains_key("+1"));
     }
 
     // --- Error event ---
@@ -9759,12 +9728,12 @@ mod tests {
             group_id: Some("group-a".to_string()),
         });
 
-        assert!(app.typing_indicators.contains_key("group-a"),
+        assert!(app.typing.indicators.contains_key("group-a"),
             "typing indicator should be keyed by group ID");
-        assert!(!app.typing_indicators.contains_key("+1"),
+        assert!(!app.typing.indicators.contains_key("+1"),
             "typing indicator must NOT be keyed by sender phone");
         // Value stores the sender phone so we can resolve the display name
-        assert_eq!(app.typing_indicators["group-a"].0, "+1");
+        assert_eq!(app.typing.indicators["group-a"].0, "+1");
     }
 
     #[rstest]
@@ -9781,7 +9750,7 @@ mod tests {
         });
 
         // Viewing group-b: no indicator should be visible for it
-        assert!(!app.typing_indicators.contains_key("group-b"),
+        assert!(!app.typing.indicators.contains_key("group-b"),
             "group-a typing must not bleed into group-b");
     }
 
@@ -9795,7 +9764,7 @@ mod tests {
             group_id: None,
         });
 
-        assert!(app.typing_indicators.contains_key("+1"),
+        assert!(app.typing.indicators.contains_key("+1"),
             "1:1 typing indicator should be keyed by sender phone");
     }
 }

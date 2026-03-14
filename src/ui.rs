@@ -1057,7 +1057,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Append typing indicator as the last line inside the message area
     if let Some(ref conv_id) = app.active_conversation {
         let typers: Vec<String> = app
-            .typing_indicators
+            .typing.indicators
             .iter()
             .filter(|(key, _)| *key == conv_id)
             .map(|(_, (sender, _))| {
