@@ -575,8 +575,18 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     let max_name_width = (area.width as usize).saturating_sub(5); // "• # " + margin
 
-    let items: Vec<ListItem> = app
-        .conversation_order
+    // Use filtered list when sidebar filter is active
+    let display_order: Vec<String> = if app.sidebar_filter_active {
+        if app.sidebar_filter.is_empty() {
+            app.conversation_order.clone()
+        } else {
+            app.sidebar_filtered.clone()
+        }
+    } else {
+        app.conversation_order.clone()
+    };
+
+    let items: Vec<ListItem> = display_order
         .iter()
         .map(|id| {
             let conv = &app.conversations[id];
@@ -645,11 +655,25 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let border_side = if app.sidebar_on_right { Borders::LEFT } else { Borders::RIGHT };
+    let title = if app.sidebar_filter_active {
+        if app.sidebar_filter.is_empty() {
+            " /_ ".to_string()
+        } else {
+            format!(" /{} ", app.sidebar_filter)
+        }
+    } else {
+        " Chats ".to_string()
+    };
+    let title_style = if app.sidebar_filter_active {
+        Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+    };
     let block = Block::default()
         .borders(border_side)
         .border_type(BorderType::Rounded)
-        .title(" Chats ")
-        .title_style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD));
+        .title(title)
+        .title_style(title_style);
     app.mouse_sidebar_inner = Some(block.inner(area));
 
     let sidebar = List::new(items).block(block);
@@ -4230,6 +4254,16 @@ mod snapshot_tests {
         // Dave's conversation has disappearing messages with timer icons
         let mut app = demo_app();
         app.active_conversation = Some("+15550004444".to_string());
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_sidebar_filter() {
+        let mut app = demo_app();
+        app.sidebar_filter_active = true;
+        app.sidebar_filter = "ali".to_string();
+        app.refresh_sidebar_filter();
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }

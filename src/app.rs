@@ -307,6 +307,12 @@ pub struct App {
     pub sidebar_width: u16,
     /// Display sidebar on the right side instead of left
     pub sidebar_on_right: bool,
+    /// Sidebar filter mode active
+    pub sidebar_filter_active: bool,
+    /// Current filter text for sidebar
+    pub sidebar_filter: String,
+    /// Filtered conversation IDs matching the filter
+    pub sidebar_filtered: Vec<String>,
     /// Typing indicator state (inbound indicators + outbound typing tracking).
     pub typing: TypingState,
     /// Last-read message index per conversation (for unread marker).
@@ -2546,6 +2552,9 @@ impl App {
             account,
             sidebar_width: 22,
             sidebar_on_right: false,
+            sidebar_filter_active: false,
+            sidebar_filter: String::new(),
+            sidebar_filtered: Vec::new(),
             typing: TypingState::default(),
             last_read_index: HashMap::new(),
             connected: false,
@@ -2845,6 +2854,62 @@ impl App {
         self.sidebar_width = new_width;
     }
 
+    /// Refresh the filtered sidebar list based on the current filter text.
+    pub(crate) fn refresh_sidebar_filter(&mut self) {
+        let query = self.sidebar_filter.to_lowercase();
+        self.sidebar_filtered = self
+            .conversation_order
+            .iter()
+            .filter(|id| {
+                self.conversations
+                    .get(*id)
+                    .is_some_and(|c| c.name.to_lowercase().contains(&query))
+            })
+            .cloned()
+            .collect();
+    }
+
+    /// Clear sidebar filter state and restore the full list.
+    fn clear_sidebar_filter(&mut self) {
+        self.sidebar_filter_active = false;
+        self.sidebar_filter.clear();
+        self.sidebar_filtered.clear();
+    }
+
+    /// Handle a key press while sidebar filter is active.
+    fn handle_sidebar_filter_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.clear_sidebar_filter();
+            }
+            KeyCode::Enter => {
+                // Select the first matching conversation
+                let target = if self.sidebar_filtered.is_empty() {
+                    None
+                } else {
+                    Some(self.sidebar_filtered[0].clone())
+                };
+                self.clear_sidebar_filter();
+                if let Some(conv_id) = target {
+                    self.join_conversation(&conv_id);
+                }
+            }
+            KeyCode::Char(c) => {
+                self.sidebar_filter.push(c);
+                self.refresh_sidebar_filter();
+            }
+            KeyCode::Backspace => {
+                self.sidebar_filter.pop();
+                if self.sidebar_filter.is_empty() {
+                    self.clear_sidebar_filter();
+                } else {
+                    self.refresh_sidebar_filter();
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Mark current conversation as fully read
     pub fn mark_read(&mut self) {
         if let Some(ref conv_id) = self.active_conversation {
@@ -2997,6 +3062,13 @@ impl App {
                 self.focused_msg_index = None;
                 true
             }
+            Some(KeyAction::SidebarSearch) => {
+                self.sidebar_visible = true;
+                self.sidebar_filter_active = true;
+                self.sidebar_filter.clear();
+                self.sidebar_filtered.clear();
+                true
+            }
             _ => false,
         }
     }
@@ -3006,6 +3078,10 @@ impl App {
     /// command triggers a message send. Returns `None` otherwise.
     /// Returns `Ok(true)` if the key was consumed by an overlay.
     pub fn handle_overlay_key(&mut self, code: KeyCode) -> (bool, Option<SendRequest>) {
+        if self.sidebar_filter_active {
+            self.handle_sidebar_filter_key(code);
+            return (true, None);
+        }
         if self.show_poll_vote {
             let send = self.handle_poll_vote_key(code);
             return (true, send);
@@ -3177,6 +3253,13 @@ impl App {
                 self.input_cursor = 1;
                 self.mode = InputMode::Insert;
                 self.update_autocomplete();
+                None
+            }
+            Some(KeyAction::SidebarSearch) => {
+                self.sidebar_visible = true;
+                self.sidebar_filter_active = true;
+                self.sidebar_filter.clear();
+                self.sidebar_filtered.clear();
                 None
             }
             Some(KeyAction::ClearInput) => {
@@ -6062,6 +6145,7 @@ impl App {
         if self.conversation_order.is_empty() {
             return;
         }
+        self.clear_sidebar_filter();
         self.mark_read();
         self.save_scroll_position();
         self.pending_attachment = None;
@@ -6089,6 +6173,7 @@ impl App {
         if self.conversation_order.is_empty() {
             return;
         }
+        self.clear_sidebar_filter();
         self.mark_read();
         self.save_scroll_position();
         self.pending_attachment = None;
@@ -6334,8 +6419,14 @@ impl App {
         if let Some(inner) = self.mouse_sidebar_inner {
             if is_in_rect(col, row, inner) {
                 let index = (row - inner.y) as usize;
-                if index < self.conversation_order.len() {
-                    let conv_id = self.conversation_order[index].clone();
+                let sidebar_list = if self.sidebar_filter_active && !self.sidebar_filtered.is_empty() {
+                    &self.sidebar_filtered
+                } else {
+                    &self.conversation_order
+                };
+                if index < sidebar_list.len() {
+                    let conv_id = sidebar_list[index].clone();
+                    self.clear_sidebar_filter();
                     self.join_conversation(&conv_id);
                 }
                 return;
@@ -6383,9 +6474,12 @@ impl App {
             Some(pos) => pos,
             None => return,
         };
-        
+
         self.conversation_order.remove(pos);
         self.conversation_order.insert(0, id.to_string());
+        if self.sidebar_filter_active {
+            self.refresh_sidebar_filter();
+        }
     }
 }
 

@@ -55,6 +55,7 @@ pub enum KeyAction {
     PrevSearchResult,
     OpenActionMenu,
     PinMessage,
+    SidebarSearch,
     // Insert
     ExitInsert,
     SendMessage,
@@ -469,6 +470,7 @@ pub const NORMAL_ACTIONS: &[KeyAction] = &[
     KeyAction::PrevSearchResult,
     KeyAction::OpenActionMenu,
     KeyAction::PinMessage,
+    KeyAction::SidebarSearch,
 ];
 
 pub const INSERT_ACTIONS: &[KeyAction] = &[
@@ -522,6 +524,7 @@ pub fn action_label(action: KeyAction) -> &'static str {
         KeyAction::PrevSearchResult => "Previous search match",
         KeyAction::OpenActionMenu => "Action menu",
         KeyAction::PinMessage => "Pin/unpin message",
+        KeyAction::SidebarSearch => "Filter sidebar",
         KeyAction::ExitInsert => "Normal mode",
         KeyAction::SendMessage => "Send message",
         KeyAction::InsertNewline => "Insert newline",
@@ -591,6 +594,7 @@ pub fn default_profile() -> KeyBindings {
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('N'), KeyAction::PrevSearchResult);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Enter, KeyAction::OpenActionMenu);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('p'), KeyAction::PinMessage);
+    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('s'), KeyAction::SidebarSearch);
 
     // --- Insert ---
     bind(&mut insert, KeyModifiers::NONE, KeyCode::Esc, KeyAction::ExitInsert);
@@ -652,6 +656,7 @@ pub fn emacs_profile() -> KeyBindings {
     bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('n'), KeyAction::NextSearchResult);
     bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('p'), KeyAction::PrevSearchResult);
     bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('m'), KeyAction::OpenActionMenu);
+    bind(&mut global, KeyModifiers::ALT, KeyCode::Char('s'), KeyAction::SidebarSearch);
 
     KeyBindings {
         profile_name: "Emacs".into(),
@@ -697,6 +702,7 @@ pub fn minimal_profile() -> KeyBindings {
     bind(&mut insert, KeyModifiers::NONE, KeyCode::F(6), KeyAction::DeleteMessage);
     bind(&mut insert, KeyModifiers::NONE, KeyCode::F(7), KeyAction::ForwardMessage);
     bind(&mut insert, KeyModifiers::NONE, KeyCode::F(8), KeyAction::OpenActionMenu);
+    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Char('s'), KeyAction::SidebarSearch);
 
     KeyBindings {
         profile_name: "Minimal".into(),
