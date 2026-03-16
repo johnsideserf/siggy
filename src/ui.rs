@@ -12,6 +12,7 @@ use ratatui::{
 
 use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
 use crate::keybindings::{self, BindingMode, KeyAction};
+use crate::list_overlay;
 use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction, StyleType, TrustLevel};
 use crate::image_render::{self, ImageProtocol};
 use crate::input::{COMMANDS, format_compact_duration};
@@ -3586,7 +3587,7 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     for (i, (_seconds, label)) in PIN_DURATIONS.iter().enumerate() {
         let style = if i == app.pin_duration_index {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            list_overlay::selection_style(theme.bg_selected, theme.fg)
         } else {
             Style::default().fg(theme.fg)
         };
@@ -3597,11 +3598,7 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " j/k  Enter  Esc",
-        Style::default().fg(theme.fg_muted),
-    )));
+    list_overlay::append_footer(&mut lines, item_count, " j/k  Enter  Esc", theme.fg_muted);
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -4143,7 +4140,7 @@ mod tests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
-    use crate::app::{App, InputMode};
+    use crate::app::{App, InputMode, PinPending};
     use crate::db::Database;
     use crate::image_render::ImageProtocol;
     use chrono::NaiveDate;
@@ -4349,6 +4346,21 @@ mod snapshot_tests {
         app.sidebar_filter_active = true;
         app.sidebar_filter = "ali".to_string();
         app.refresh_sidebar_filter();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_pin_duration_overlay() {
+        let mut app = demo_app();
+        app.show_pin_duration = true;
+        app.pin_duration_index = 1;
+        app.pin_pending = Some(PinPending {
+            conv_id: "+15551234567".to_string(),
+            is_group: false,
+            target_author: "+15551234567".to_string(),
+            target_timestamp: 1000,
+        });
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }

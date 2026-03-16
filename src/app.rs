@@ -1,5 +1,6 @@
 use chrono::{DateTime, Local, Utc};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crate::list_overlay::{classify_list_key, ListKeyAction};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::collections::{HashMap, HashSet};
@@ -4377,18 +4378,18 @@ impl App {
 
     /// Handle a key press while the pin duration picker overlay is open.
     pub fn handle_pin_duration_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match classify_list_key(code, false) {
+            ListKeyAction::Down => {
                 if self.pin_duration_index < PIN_DURATIONS.len() - 1 {
                     self.pin_duration_index += 1;
                 }
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.pin_duration_index = self.pin_duration_index.saturating_sub(1);
                 None
             }
-            KeyCode::Enter => {
+            ListKeyAction::Select => {
                 let duration = PIN_DURATIONS[self.pin_duration_index].0;
                 self.show_pin_duration = false;
                 let pending = self.pin_pending.take()?;
@@ -4418,7 +4419,7 @@ impl App {
                     pin_duration: duration,
                 })
             }
-            KeyCode::Esc => {
+            ListKeyAction::Close => {
                 self.show_pin_duration = false;
                 self.pin_pending = None;
                 None
