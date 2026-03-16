@@ -2608,15 +2608,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
-    let footer_lines = 2; // footer + empty line
-    let visible_rows = inner_height.saturating_sub(footer_lines);
-
-    // Scroll the list so the selected item is always visible
-    let scroll_offset = if app.contacts_index >= visible_rows {
-        app.contacts_index - visible_rows + 1
-    } else {
-        0
-    };
+    let (visible_rows, scroll_offset) = list_overlay::scroll_layout(inner_height, 2, app.contacts_index);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -2648,10 +2640,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
             let display_name = truncate(name, name_max);
 
             let name_style = if is_selected {
-                Style::default()
-                    .bg(theme.bg_selected)
-                    .fg(theme.fg)
-                    .add_modifier(Modifier::BOLD)
+                list_overlay::selection_style(theme.bg_selected, theme.fg)
             } else if has_conversation {
                 Style::default().fg(theme.fg_secondary)
             } else {
@@ -2676,16 +2665,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Pad to fill visible_rows so footer is always at the bottom
-    while lines.len() < visible_rows {
-        lines.push(Line::from(""));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  j/k navigate  |  Enter select  |  Esc close",
-        Style::default().fg(theme.fg_muted),
-    )));
+    list_overlay::append_footer(&mut lines, visible_rows, "  j/k navigate  |  Enter select  |  Esc close", theme.fg_muted);
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -4363,6 +4343,19 @@ mod snapshot_tests {
         app.show_action_menu = true;
         app.action_menu_index = 0;
         app.focused_msg_index = Some(0);
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_contacts_overlay() {
+        let mut app = demo_app();
+        app.show_contacts = true;
+        app.contacts_index = 0;
+        app.contacts_filtered = vec![
+            ("+15551234567".to_string(), "Alice".to_string()),
+            ("+15559876543".to_string(), "Bob".to_string()),
+        ];
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }

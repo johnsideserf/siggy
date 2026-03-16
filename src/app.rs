@@ -1,6 +1,6 @@
 use chrono::{DateTime, Local, Utc};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use crate::list_overlay::{classify_list_key, ListKeyAction};
+use crate::list_overlay::{self, classify_list_key, ListKeyAction};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::collections::{HashMap, HashSet};
@@ -1512,12 +1512,7 @@ impl App {
             .collect();
         contacts.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
         self.contacts_filtered = contacts;
-        // Clamp index
-        if self.contacts_filtered.is_empty() {
-            self.contacts_index = 0;
-        } else if self.contacts_index >= self.contacts_filtered.len() {
-            self.contacts_index = self.contacts_filtered.len() - 1;
-        }
+        list_overlay::clamp_index(&mut self.contacts_index, self.contacts_filtered.len());
     }
 
     /// Build the list of available group menu actions (context-dependent).
@@ -2416,18 +2411,18 @@ impl App {
     }
 
     pub fn handle_contacts_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match classify_list_key(code, true) {
+            ListKeyAction::Down => {
                 if !self.contacts_filtered.is_empty()
                     && self.contacts_index < self.contacts_filtered.len() - 1
                 {
                     self.contacts_index += 1;
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.contacts_index = self.contacts_index.saturating_sub(1);
             }
-            KeyCode::Enter => {
+            ListKeyAction::Select => {
                 if let Some((number, _)) = self.contacts_filtered.get(self.contacts_index) {
                     let number = number.clone();
                     self.show_contacts = false;
@@ -2435,23 +2430,19 @@ impl App {
                     self.join_conversation(&number);
                 }
             }
-            KeyCode::Esc => {
+            ListKeyAction::Close => {
                 self.show_contacts = false;
                 self.contacts_filter.clear();
             }
-            KeyCode::Backspace => {
-                self.contacts_filter.pop();
-                self.refresh_contacts_filter();
-            }
-            KeyCode::Char(c) => {
-                // j/k are handled above for navigation, so only printable chars
-                // that aren't j/k fall through to here — but since j/k are matched
-                // first, we need a different approach: use the filter for all chars
-                // Actually j/k are already matched above, so this won't fire for them
+            ListKeyAction::FilterPush(c) => {
                 self.contacts_filter.push(c);
                 self.refresh_contacts_filter();
             }
-            _ => {}
+            ListKeyAction::FilterPop => {
+                self.contacts_filter.pop();
+                self.refresh_contacts_filter();
+            }
+            ListKeyAction::None => {}
         }
     }
 
