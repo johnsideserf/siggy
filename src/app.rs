@@ -1,6 +1,5 @@
 use chrono::{DateTime, Local, Utc};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use crate::list_overlay::{self, classify_list_key, ListKeyAction};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::collections::{HashMap, HashSet};
@@ -10,6 +9,7 @@ use std::time::Instant;
 
 use crate::db::Database;
 use crate::image_render;
+use crate::list_overlay::{self, classify_list_key, ListKeyAction};
 use crate::domain::{FilePickerState, SearchAction, SearchState, TypingState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
