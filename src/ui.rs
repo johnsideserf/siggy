@@ -4356,4 +4356,14 @@ mod snapshot_tests {
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }
+
+    #[test]
+    fn test_action_menu_overlay() {
+        let mut app = demo_app();
+        app.show_action_menu = true;
+        app.action_menu_index = 0;
+        app.focused_msg_index = Some(0);
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
 }

@@ -2091,18 +2091,18 @@ impl App {
             self.show_action_menu = false;
             return None;
         }
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match classify_list_key(code, false) {
+            ListKeyAction::Down => {
                 if self.action_menu_index < item_count - 1 {
                     self.action_menu_index += 1;
                 }
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.action_menu_index = self.action_menu_index.saturating_sub(1);
                 None
             }
-            KeyCode::Enter => {
+            ListKeyAction::Select => {
                 let items = self.action_menu_items();
                 if let Some(action) = items.get(self.action_menu_index) {
                     let hint = action.key_hint;
@@ -2113,31 +2113,36 @@ impl App {
                     None
                 }
             }
-            KeyCode::Char(c @ ('q' | 'e' | 'r' | 'f' | 'y' | 'd' | 'p' | 'v' | 'x')) => {
-                let hint = match c {
-                    'q' => "q",
-                    'e' => "e",
-                    'r' => "r",
-                    'f' => "f",
-                    'y' => "y",
-                    'd' => "d",
-                    'p' => "p",
-                    'v' => "v",
-                    'x' => "x",
-                    _ => unreachable!(),
-                };
-                // Only execute if this action is available in the menu
-                let items = self.action_menu_items();
-                if items.iter().any(|a| a.key_hint == hint) {
-                    self.show_action_menu = false;
-                    self.execute_action_by_hint(hint)
+            ListKeyAction::Close => {
+                self.show_action_menu = false;
+                None
+            }
+            ListKeyAction::None => {
+                // Action menu shortcut keys
+                if let KeyCode::Char(c) = code {
+                    let hint = match c {
+                        'q' => "q",
+                        'e' => "e",
+                        'r' => "r",
+                        'f' => "f",
+                        'y' => "y",
+                        'd' => "d",
+                        'p' => "p",
+                        'v' => "v",
+                        'x' => "x",
+                        _ => return None,
+                    };
+                    // Only execute if this action is available in the menu
+                    let items = self.action_menu_items();
+                    if items.iter().any(|a| a.key_hint == hint) {
+                        self.show_action_menu = false;
+                        self.execute_action_by_hint(hint)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            }
-            KeyCode::Esc => {
-                self.show_action_menu = false;
-                None
             }
             _ => None,
         }
