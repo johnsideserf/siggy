@@ -106,6 +106,7 @@ pub struct PollVote {
 
 /// Events received from signal-cli
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum SignalEvent {
     MessageReceived(SignalMessage),
     ReceiptReceived {
@@ -290,6 +291,7 @@ impl SignalEvent {
 pub struct SignalMessage {
     pub source: String,
     pub source_name: Option<String>,
+    pub source_uuid: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub body: Option<String>,
     pub attachments: Vec<Attachment>,

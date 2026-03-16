@@ -3736,6 +3736,12 @@ impl App {
             if let Some(ref name) = msg.source_name {
                 self.contact_names.entry(msg.source.clone()).or_insert_with(|| name.clone());
             }
+            // Populate UUID->name for @mention resolution
+            if let (Some(ref uuid), Some(ref name)) = (&msg.source_uuid, &msg.source_name) {
+                if !name.is_empty() {
+                    self.uuid_to_name.entry(uuid.clone()).or_insert_with(|| name.clone());
+                }
+            }
         }
 
         // Resolve conversation name: prefer message metadata, then contact lookup, then raw ID
@@ -4686,6 +4692,14 @@ impl App {
             // Store UUID↔phone mappings from group members
             for (phone, uuid) in &group.member_uuids {
                 self.number_to_uuid.entry(phone.clone()).or_insert_with(|| uuid.clone());
+            }
+            // Populate UUID->name from group members (phone->uuid + phone->name)
+            for (phone, uuid) in &group.member_uuids {
+                if let Some(name) = self.contact_names.get(phone) {
+                    if !name.is_empty() {
+                        self.uuid_to_name.entry(uuid.clone()).or_insert_with(|| name.clone());
+                    }
+                }
             }
             // Store group for @mention member lookup
             self.groups.insert(group.id.clone(), group.clone());
@@ -7146,6 +7160,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+15551234567".to_string(),
             source_name: None,
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hey".to_string()),
             attachments: vec![],
@@ -7177,6 +7192,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hi".to_string()),
             attachments: vec![],
@@ -7216,6 +7232,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: None,
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hello!".to_string()),
             attachments: vec![],
@@ -7249,6 +7266,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hey family".to_string()),
             attachments: vec![],
@@ -7283,6 +7301,7 @@ mod tests {
             let msg = SignalMessage {
                 source: "+1".to_string(),
                 source_name: Some("Alice".to_string()),
+                source_uuid: None,
                 timestamp: chrono::Utc::now(),
                 body: Some("msg".to_string()),
                 attachments: vec![],
@@ -8189,6 +8208,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hello".to_string()),
             attachments: vec![],
@@ -8282,6 +8302,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hello".to_string()),
             attachments: vec![],
@@ -8322,6 +8343,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hello".to_string()),
             attachments: vec![],
@@ -8370,6 +8392,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hello".to_string()),
             attachments: vec![],
@@ -8759,6 +8782,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("\u{FFFC} check this".to_string()),
             attachments: vec![],
@@ -8923,6 +8947,7 @@ mod tests {
         let msg1 = SignalMessage {
             source: "+15551234567".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("first".to_string()),
             attachments: vec![],
@@ -8950,6 +8975,7 @@ mod tests {
         let msg2 = SignalMessage {
             source: "+15551234567".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("second".to_string()),
             attachments: vec![],
@@ -8979,6 +9005,7 @@ mod tests {
         let msg = |body: &str, ts_ms: i64| SignalMessage {
             source: "+15551234567".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: DateTime::from_timestamp_millis(ts_ms).unwrap(),
             body: Some(body.to_string()),
             attachments: vec![],
@@ -9016,6 +9043,7 @@ mod tests {
         let msg = |body: &str, ts_ms: i64| SignalMessage {
             source: "+15551234567".to_string(),
             source_name: Some("Alice".to_string()),
+            source_uuid: None,
             timestamp: DateTime::from_timestamp_millis(ts_ms).unwrap(),
             body: Some(body.to_string()),
             attachments: vec![],
@@ -9286,6 +9314,7 @@ mod tests {
         SignalMessage {
             source: source.to_string(),
             source_name: None,
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hello".to_string()),
             attachments: vec![],
@@ -9319,6 +9348,7 @@ mod tests {
         let msg = SignalMessage {
             source: "+10000000000".to_string(),
             source_name: None,
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: Some("hey".to_string()),
             attachments: vec![],
@@ -9691,6 +9721,7 @@ mod tests {
         SignalMessage {
             source: source.to_string(),
             source_name: None,
+            source_uuid: None,
             timestamp: chrono::Utc::now(),
             body: body.map(|s| s.to_string()),
             attachments: vec![],

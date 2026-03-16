@@ -1578,6 +1578,11 @@ fn parse_data_message(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let source_uuid = envelope
+        .get("sourceUuid")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     let timestamp_ms = data
         .get("timestamp")
         .and_then(|v| v.as_i64())
@@ -1649,6 +1654,7 @@ fn parse_data_message(
     Some(SignalEvent::MessageReceived(SignalMessage {
         source,
         source_name,
+        source_uuid,
         timestamp,
         body,
         attachments,
@@ -2010,6 +2016,7 @@ fn parse_sent_sync(
     Some(SignalEvent::MessageReceived(SignalMessage {
         source,
         source_name: None,
+        source_uuid: None,
         timestamp,
         body,
         attachments,
