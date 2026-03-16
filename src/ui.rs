@@ -12,6 +12,7 @@ use ratatui::{
 
 use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
 use crate::keybindings::{self, BindingMode, KeyAction};
+use crate::list_overlay;
 use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction, StyleType, TrustLevel};
 use crate::image_render::{self, ImageProtocol};
 use crate::input::{COMMANDS, format_compact_duration};
@@ -2607,15 +2608,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
-    let footer_lines = 2; // footer + empty line
-    let visible_rows = inner_height.saturating_sub(footer_lines);
-
-    // Scroll the list so the selected item is always visible
-    let scroll_offset = if app.contacts_index >= visible_rows {
-        app.contacts_index - visible_rows + 1
-    } else {
-        0
-    };
+    let (visible_rows, scroll_offset) = list_overlay::scroll_layout(inner_height, 2, app.contacts_index);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -2647,10 +2640,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
             let display_name = truncate(name, name_max);
 
             let name_style = if is_selected {
-                Style::default()
-                    .bg(theme.bg_selected)
-                    .fg(theme.fg)
-                    .add_modifier(Modifier::BOLD)
+                list_overlay::selection_style(theme.bg_selected, theme.fg)
             } else if has_conversation {
                 Style::default().fg(theme.fg_secondary)
             } else {
@@ -2675,16 +2665,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Pad to fill visible_rows so footer is always at the bottom
-    while lines.len() < visible_rows {
-        lines.push(Line::from(""));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  j/k navigate  |  Enter select  |  Esc close",
-        Style::default().fg(theme.fg_muted),
-    )));
+    list_overlay::append_footer(&mut lines, visible_rows, "  j/k navigate  |  Enter select  |  Esc close", theme.fg_muted);
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -3227,15 +3208,7 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize;
-    let footer_lines = 2;
-    let visible_rows = inner_height.saturating_sub(footer_lines);
-
-    // Scroll the list so the selected item is always visible
-    let scroll_offset = if app.theme_index >= visible_rows {
-        app.theme_index - visible_rows + 1
-    } else {
-        0
-    };
+    let (visible_rows, scroll_offset) = list_overlay::scroll_layout(inner_height, 2, app.theme_index);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -3247,7 +3220,7 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
 
         let marker = if is_active { "[*]" } else { "[ ]" };
         let row_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            list_overlay::selection_style(theme.bg_selected, theme.fg)
         } else {
             Style::default().fg(theme.fg)
         };
@@ -3280,16 +3253,7 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    // Pad to fill visible rows
-    while lines.len() < visible_rows {
-        lines.push(Line::from(""));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  j/k navigate  |  Enter apply  |  Esc cancel",
-        Style::default().fg(theme.fg_muted),
-    )));
+    list_overlay::append_footer(&mut lines, visible_rows, "  j/k navigate  |  Enter apply  |  Esc cancel", theme.fg_muted);
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -3586,7 +3550,7 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     for (i, (_seconds, label)) in PIN_DURATIONS.iter().enumerate() {
         let style = if i == app.pin_duration_index {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            list_overlay::selection_style(theme.bg_selected, theme.fg)
         } else {
             Style::default().fg(theme.fg)
         };
@@ -3597,11 +3561,7 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " j/k  Enter  Esc",
-        Style::default().fg(theme.fg_muted),
-    )));
+    list_overlay::append_footer(&mut lines, item_count, " j/k  Enter  Esc", theme.fg_muted);
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -3894,7 +3854,7 @@ fn draw_forward(frame: &mut Frame, app: &App, area: Rect) {
             let is_selected = actual_idx == app.forward_index;
             let prefix = if is_selected { "> " } else { "  " };
             let style = if is_selected {
-                Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                list_overlay::selection_style(theme.bg_selected, theme.fg)
             } else {
                 Style::default().fg(theme.fg)
             };
@@ -4143,7 +4103,7 @@ mod tests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
-    use crate::app::{App, InputMode};
+    use crate::app::{App, InputMode, PinPending};
     use crate::db::Database;
     use crate::image_render::ImageProtocol;
     use chrono::NaiveDate;
@@ -4349,6 +4309,67 @@ mod snapshot_tests {
         app.sidebar_filter_active = true;
         app.sidebar_filter = "ali".to_string();
         app.refresh_sidebar_filter();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_theme_picker_overlay() {
+        let mut app = demo_app();
+        app.show_theme_picker = true;
+        app.theme_index = 1;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_pin_duration_overlay() {
+        let mut app = demo_app();
+        app.show_pin_duration = true;
+        app.pin_duration_index = 1;
+        app.pin_pending = Some(PinPending {
+            conv_id: "+15551234567".to_string(),
+            is_group: false,
+            target_author: "+15551234567".to_string(),
+            target_timestamp: 1000,
+        });
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_action_menu_overlay() {
+        let mut app = demo_app();
+        app.show_action_menu = true;
+        app.action_menu_index = 0;
+        app.focused_msg_index = Some(0);
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_contacts_overlay() {
+        let mut app = demo_app();
+        app.show_contacts = true;
+        app.contacts_index = 0;
+        app.contacts_filtered = vec![
+            ("+15551234567".to_string(), "Alice".to_string()),
+            ("+15559876543".to_string(), "Bob".to_string()),
+        ];
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_forward_overlay() {
+        let mut app = demo_app();
+        app.show_forward = true;
+        app.forward_index = 0;
+        app.forward_filtered = vec![
+            ("+15551234567".to_string(), "Alice".to_string()),
+            ("+15559876543".to_string(), "Bob".to_string()),
+        ];
+        app.forward_body = "Hello world".to_string();
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }

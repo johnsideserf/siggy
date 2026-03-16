@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use crate::db::Database;
 use crate::image_render;
+use crate::list_overlay::{self, classify_list_key, ListKeyAction};
 use crate::domain::{FilePickerState, SearchAction, SearchState, TypingState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
@@ -1286,23 +1287,29 @@ impl App {
 
     /// Handle a key press while the theme picker overlay is open.
     pub fn handle_theme_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        // Theme-specific: space selects, q closes
+        let code = match code {
+            KeyCode::Char(' ') => KeyCode::Enter,
+            KeyCode::Char('q') => KeyCode::Esc,
+            other => other,
+        };
+        match classify_list_key(code, false) {
+            ListKeyAction::Down => {
                 if self.theme_index < self.available_themes.len().saturating_sub(1) {
                     self.theme_index += 1;
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.theme_index = self.theme_index.saturating_sub(1);
             }
-            KeyCode::Char(' ') | KeyCode::Enter => {
+            ListKeyAction::Select => {
                 if let Some(selected) = self.available_themes.get(self.theme_index) {
                     self.theme = selected.clone();
                     self.save_settings();
                 }
                 self.show_theme_picker = false;
             }
-            KeyCode::Esc | KeyCode::Char('q') => {
+            ListKeyAction::Close => {
                 self.show_theme_picker = false;
             }
             _ => {}
@@ -1505,12 +1512,7 @@ impl App {
             .collect();
         contacts.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
         self.contacts_filtered = contacts;
-        // Clamp index
-        if self.contacts_filtered.is_empty() {
-            self.contacts_index = 0;
-        } else if self.contacts_index >= self.contacts_filtered.len() {
-            self.contacts_index = self.contacts_filtered.len() - 1;
-        }
+        list_overlay::clamp_index(&mut self.contacts_index, self.contacts_filtered.len());
     }
 
     /// Build the list of available group menu actions (context-dependent).
@@ -2084,18 +2086,18 @@ impl App {
             self.show_action_menu = false;
             return None;
         }
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match classify_list_key(code, false) {
+            ListKeyAction::Down => {
                 if self.action_menu_index < item_count - 1 {
                     self.action_menu_index += 1;
                 }
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.action_menu_index = self.action_menu_index.saturating_sub(1);
                 None
             }
-            KeyCode::Enter => {
+            ListKeyAction::Select => {
                 let items = self.action_menu_items();
                 if let Some(action) = items.get(self.action_menu_index) {
                     let hint = action.key_hint;
@@ -2106,31 +2108,36 @@ impl App {
                     None
                 }
             }
-            KeyCode::Char(c @ ('q' | 'e' | 'r' | 'f' | 'y' | 'd' | 'p' | 'v' | 'x')) => {
-                let hint = match c {
-                    'q' => "q",
-                    'e' => "e",
-                    'r' => "r",
-                    'f' => "f",
-                    'y' => "y",
-                    'd' => "d",
-                    'p' => "p",
-                    'v' => "v",
-                    'x' => "x",
-                    _ => unreachable!(),
-                };
-                // Only execute if this action is available in the menu
-                let items = self.action_menu_items();
-                if items.iter().any(|a| a.key_hint == hint) {
-                    self.show_action_menu = false;
-                    self.execute_action_by_hint(hint)
+            ListKeyAction::Close => {
+                self.show_action_menu = false;
+                None
+            }
+            ListKeyAction::None => {
+                // Action menu shortcut keys
+                if let KeyCode::Char(c) = code {
+                    let hint = match c {
+                        'q' => "q",
+                        'e' => "e",
+                        'r' => "r",
+                        'f' => "f",
+                        'y' => "y",
+                        'd' => "d",
+                        'p' => "p",
+                        'v' => "v",
+                        'x' => "x",
+                        _ => return None,
+                    };
+                    // Only execute if this action is available in the menu
+                    let items = self.action_menu_items();
+                    if items.iter().any(|a| a.key_hint == hint) {
+                        self.show_action_menu = false;
+                        self.execute_action_by_hint(hint)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
-            }
-            KeyCode::Esc => {
-                self.show_action_menu = false;
-                None
             }
             _ => None,
         }
@@ -2347,24 +2354,22 @@ impl App {
                 }
             })
             .collect();
-        if self.forward_index >= self.forward_filtered.len() {
-            self.forward_index = self.forward_filtered.len().saturating_sub(1);
-        }
+        list_overlay::clamp_index(&mut self.forward_index, self.forward_filtered.len());
     }
 
     pub fn handle_forward_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match classify_list_key(code, true) {
+            ListKeyAction::Down => {
                 if !self.forward_filtered.is_empty()
                     && self.forward_index < self.forward_filtered.len() - 1
                 {
                     self.forward_index += 1;
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.forward_index = self.forward_index.saturating_sub(1);
             }
-            KeyCode::Enter => {
+            ListKeyAction::Select => {
                 if let Some((conv_id, name)) = self.forward_filtered.get(self.forward_index).cloned() {
                     let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                     let body = format!("[Forwarded]\n{}", self.forward_body);
@@ -2385,37 +2390,37 @@ impl App {
                     });
                 }
             }
-            KeyCode::Backspace => {
-                self.forward_filter.pop();
-                self.update_forward_filter();
-            }
-            KeyCode::Esc => {
+            ListKeyAction::Close => {
                 self.show_forward = false;
             }
-            KeyCode::Char(c) => {
+            ListKeyAction::FilterPush(c) => {
                 if !c.is_control() {
                     self.forward_filter.push(c);
                     self.update_forward_filter();
                 }
             }
-            _ => {}
+            ListKeyAction::FilterPop => {
+                self.forward_filter.pop();
+                self.update_forward_filter();
+            }
+            ListKeyAction::None => {}
         }
         None
     }
 
     pub fn handle_contacts_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match classify_list_key(code, true) {
+            ListKeyAction::Down => {
                 if !self.contacts_filtered.is_empty()
                     && self.contacts_index < self.contacts_filtered.len() - 1
                 {
                     self.contacts_index += 1;
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.contacts_index = self.contacts_index.saturating_sub(1);
             }
-            KeyCode::Enter => {
+            ListKeyAction::Select => {
                 if let Some((number, _)) = self.contacts_filtered.get(self.contacts_index) {
                     let number = number.clone();
                     self.show_contacts = false;
@@ -2423,23 +2428,19 @@ impl App {
                     self.join_conversation(&number);
                 }
             }
-            KeyCode::Esc => {
+            ListKeyAction::Close => {
                 self.show_contacts = false;
                 self.contacts_filter.clear();
             }
-            KeyCode::Backspace => {
-                self.contacts_filter.pop();
-                self.refresh_contacts_filter();
-            }
-            KeyCode::Char(c) => {
-                // j/k are handled above for navigation, so only printable chars
-                // that aren't j/k fall through to here — but since j/k are matched
-                // first, we need a different approach: use the filter for all chars
-                // Actually j/k are already matched above, so this won't fire for them
+            ListKeyAction::FilterPush(c) => {
                 self.contacts_filter.push(c);
                 self.refresh_contacts_filter();
             }
-            _ => {}
+            ListKeyAction::FilterPop => {
+                self.contacts_filter.pop();
+                self.refresh_contacts_filter();
+            }
+            ListKeyAction::None => {}
         }
     }
 
@@ -4377,18 +4378,18 @@ impl App {
 
     /// Handle a key press while the pin duration picker overlay is open.
     pub fn handle_pin_duration_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        match classify_list_key(code, false) {
+            ListKeyAction::Down => {
                 if self.pin_duration_index < PIN_DURATIONS.len() - 1 {
                     self.pin_duration_index += 1;
                 }
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            ListKeyAction::Up => {
                 self.pin_duration_index = self.pin_duration_index.saturating_sub(1);
                 None
             }
-            KeyCode::Enter => {
+            ListKeyAction::Select => {
                 let duration = PIN_DURATIONS[self.pin_duration_index].0;
                 self.show_pin_duration = false;
                 let pending = self.pin_pending.take()?;
@@ -4418,7 +4419,7 @@ impl App {
                     pin_duration: duration,
                 })
             }
-            KeyCode::Esc => {
+            ListKeyAction::Close => {
                 self.show_pin_duration = false;
                 self.pin_pending = None;
                 None

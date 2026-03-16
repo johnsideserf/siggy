@@ -5,6 +5,7 @@ mod debug_log;
 mod image_render;
 mod input;
 mod keybindings;
+mod list_overlay;
 mod link;
 mod settings_profile;
 mod setup;
