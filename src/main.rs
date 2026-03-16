@@ -5,6 +5,8 @@ mod debug_log;
 mod image_render;
 mod input;
 mod keybindings;
+#[allow(dead_code)] // Helpers will be consumed as overlays are migrated
+mod list_overlay;
 mod link;
 mod settings_profile;
 mod setup;
