@@ -80,14 +80,14 @@ else
     fi
 
     SCLI_VERSION="${SCLI_TAG#v}"
-    SCLI_ARCHIVE="signal-cli-native-${SCLI_VERSION}-Linux-x86-64.tar.gz"
+    SCLI_ARCHIVE="signal-cli-${SCLI_VERSION}-Linux-native.tar.gz"
     SCLI_URL="https://github.com/$SIGNAL_CLI_REPO/releases/download/$SCLI_TAG/$SCLI_ARCHIVE"
 
     info "Downloading signal-cli $SCLI_TAG native build..."
     curl -fsSL -o "$TMPDIR/$SCLI_ARCHIVE" "$SCLI_URL" || error "signal-cli download failed: $SCLI_URL"
 
     tar xzf "$TMPDIR/$SCLI_ARCHIVE" -C "$TMPDIR"
-    cp "$TMPDIR/signal-cli-native-${SCLI_VERSION}/bin/signal-cli" "$INSTALL_DIR/signal-cli"
+    cp "$TMPDIR/signal-cli-${SCLI_VERSION}-Linux-native/bin/signal-cli" "$INSTALL_DIR/signal-cli"
     chmod +x "$INSTALL_DIR/signal-cli"
 
     info "Installed signal-cli to $INSTALL_DIR/signal-cli"
