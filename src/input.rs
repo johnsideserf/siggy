@@ -27,6 +27,7 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo { name: "/profile",  alias: "",    args: "",        description: "Edit your Signal profile" },
     CommandInfo { name: "/about",    alias: "",    args: "",        description: "About siggy" },
     CommandInfo { name: "/keybindings", alias: "/kb", args: "",    description: "Configure keybindings" },
+    CommandInfo { name: "/emoji",    alias: "/e",  args: "[search]", description: "Open emoji picker" },
     CommandInfo { name: "/export",   alias: "",    args: "[n]",     description: "Export chat history to text file" },
     CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
     CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit siggy" },
@@ -81,6 +82,8 @@ pub enum InputAction {
     About,
     /// Open keybindings overlay
     Keybindings,
+    /// Open the emoji picker overlay (optional initial search filter)
+    Emoji(String),
     /// Export chat history to a text file (optional: last N messages)
     Export(Option<usize>),
     /// Unknown command
@@ -155,6 +158,7 @@ pub fn parse_input(input: &str) -> InputAction {
                 _ => InputAction::Unknown("Usage: /poll \"question\" \"option1\" \"option2\" [--single]".into()),
             }
         }
+        "/emoji" | "/e" => InputAction::Emoji(arg),
         "/verify" | "/v" => InputAction::Verify,
         "/profile" => InputAction::Profile,
         "/about" => InputAction::About,
@@ -272,6 +276,40 @@ pub fn parse_duration_to_seconds(s: &str) -> Result<i64, String> {
     }
 }
 
+/// Replace `:shortcode:` patterns in text with their corresponding emoji.
+/// Unrecognized shortcodes are left as-is.
+pub fn replace_shortcodes(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(start) = rest.find(':') {
+        result.push_str(&rest[..start]);
+        let after_colon = &rest[start + 1..];
+        if let Some(end) = after_colon.find(':') {
+            let candidate = &after_colon[..end];
+            if !candidate.is_empty()
+                && candidate
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '+')
+            {
+                if let Some(emoji) = emojis::get_by_shortcode(candidate) {
+                    result.push_str(emoji.as_str());
+                    rest = &after_colon[end + 1..];
+                    continue;
+                }
+            }
+            // Not a valid shortcode — emit the colon and continue
+            result.push(':');
+            rest = after_colon;
+        } else {
+            // No closing colon found
+            result.push(':');
+            rest = after_colon;
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +345,8 @@ mod tests {
     #[case("/keybindings", InputAction::Keybindings)]
     #[case("/kb", InputAction::Keybindings)]
     #[case("/bell", InputAction::ToggleBell(None))]
+    #[case("/emoji", InputAction::Emoji("".to_string()))]
+    #[case("/e", InputAction::Emoji("".to_string()))]
     fn command_returns_expected_action(#[case] input: &str, #[case] expected: InputAction) {
         assert_eq!(parse_input(input), expected);
     }
@@ -322,6 +362,8 @@ mod tests {
     #[case("/dm off", InputAction::SetDisappearing("off".to_string()))]
     #[case("/bell direct", InputAction::ToggleBell(Some("direct".to_string())))]
     #[case("/notify group", InputAction::ToggleBell(Some("group".to_string())))]
+    #[case("/emoji smile", InputAction::Emoji("smile".to_string()))]
+    #[case("/e rocket", InputAction::Emoji("rocket".to_string()))]
     fn command_with_argument(#[case] input: &str, #[case] expected: InputAction) {
         assert_eq!(parse_input(input), expected);
     }
@@ -425,5 +467,34 @@ mod tests {
     fn poll_command_no_args() {
         let result = parse_input("/poll");
         assert!(matches!(result, InputAction::Unknown(_)));
+    }
+
+    // --- Shortcode replacement ---
+
+    #[rstest]
+    #[case(":+1:", "\u{1f44d}")]
+    #[case(":thumbsup:", "\u{1f44d}")]
+    #[case(":rocket:", "\u{1f680}")]
+    #[case("hello :+1: world", "hello \u{1f44d} world")]
+    #[case(":+1: hello :rocket:", "\u{1f44d} hello \u{1f680}")]
+    #[case("", "")]
+    #[case("no colons here", "no colons here")]
+    fn shortcode_replacement(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(replace_shortcodes(input), expected);
+    }
+
+    #[test]
+    fn shortcode_unknown_left_as_is() {
+        assert_eq!(replace_shortcodes(":not_a_real_emoji_xyz:"), ":not_a_real_emoji_xyz:");
+    }
+
+    #[test]
+    fn shortcode_unclosed_colon() {
+        assert_eq!(replace_shortcodes("hello :world"), "hello :world");
+    }
+
+    #[test]
+    fn shortcode_with_spaces_not_replaced() {
+        assert_eq!(replace_shortcodes(":has spaces:"), ":has spaces:");
     }
 }

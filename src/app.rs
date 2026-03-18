@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::db::Database;
 use crate::image_render;
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
-use crate::domain::{ActionMenuState, ContactsOverlayState, FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, KeybindingsOverlayState, NotificationState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState};
+use crate::domain::{EmojiPickerAction, EmojiPickerSource, EmojiPickerState, ActionMenuState, ContactsOverlayState, FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, KeybindingsOverlayState, NotificationState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -424,6 +424,8 @@ pub struct App {
     pub jump_stack: Vec<(usize, Option<usize>)>,
     /// Reaction display preferences and picker overlay state
     pub reactions: ReactionState,
+        /// Emoji picker overlay state
+    pub emoji_picker: EmojiPickerState,
     /// Groups indexed by group_id (with member lists for @mention autocomplete).
     /// Populated: startup via GroupList event from list_groups() RPC.
     /// Invalidation: full replacement on each GroupList event. Never cleared otherwise.
@@ -1846,6 +1848,12 @@ impl App {
                 self.reactions.show_picker = false;
                 self.prepare_reaction_send()
             }
+            KeyCode::Char('e') | KeyCode::Char('/') => {
+                // Open full emoji picker from reaction context
+                self.reactions.show_picker = false;
+                self.emoji_picker.open(EmojiPickerSource::Reaction);
+                None
+            }
             KeyCode::Esc => {
                 self.reactions.show_picker = false;
                 None
@@ -1858,6 +1866,12 @@ impl App {
     /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
     fn prepare_reaction_send(&mut self) -> Option<SendRequest> {
         let emoji = QUICK_REACTIONS.get(self.reactions.picker_index)?.to_string();
+        self.prepare_reaction_send_emoji(&emoji)
+    }
+
+    /// Build a SendRequest::Reaction for an arbitrary emoji string.
+    /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
+    fn prepare_reaction_send_emoji(&mut self, emoji: &str) -> Option<SendRequest> {
         let conv_id = self.active_conversation.clone()?;
         let conv = self.conversations.get(&conv_id)?;
         let is_group = conv.is_group;
@@ -1890,10 +1904,10 @@ impl App {
                 } else {
                     // One reaction per user — replace or push
                     if let Some(existing) = msg.reactions.iter_mut().find(|r| r.sender == "you") {
-                        existing.emoji = emoji.clone();
+                        existing.emoji = emoji.to_string();
                     } else {
                         msg.reactions.push(Reaction {
-                            emoji: emoji.clone(),
+                            emoji: emoji.to_string(),
                             sender: "you".to_string(),
                         });
                     }
@@ -1909,14 +1923,14 @@ impl App {
             );
         } else {
             self.db_warn_visible(
-                self.db.upsert_reaction(&conv_id, target_timestamp, &target_author, "you", &emoji),
+                self.db.upsert_reaction(&conv_id, target_timestamp, &target_author, "you", emoji),
                 "upsert_reaction",
             );
         }
 
         Some(SendRequest::Reaction {
             conv_id,
-            emoji,
+            emoji: emoji.to_string(),
             is_group,
             target_author,
             target_timestamp,
@@ -2627,6 +2641,7 @@ impl App {
             focused_msg_index: None,
             jump_stack: Vec::new(),
             reactions: ReactionState::new(),
+            emoji_picker: EmojiPickerState::default(),
             groups: HashMap::new(),
             uuid_to_name: HashMap::new(),
             number_to_uuid: HashMap::new(),
@@ -3099,6 +3114,34 @@ impl App {
         if self.file_picker.visible {
             self.handle_file_browser_key(code);
             return (true, None);
+        }
+        if self.emoji_picker.visible {
+            match self.emoji_picker.handle_key(code) {
+                EmojiPickerAction::Select(emoji) => {
+                    let source = self.emoji_picker.source;
+                    self.emoji_picker.close();
+                    match source {
+                        EmojiPickerSource::Input => {
+                            self.input_buffer.insert_str(self.input_cursor, &emoji);
+                            self.input_cursor += emoji.len();
+                            return (true, None);
+                        }
+                        EmojiPickerSource::Reaction => {
+                            let send = self.prepare_reaction_send_emoji(&emoji);
+                            return (true, send);
+                        }
+                    }
+                }
+                EmojiPickerAction::Close => {
+                    let was_reaction = self.emoji_picker.source == EmojiPickerSource::Reaction;
+                    self.emoji_picker.close();
+                    if was_reaction {
+                        self.reactions.show_picker = true;
+                    }
+                    return (true, None);
+                }
+                EmojiPickerAction::None => return (true, None),
+            }
         }
         if self.reactions.show_picker {
             let send = self.handle_reaction_picker_key(code);
@@ -5116,7 +5159,8 @@ impl App {
 
         let action = input::parse_input(&input);
         match action {
-            InputAction::SendText(text) => {
+            InputAction::SendText(raw_text) => {
+                let text = input::replace_shortcodes(&raw_text);
                 if text.is_empty() && self.pending_attachment.is_none() && self.editing_message.is_none() {
                     return None;
                 }
@@ -5405,6 +5449,13 @@ impl App {
                 self.contacts_overlay.index = 0;
                 self.contacts_overlay.filter.clear();
                 self.refresh_contacts_filter();
+            }
+            InputAction::Emoji(query) => {
+                self.emoji_picker.open(EmojiPickerSource::Input);
+                if !query.is_empty() {
+                    self.emoji_picker.filter = query;
+                    self.emoji_picker.refresh_filter();
+                }
             }
             InputAction::Theme => {
                 self.theme_picker.show = true;
@@ -6373,6 +6424,7 @@ impl App {
             || self.file_picker.visible
             || self.action_menu.show
             || self.reactions.show_picker
+            || self.emoji_picker.visible
             || self.show_delete_confirm
             || self.group_menu.state.is_some()
             || self.show_message_request
@@ -9635,6 +9687,10 @@ mod tests {
         app.reactions.show_picker = true;
         assert!(app.has_overlay());
         app.reactions.show_picker = false;
+
+        app.emoji_picker.visible = true;
+        assert!(app.has_overlay());
+        app.emoji_picker.visible = false;
 
         app.show_delete_confirm = true;
         assert!(app.has_overlay());
