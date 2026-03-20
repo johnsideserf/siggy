@@ -257,30 +257,6 @@ async fn run_main_flow(
         db::Database::open(&db_path)?
     };
 
-    // Quick pre-flight: check if account is registered (skip if wizard already handled it)
-    if !setup_handled_linking {
-        match link::check_account_registered(config).await {
-            Ok(false) => {
-                // Not registered — run linking flow
-                match link::run_linking_flow(terminal, config).await {
-                    Ok(link::LinkResult::Success) => {}
-                    Ok(link::LinkResult::Cancelled) => {
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        let msg = format!("{e}");
-                        show_error_screen(terminal, "Device Linking Failed", &msg).await?;
-                        return Ok(());
-                    }
-                }
-            }
-            Ok(true) => {} // Good to go
-            Err(e) => {
-                debug_log::logf(format_args!("check_account_registered failed: {e}"));
-            }
-        }
-    }
-
     // In incognito mode, redirect attachments to a temp directory
     let incognito_tmp_dir = if incognito {
         let tmp = std::env::temp_dir().join(format!("siggy-incognito-{}", std::process::id()));
@@ -292,9 +268,10 @@ async fn run_main_flow(
         None
     };
 
-    // Spawn signal-cli backend
-    let signal_result = SignalClient::spawn(config).await;
-    let mut signal_client = match signal_result {
+    // Spawn signal-cli backend directly (skip the old pre-flight check that spawned
+    // a throwaway JVM process). If the account isn't registered, signal-cli will exit
+    // quickly and we fall back to the linking flow.
+    let mut signal_client = match SignalClient::spawn(config).await {
         Ok(client) => client,
         Err(e) => {
             let msg = format!("{e}");
@@ -302,6 +279,42 @@ async fn run_main_flow(
             return Ok(());
         }
     };
+
+    // Give signal-cli a brief window to fail if the account is unregistered.
+    // If the process exits early, check stderr and fall back to linking.
+    if !setup_handled_linking
+        && !signal_client
+            .wait_for_ready(std::time::Duration::from_millis(500))
+            .await
+    {
+        let stderr = signal_client.stderr_output();
+        debug_log::logf(format_args!(
+            "signal-cli exited early during startup, stderr: {stderr}"
+        ));
+        signal_client.shutdown().await?;
+
+        match link::run_linking_flow(terminal, config).await {
+            Ok(link::LinkResult::Success) => {}
+            Ok(link::LinkResult::Cancelled) => {
+                return Ok(());
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                show_error_screen(terminal, "Device Linking Failed", &msg).await?;
+                return Ok(());
+            }
+        }
+
+        // Re-spawn after successful linking
+        signal_client = match SignalClient::spawn(config).await {
+            Ok(client) => client,
+            Err(e) => {
+                let msg = format!("{e}");
+                show_error_screen(terminal, "Failed to Start signal-cli", &msg).await?;
+                return Ok(());
+            }
+        };
+    }
 
     // Run the app
     let result = run_app(terminal, MessagingBackend::Signal(&mut signal_client), config, database, incognito).await;

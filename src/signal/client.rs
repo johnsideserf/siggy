@@ -1102,6 +1102,20 @@ impl SignalClient {
         }
     }
 
+    /// Wait up to `timeout` for signal-cli to either stay alive (ready) or exit early
+    /// (likely unregistered). Returns `true` if the process is still running, `false`
+    /// if it exited during the window.
+    pub async fn wait_for_ready(&mut self, timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if self.try_child_exit().is_some() {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        true
+    }
+
     pub async fn shutdown(&mut self) -> Result<()> {
         let _ = self.child.kill().await;
         Ok(())
