@@ -561,7 +561,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Group management menu overlay
-    if app.group_menu_state.is_some() {
+    if app.group_menu.state.is_some() {
         draw_group_menu(frame, app, size);
     }
 
@@ -1442,7 +1442,7 @@ pub(crate) fn build_reaction_summary(reactions: &[Reaction], verbose: bool, conv
 
 fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let state = match &app.group_menu_state {
+    let state = match &app.group_menu.state {
         Some(s) => s,
         None => return,
     };
@@ -1466,7 +1466,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let content_width = inner.width as usize;
             let mut lines: Vec<Line> = Vec::new();
             for (i, action) in items.iter().enumerate() {
-                let is_selected = i == app.group_menu_index;
+                let is_selected = i == app.group_menu.index;
                 let icon = if app.nerd_fonts {
                     format!("{} ", action.nerd_icon)
                 } else {
@@ -1500,7 +1500,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(popup, inner);
         }
         GroupMenuState::Members => {
-            let max_visible = GROUP_MEMBER_MAX_VISIBLE.min(app.group_menu_filtered.len().max(1));
+            let max_visible = GROUP_MEMBER_MAX_VISIBLE.min(app.group_menu.filtered.len().max(1));
             let pref_height = max_visible as u16 + 5;
             let title = " Members ".to_string();
             let (popup_area, block) = centered_popup(
@@ -1509,22 +1509,22 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let inner_height = popup_area.height.saturating_sub(2) as usize;
             let footer_lines = 2;
             let visible_rows = inner_height.saturating_sub(footer_lines);
-            let scroll_offset = if app.group_menu_index >= visible_rows {
-                app.group_menu_index - visible_rows + 1
+            let scroll_offset = if app.group_menu.index >= visible_rows {
+                app.group_menu.index - visible_rows + 1
             } else {
                 0
             };
             let mut lines: Vec<Line> = Vec::new();
-            if app.group_menu_filtered.is_empty() {
+            if app.group_menu.filtered.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  No members",
                     Style::default().fg(theme.fg_muted),
                 )));
             } else {
-                let end = (scroll_offset + visible_rows).min(app.group_menu_filtered.len());
-                for (i, (phone, name)) in app.group_menu_filtered[scroll_offset..end].iter().enumerate() {
+                let end = (scroll_offset + visible_rows).min(app.group_menu.filtered.len());
+                for (i, (phone, name)) in app.group_menu.filtered[scroll_offset..end].iter().enumerate() {
                     let actual_index = scroll_offset + i;
-                    let is_selected = actual_index == app.group_menu_index;
+                    let is_selected = actual_index == app.group_menu.index;
                     let is_self = *phone == app.account;
                     let display = if is_self {
                         format!("  {} (you)", name)
@@ -1560,18 +1560,18 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
         }
         GroupMenuState::AddMember | GroupMenuState::RemoveMember => {
             let is_add = *state == GroupMenuState::AddMember;
-            let max_visible = GROUP_MEMBER_MAX_VISIBLE.min(app.group_menu_filtered.len().max(1));
+            let max_visible = GROUP_MEMBER_MAX_VISIBLE.min(app.group_menu.filtered.len().max(1));
             let pref_height = max_visible as u16 + 5;
             let title = if is_add {
-                if app.group_menu_filter.is_empty() {
+                if app.group_menu.filter.is_empty() {
                     " Add Member ".to_string()
                 } else {
-                    format!(" Add Member [{}] ", app.group_menu_filter)
+                    format!(" Add Member [{}] ", app.group_menu.filter)
                 }
-            } else if app.group_menu_filter.is_empty() {
+            } else if app.group_menu.filter.is_empty() {
                 " Remove Member ".to_string()
             } else {
-                format!(" Remove Member [{}] ", app.group_menu_filter)
+                format!(" Remove Member [{}] ", app.group_menu.filter)
             };
             let (popup_area, block) = centered_popup(
                 frame, area, CONTACTS_POPUP_WIDTH, pref_height, &title, theme,
@@ -1579,24 +1579,24 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let inner_height = popup_area.height.saturating_sub(2) as usize;
             let footer_lines = 2;
             let visible_rows = inner_height.saturating_sub(footer_lines);
-            let scroll_offset = if app.group_menu_index >= visible_rows {
-                app.group_menu_index - visible_rows + 1
+            let scroll_offset = if app.group_menu.index >= visible_rows {
+                app.group_menu.index - visible_rows + 1
             } else {
                 0
             };
             let mut lines: Vec<Line> = Vec::new();
-            if app.group_menu_filtered.is_empty() {
+            if app.group_menu.filtered.is_empty() {
                 let msg = if is_add { "  No contacts to add" } else { "  No members to remove" };
                 lines.push(Line::from(Span::styled(
                     msg,
                     Style::default().fg(theme.fg_muted),
                 )));
             } else {
-                let end = (scroll_offset + visible_rows).min(app.group_menu_filtered.len());
+                let end = (scroll_offset + visible_rows).min(app.group_menu.filtered.len());
                 let inner_w = popup_area.width.saturating_sub(2) as usize;
-                for (i, (phone, name)) in app.group_menu_filtered[scroll_offset..end].iter().enumerate() {
+                for (i, (phone, name)) in app.group_menu.filtered[scroll_offset..end].iter().enumerate() {
                     let actual_index = scroll_offset + i;
-                    let is_selected = actual_index == app.group_menu_index;
+                    let is_selected = actual_index == app.group_menu.index;
                     let number_display = format!("  {}", phone);
                     let name_max = inner_w.saturating_sub(number_display.len() + 2);
                     let display_name = truncate(name, name_max);
@@ -1636,7 +1636,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
             let mut lines: Vec<Line> = Vec::new();
-            let input_display = format!("  {}\u{2588}", app.group_menu_input);
+            let input_display = format!("  {}\u{2588}", app.group_menu.input);
             lines.push(Line::from(Span::styled(
                 input_display,
                 Style::default().fg(theme.fg),

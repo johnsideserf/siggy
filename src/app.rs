@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::db::Database;
 use crate::image_render;
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
-use crate::domain::{ActionMenuState, ContactsOverlayState, FilePickerState, ForwardOverlayState, ImageState, KeybindingsOverlayState, NotificationState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState};
+use crate::domain::{ActionMenuState, ContactsOverlayState, FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, KeybindingsOverlayState, NotificationState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -457,16 +457,8 @@ pub struct App {
     pub action_menu: ActionMenuState,
     /// Forward message picker overlay state
     pub forward: ForwardOverlayState,
-    /// Group management menu state (None = closed)
-    pub group_menu_state: Option<GroupMenuState>,
-    /// Cursor position in group menu / member lists
-    pub group_menu_index: usize,
-    /// Type-to-filter text for add/remove member pickers
-    pub group_menu_filter: String,
-    /// Filtered list of (phone, display_name) for add/remove member pickers
-    pub group_menu_filtered: Vec<(String, String)>,
-    /// Separate text input buffer for rename/create (avoids disturbing input_buffer)
-    pub group_menu_input: String,
+    /// Group management menu overlay state
+    pub group_menu: GroupMenuOverlayState,
     /// Message request overlay visible
     pub show_message_request: bool,
     /// Inner area of sidebar List widget (None when sidebar is hidden)
@@ -1444,7 +1436,7 @@ impl App {
 
     /// Build filtered contacts list for the "Add member" picker (excludes existing group members).
     pub fn refresh_group_add_filter(&mut self) {
-        let filter_lower = self.group_menu_filter.to_lowercase();
+        let filter_lower = self.group_menu.filter.to_lowercase();
         let existing_members: HashSet<&str> = self.active_conversation.as_ref()
             .and_then(|id| self.groups.get(id))
             .map(|g| g.members.iter().map(|s| s.as_str()).collect())
@@ -1464,17 +1456,17 @@ impl App {
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
         contacts.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-        self.group_menu_filtered = contacts;
-        if self.group_menu_filtered.is_empty() {
-            self.group_menu_index = 0;
-        } else if self.group_menu_index >= self.group_menu_filtered.len() {
-            self.group_menu_index = self.group_menu_filtered.len() - 1;
+        self.group_menu.filtered = contacts;
+        if self.group_menu.filtered.is_empty() {
+            self.group_menu.index = 0;
+        } else if self.group_menu.index >= self.group_menu.filtered.len() {
+            self.group_menu.index = self.group_menu.filtered.len() - 1;
         }
     }
 
     /// Build filtered member list for the "Remove member" picker (excludes self).
     pub fn refresh_group_remove_filter(&mut self) {
-        let filter_lower = self.group_menu_filter.to_lowercase();
+        let filter_lower = self.group_menu.filter.to_lowercase();
         let members: Vec<String> = self.active_conversation.as_ref()
             .and_then(|id| self.groups.get(id))
             .map(|g| g.members.clone())
@@ -1497,32 +1489,32 @@ impl App {
             })
             .collect();
         result.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-        self.group_menu_filtered = result;
-        if self.group_menu_filtered.is_empty() {
-            self.group_menu_index = 0;
-        } else if self.group_menu_index >= self.group_menu_filtered.len() {
-            self.group_menu_index = self.group_menu_filtered.len() - 1;
+        self.group_menu.filtered = result;
+        if self.group_menu.filtered.is_empty() {
+            self.group_menu.index = 0;
+        } else if self.group_menu.index >= self.group_menu.filtered.len() {
+            self.group_menu.index = self.group_menu.filtered.len() - 1;
         }
     }
 
     /// Handle a key press while the group management menu is open.
     pub fn handle_group_menu_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let state = self.group_menu_state.clone()?;
+        let state = self.group_menu.state.clone()?;
         match state {
             GroupMenuState::Menu => {
                 let items = self.group_menu_items();
                 let item_count = items.len();
                 match code {
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if self.group_menu_index < item_count.saturating_sub(1) {
-                            self.group_menu_index += 1;
+                        if self.group_menu.index < item_count.saturating_sub(1) {
+                            self.group_menu.index += 1;
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
                     KeyCode::Enter => {
-                        if let Some(action) = items.get(self.group_menu_index) {
+                        if let Some(action) = items.get(self.group_menu.index) {
                             self.transition_group_menu(action.key_hint);
                         }
                     }
@@ -1537,26 +1529,26 @@ impl App {
                         }
                     }
                     KeyCode::Esc => {
-                        self.group_menu_state = None;
+                        self.group_menu.state = None;
                     }
                     _ => {}
                 }
                 None
             }
             GroupMenuState::Members => {
-                let member_count = self.group_menu_filtered.len();
+                let member_count = self.group_menu.filtered.len();
                 match code {
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if self.group_menu_index < member_count.saturating_sub(1) {
-                            self.group_menu_index += 1;
+                        if self.group_menu.index < member_count.saturating_sub(1) {
+                            self.group_menu.index += 1;
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
                     KeyCode::Esc => {
-                        self.group_menu_state = Some(GroupMenuState::Menu);
-                        self.group_menu_index = 0;
+                        self.group_menu.state = Some(GroupMenuState::Menu);
+                        self.group_menu.index = 0;
                     }
                     _ => {}
                 }
@@ -1565,21 +1557,21 @@ impl App {
             GroupMenuState::AddMember => {
                 match code {
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if !self.group_menu_filtered.is_empty()
-                            && self.group_menu_index < self.group_menu_filtered.len() - 1
+                        if !self.group_menu.filtered.is_empty()
+                            && self.group_menu.index < self.group_menu.filtered.len() - 1
                         {
-                            self.group_menu_index += 1;
+                            self.group_menu.index += 1;
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
                     KeyCode::Enter => {
-                        if let Some((phone, _)) = self.group_menu_filtered.get(self.group_menu_index) {
+                        if let Some((phone, _)) = self.group_menu.filtered.get(self.group_menu.index) {
                             let phone = phone.clone();
                             let group_id = self.active_conversation.clone()?;
-                            self.group_menu_state = None;
-                            self.group_menu_filter.clear();
+                            self.group_menu.state = None;
+                            self.group_menu.filter.clear();
                             return Some(SendRequest::AddGroupMembers {
                                 group_id,
                                 members: vec![phone],
@@ -1587,18 +1579,18 @@ impl App {
                         }
                     }
                     KeyCode::Esc => {
-                        self.group_menu_state = Some(GroupMenuState::Menu);
-                        self.group_menu_index = 0;
-                        self.group_menu_filter.clear();
+                        self.group_menu.state = Some(GroupMenuState::Menu);
+                        self.group_menu.index = 0;
+                        self.group_menu.filter.clear();
                     }
                     KeyCode::Backspace => {
-                        self.group_menu_filter.pop();
-                        self.group_menu_index = 0;
+                        self.group_menu.filter.pop();
+                        self.group_menu.index = 0;
                         self.refresh_group_add_filter();
                     }
                     KeyCode::Char(c) if c != 'j' && c != 'k' => {
-                        self.group_menu_filter.push(c);
-                        self.group_menu_index = 0;
+                        self.group_menu.filter.push(c);
+                        self.group_menu.index = 0;
                         self.refresh_group_add_filter();
                     }
                     _ => {}
@@ -1608,21 +1600,21 @@ impl App {
             GroupMenuState::RemoveMember => {
                 match code {
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if !self.group_menu_filtered.is_empty()
-                            && self.group_menu_index < self.group_menu_filtered.len() - 1
+                        if !self.group_menu.filtered.is_empty()
+                            && self.group_menu.index < self.group_menu.filtered.len() - 1
                         {
-                            self.group_menu_index += 1;
+                            self.group_menu.index += 1;
                         }
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu_index = self.group_menu_index.saturating_sub(1);
+                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
                     KeyCode::Enter => {
-                        if let Some((phone, _)) = self.group_menu_filtered.get(self.group_menu_index) {
+                        if let Some((phone, _)) = self.group_menu.filtered.get(self.group_menu.index) {
                             let phone = phone.clone();
                             let group_id = self.active_conversation.clone()?;
-                            self.group_menu_state = None;
-                            self.group_menu_filter.clear();
+                            self.group_menu.state = None;
+                            self.group_menu.filter.clear();
                             return Some(SendRequest::RemoveGroupMembers {
                                 group_id,
                                 members: vec![phone],
@@ -1630,18 +1622,18 @@ impl App {
                         }
                     }
                     KeyCode::Esc => {
-                        self.group_menu_state = Some(GroupMenuState::Menu);
-                        self.group_menu_index = 0;
-                        self.group_menu_filter.clear();
+                        self.group_menu.state = Some(GroupMenuState::Menu);
+                        self.group_menu.index = 0;
+                        self.group_menu.filter.clear();
                     }
                     KeyCode::Backspace => {
-                        self.group_menu_filter.pop();
-                        self.group_menu_index = 0;
+                        self.group_menu.filter.pop();
+                        self.group_menu.index = 0;
                         self.refresh_group_remove_filter();
                     }
                     KeyCode::Char(c) if c != 'j' && c != 'k' => {
-                        self.group_menu_filter.push(c);
-                        self.group_menu_index = 0;
+                        self.group_menu.filter.push(c);
+                        self.group_menu.index = 0;
                         self.refresh_group_remove_filter();
                     }
                     _ => {}
@@ -1651,24 +1643,24 @@ impl App {
             GroupMenuState::Rename => {
                 match code {
                     KeyCode::Enter => {
-                        let name = self.group_menu_input.trim().to_string();
+                        let name = self.group_menu.input.trim().to_string();
                         if !name.is_empty() {
                             let group_id = self.active_conversation.clone()?;
-                            self.group_menu_state = None;
-                            self.group_menu_input.clear();
+                            self.group_menu.state = None;
+                            self.group_menu.input.clear();
                             return Some(SendRequest::RenameGroup { group_id, name });
                         }
                     }
                     KeyCode::Esc => {
-                        self.group_menu_state = Some(GroupMenuState::Menu);
-                        self.group_menu_index = 0;
-                        self.group_menu_input.clear();
+                        self.group_menu.state = Some(GroupMenuState::Menu);
+                        self.group_menu.index = 0;
+                        self.group_menu.input.clear();
                     }
                     KeyCode::Backspace => {
-                        self.group_menu_input.pop();
+                        self.group_menu.input.pop();
                     }
                     KeyCode::Char(c) => {
-                        self.group_menu_input.push(c);
+                        self.group_menu.input.push(c);
                     }
                     _ => {}
                 }
@@ -1677,22 +1669,22 @@ impl App {
             GroupMenuState::Create => {
                 match code {
                     KeyCode::Enter => {
-                        let name = self.group_menu_input.trim().to_string();
+                        let name = self.group_menu.input.trim().to_string();
                         if !name.is_empty() {
-                            self.group_menu_state = None;
-                            self.group_menu_input.clear();
+                            self.group_menu.state = None;
+                            self.group_menu.input.clear();
                             return Some(SendRequest::CreateGroup { name });
                         }
                     }
                     KeyCode::Esc => {
-                        self.group_menu_state = None;
-                        self.group_menu_input.clear();
+                        self.group_menu.state = None;
+                        self.group_menu.input.clear();
                     }
                     KeyCode::Backspace => {
-                        self.group_menu_input.pop();
+                        self.group_menu.input.pop();
                     }
                     KeyCode::Char(c) => {
-                        self.group_menu_input.push(c);
+                        self.group_menu.input.push(c);
                     }
                     _ => {}
                 }
@@ -1702,12 +1694,12 @@ impl App {
                 match code {
                     KeyCode::Char('y') => {
                         let group_id = self.active_conversation.clone()?;
-                        self.group_menu_state = None;
+                        self.group_menu.state = None;
                         return Some(SendRequest::LeaveGroup { group_id });
                     }
                     KeyCode::Char('n') | KeyCode::Esc => {
-                        self.group_menu_state = Some(GroupMenuState::Menu);
-                        self.group_menu_index = 0;
+                        self.group_menu.state = Some(GroupMenuState::Menu);
+                        self.group_menu.index = 0;
                     }
                     _ => {}
                 }
@@ -1718,9 +1710,9 @@ impl App {
 
     /// Transition from the top-level group menu to a sub-state.
     fn transition_group_menu(&mut self, hint: &str) {
-        self.group_menu_index = 0;
-        self.group_menu_filter.clear();
-        self.group_menu_input.clear();
+        self.group_menu.index = 0;
+        self.group_menu.filter.clear();
+        self.group_menu.input.clear();
         match hint {
             "m" => {
                 // Populate member list for display
@@ -1733,16 +1725,16 @@ impl App {
                         (phone.clone(), name)
                     }).collect())
                     .unwrap_or_default();
-                self.group_menu_filtered = members;
-                self.group_menu_state = Some(GroupMenuState::Members);
+                self.group_menu.filtered = members;
+                self.group_menu.state = Some(GroupMenuState::Members);
             }
             "a" => {
                 self.refresh_group_add_filter();
-                self.group_menu_state = Some(GroupMenuState::AddMember);
+                self.group_menu.state = Some(GroupMenuState::AddMember);
             }
             "r" => {
                 self.refresh_group_remove_filter();
-                self.group_menu_state = Some(GroupMenuState::RemoveMember);
+                self.group_menu.state = Some(GroupMenuState::RemoveMember);
             }
             "n" => {
                 // Pre-fill with current group name
@@ -1750,14 +1742,14 @@ impl App {
                     .and_then(|id| self.conversations.get(id))
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
-                self.group_menu_input = name;
-                self.group_menu_state = Some(GroupMenuState::Rename);
+                self.group_menu.input = name;
+                self.group_menu.state = Some(GroupMenuState::Rename);
             }
             "l" => {
-                self.group_menu_state = Some(GroupMenuState::LeaveConfirm);
+                self.group_menu.state = Some(GroupMenuState::LeaveConfirm);
             }
             "c" => {
-                self.group_menu_state = Some(GroupMenuState::Create);
+                self.group_menu.state = Some(GroupMenuState::Create);
             }
             _ => {}
         }
@@ -2613,11 +2605,7 @@ impl App {
             pending_read_receipts: Vec::new(),
             action_menu: ActionMenuState::default(),
             forward: ForwardOverlayState::default(),
-            group_menu_state: None,
-            group_menu_index: 0,
-            group_menu_filter: String::new(),
-            group_menu_filtered: Vec::new(),
-            group_menu_input: String::new(),
+            group_menu: GroupMenuOverlayState::default(),
             show_message_request: false,
             mouse_sidebar_inner: None,
             mouse_messages_area: Rect::default(),
@@ -3064,7 +3052,7 @@ impl App {
             let send = self.handle_message_request_key(code);
             return (true, send);
         }
-        if self.group_menu_state.is_some() {
+        if self.group_menu.state.is_some() {
             let send = self.handle_group_menu_key(code);
             return (true, send);
         }
@@ -5369,10 +5357,10 @@ impl App {
                     .unwrap_or(0);
             }
             InputAction::Group => {
-                self.group_menu_state = Some(GroupMenuState::Menu);
-                self.group_menu_index = 0;
-                self.group_menu_filter.clear();
-                self.group_menu_input.clear();
+                self.group_menu.state = Some(GroupMenuState::Menu);
+                self.group_menu.index = 0;
+                self.group_menu.filter.clear();
+                self.group_menu.input.clear();
             }
             InputAction::Verify => {
                 if let Some(ref conv_id) = self.active_conversation {
@@ -6330,7 +6318,7 @@ impl App {
             || self.action_menu.show
             || self.reactions.show_picker
             || self.show_delete_confirm
-            || self.group_menu_state.is_some()
+            || self.group_menu.state.is_some()
             || self.show_message_request
             || self.theme_picker.show
             || self.keybindings_overlay.show
@@ -9068,8 +9056,8 @@ mod tests {
         app.refresh_group_add_filter();
 
         // Only Charlie should appear (not Alice or Bob who are already members)
-        assert_eq!(app.group_menu_filtered.len(), 1);
-        assert_eq!(app.group_menu_filtered[0].0, "+3");
+        assert_eq!(app.group_menu.filtered.len(), 1);
+        assert_eq!(app.group_menu.filtered[0].0, "+3");
     }
 
     #[rstest]
@@ -9089,8 +9077,8 @@ mod tests {
         app.refresh_group_remove_filter();
 
         // Self (+10000000000) should be excluded
-        assert_eq!(app.group_menu_filtered.len(), 2);
-        let phones: Vec<&str> = app.group_menu_filtered.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(app.group_menu.filtered.len(), 2);
+        let phones: Vec<&str> = app.group_menu.filtered.iter().map(|(p, _)| p.as_str()).collect();
         assert!(!phones.contains(&"+10000000000"));
         assert!(phones.contains(&"+1"));
         assert!(phones.contains(&"+2"));
@@ -9112,27 +9100,27 @@ mod tests {
         app.input_buffer = "/group".to_string();
         app.input_cursor = 6;
         app.handle_input();
-        assert_eq!(app.group_menu_state, Some(GroupMenuState::Menu));
+        assert_eq!(app.group_menu.state, Some(GroupMenuState::Menu));
 
         // Press 'm' to go to Members
         app.handle_group_menu_key(KeyCode::Char('m'));
-        assert_eq!(app.group_menu_state, Some(GroupMenuState::Members));
+        assert_eq!(app.group_menu.state, Some(GroupMenuState::Members));
 
         // Esc goes back to Menu
         app.handle_group_menu_key(KeyCode::Esc);
-        assert_eq!(app.group_menu_state, Some(GroupMenuState::Menu));
+        assert_eq!(app.group_menu.state, Some(GroupMenuState::Menu));
 
         // Press 'l' to go to LeaveConfirm
         app.handle_group_menu_key(KeyCode::Char('l'));
-        assert_eq!(app.group_menu_state, Some(GroupMenuState::LeaveConfirm));
+        assert_eq!(app.group_menu.state, Some(GroupMenuState::LeaveConfirm));
 
         // Press 'n' to cancel leave
         app.handle_group_menu_key(KeyCode::Char('n'));
-        assert_eq!(app.group_menu_state, Some(GroupMenuState::Menu));
+        assert_eq!(app.group_menu.state, Some(GroupMenuState::Menu));
 
         // Esc closes the menu entirely
         app.handle_group_menu_key(KeyCode::Esc);
-        assert_eq!(app.group_menu_state, None);
+        assert_eq!(app.group_menu.state, None);
     }
 
     #[rstest]
@@ -9147,22 +9135,22 @@ mod tests {
             member_uuids: vec![],
         });
 
-        app.group_menu_state = Some(GroupMenuState::LeaveConfirm);
+        app.group_menu.state = Some(GroupMenuState::LeaveConfirm);
         let req = app.handle_group_menu_key(KeyCode::Char('y'));
         assert!(req.is_some());
         assert!(matches!(req, Some(SendRequest::LeaveGroup { group_id }) if group_id == "g1"));
-        assert_eq!(app.group_menu_state, None);
+        assert_eq!(app.group_menu.state, None);
     }
 
     #[rstest]
     fn group_create_produces_send_request(mut app: App) {
 
-        app.group_menu_state = Some(GroupMenuState::Create);
-        app.group_menu_input = "New Group".to_string();
+        app.group_menu.state = Some(GroupMenuState::Create);
+        app.group_menu.input = "New Group".to_string();
         let req = app.handle_group_menu_key(KeyCode::Enter);
         assert!(req.is_some());
         assert!(matches!(req, Some(SendRequest::CreateGroup { name }) if name == "New Group"));
-        assert_eq!(app.group_menu_state, None);
+        assert_eq!(app.group_menu.state, None);
     }
 
     #[rstest]
@@ -9170,12 +9158,12 @@ mod tests {
 
         app.get_or_create_conversation("g1", "Old Name", true);
         app.active_conversation = Some("g1".to_string());
-        app.group_menu_state = Some(GroupMenuState::Rename);
-        app.group_menu_input = "New Name".to_string();
+        app.group_menu.state = Some(GroupMenuState::Rename);
+        app.group_menu.input = "New Name".to_string();
         let req = app.handle_group_menu_key(KeyCode::Enter);
         assert!(req.is_some());
         assert!(matches!(req, Some(SendRequest::RenameGroup { group_id, name }) if group_id == "g1" && name == "New Name"));
-        assert_eq!(app.group_menu_state, None);
+        assert_eq!(app.group_menu.state, None);
     }
 
     // --- Message request tests ---
@@ -9550,9 +9538,9 @@ mod tests {
         assert!(app.has_overlay());
         app.show_delete_confirm = false;
 
-        app.group_menu_state = Some(GroupMenuState::Menu);
+        app.group_menu.state = Some(GroupMenuState::Menu);
         assert!(app.has_overlay());
-        app.group_menu_state = None;
+        app.group_menu.state = None;
 
         app.show_message_request = true;
         assert!(app.has_overlay());
