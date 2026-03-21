@@ -951,8 +951,8 @@ async fn run_app(
     kb.apply_overrides(&overrides);
     app.keybindings = kb;
     app.keybindings_overlay.available_profiles = keybindings::all_profile_names();
-    app.settings_profile_name = config.settings_profile.clone();
-    app.available_settings_profiles = settings_profile::all_settings_profiles();
+    app.settings_profiles.name = config.settings_profile.clone();
+    app.settings_profiles.available = settings_profile::all_settings_profiles();
     app.load_from_db()?;
     app.expiring_msg_count = app.conversations.values()
         .flat_map(|c| &c.messages)

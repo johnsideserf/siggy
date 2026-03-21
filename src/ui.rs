@@ -596,7 +596,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Settings profile manager overlay
-    if app.show_settings_profile_manager {
+    if app.settings_profiles.show {
         draw_settings_profile_manager(frame, app, size);
     }
 
@@ -606,7 +606,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Poll vote overlay
-    if app.show_poll_vote {
+    if app.poll_vote.show {
         draw_poll_vote_overlay(frame, app, size);
     }
 
@@ -2452,7 +2452,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     };
     lines.push(Line::from(vec![
         Span::styled("  Profile: ", profile_style),
-        Span::styled(app.settings_profile_name.clone(), profile_value_style),
+        Span::styled(app.settings_profiles.name.clone(), profile_value_style),
     ]));
 
     // Hint line for the currently selected item
@@ -3450,12 +3450,12 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
     // If save-as input is active, draw that sub-overlay instead
-    if app.settings_profile_save_as {
+    if app.settings_profiles.save_as {
         draw_settings_profile_save_as(frame, app, area);
         return;
     }
 
-    let max_visible = 10usize.min(app.available_settings_profiles.len());
+    let max_visible = 10usize.min(app.settings_profiles.available.len());
     let pref_height = max_visible as u16 + 5; // borders + footer
 
     let (popup_area, block) = centered_popup(
@@ -3466,22 +3466,22 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
     let footer_lines = 2;
     let visible_rows = inner_height.saturating_sub(footer_lines);
 
-    let scroll_offset = if app.settings_profile_manager_index >= visible_rows {
-        app.settings_profile_manager_index - visible_rows + 1
+    let scroll_offset = if app.settings_profiles.index >= visible_rows {
+        app.settings_profiles.index - visible_rows + 1
     } else {
         0
     };
 
     // Determine if current settings differ from loaded profile
-    let has_changes = !app.available_settings_profiles.iter()
-        .any(|p| p.name == app.settings_profile_name && p.matches_app(app));
+    let has_changes = !app.settings_profiles.available.iter()
+        .any(|p| p.name == app.settings_profiles.name && p.matches_app(app));
 
     let mut lines: Vec<Line> = Vec::new();
-    let end = (scroll_offset + visible_rows).min(app.available_settings_profiles.len());
+    let end = (scroll_offset + visible_rows).min(app.settings_profiles.available.len());
     for i in scroll_offset..end {
-        let profile = &app.available_settings_profiles[i];
-        let is_selected = i == app.settings_profile_manager_index;
-        let is_active = profile.name == app.settings_profile_name;
+        let profile = &app.settings_profiles.available[i];
+        let is_selected = i == app.settings_profiles.index;
+        let is_active = profile.name == app.settings_profiles.name;
 
         let marker = if is_active { ">" } else { " " };
         let row_style = if is_selected {
@@ -3506,7 +3506,7 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Build contextual footer hints
-    let selected_profile = app.available_settings_profiles.get(app.settings_profile_manager_index);
+    let selected_profile = app.settings_profiles.available.get(app.settings_profiles.index);
     let is_builtin = selected_profile
         .map(|p| crate::settings_profile::is_builtin(&p.name))
         .unwrap_or(true);
@@ -3538,13 +3538,13 @@ fn draw_settings_profile_save_as(frame: &mut Frame, app: &App, area: Rect) {
         frame, area, 40, 7, " Save Profile As ", theme,
     );
 
-    let cursor_char = if app.settings_profile_save_as_input.is_empty() { "_" } else { "" };
+    let cursor_char = if app.settings_profiles.save_as_input.is_empty() { "_" } else { "" };
     let lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("  Name: ", Style::default().fg(theme.fg_secondary)),
             Span::styled(
-                format!("{}{cursor_char}", app.settings_profile_save_as_input),
+                format!("{}{cursor_char}", app.settings_profiles.save_as_input),
                 Style::default().fg(theme.fg).add_modifier(Modifier::UNDERLINED),
             ),
         ]),
@@ -3666,7 +3666,7 @@ pub(crate) fn build_poll_display(
 
 fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let pending = match &app.poll_vote_pending {
+    let pending = match &app.poll_vote.pending {
         Some(p) => p,
         None => return,
     };
@@ -3683,10 +3683,10 @@ fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     for (i, opt) in pending.options.iter().enumerate() {
-        let selected = app.poll_vote_selections.get(i).copied().unwrap_or(false);
-        let marker = if i == app.poll_vote_index { ">" } else { " " };
+        let selected = app.poll_vote.selections.get(i).copied().unwrap_or(false);
+        let marker = if i == app.poll_vote.index { ">" } else { " " };
         let checkbox = if selected { "[x]" } else { "[ ]" };
-        let style = if i == app.poll_vote_index {
+        let style = if i == app.poll_vote.index {
             Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)

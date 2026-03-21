@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::db::Database;
 use crate::image_render;
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
-use crate::domain::{ActionMenuState, ContactsOverlayState, FilePickerState, ForwardOverlayState, ImageState, KeybindingsOverlayState, NotificationState, PinDurationOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState, ThemePickerState, TypingState, VerifyOverlayState};
+use crate::domain::{ActionMenuState, ContactsOverlayState, FilePickerState, ForwardOverlayState, ImageState, KeybindingsOverlayState, NotificationState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -491,35 +491,16 @@ pub struct App {
     pub keybindings_overlay: KeybindingsOverlayState,
     /// Pin duration picker overlay state
     pub pin_duration: PinDurationOverlayState,
-    /// Poll vote overlay visible
-    pub show_poll_vote: bool,
-    /// Cursor position in poll vote overlay
-    pub poll_vote_index: usize,
-    /// Multi-select tracking for poll vote options
-    pub poll_vote_selections: Vec<bool>,
-    /// Pending poll vote context
-    pub poll_vote_pending: Option<PollVotePending>,
-    /// Buffered poll data for polls whose message hasn't arrived yet (race condition)
-    /// Key: (conv_id, timestamp_ms)
-    pub pending_polls: HashMap<(String, i64), PollData>,
+    /// Poll vote overlay state
+    pub poll_vote: PollVoteOverlayState,
     /// Number of in-memory messages with expiration > 0 (skip sweeps when zero)
     pub expiring_msg_count: usize,
     /// About overlay visible
     pub show_about: bool,
     /// Profile editor overlay state
     pub profile: ProfileOverlayState,
-    /// Current settings profile name
-    pub settings_profile_name: String,
-    /// Settings profile manager overlay visible
-    pub show_settings_profile_manager: bool,
-    /// Cursor position in settings profile manager
-    pub settings_profile_manager_index: usize,
-    /// All available settings profiles (built-in + custom)
-    pub available_settings_profiles: Vec<crate::settings_profile::SettingsProfile>,
-    /// Save-as mode active in profile manager
-    pub settings_profile_save_as: bool,
-    /// Text input buffer for save-as name
-    pub settings_profile_save_as_input: String,
+    /// Settings profile overlay state
+    pub settings_profiles: SettingsProfileOverlayState,
     /// Mouse enabled state when settings overlay opened (for deferred toggle)
     pub settings_mouse_snapshot: bool,
 }
@@ -819,7 +800,7 @@ impl App {
         config.account = self.account.clone();
         config.theme = self.theme.name.clone();
         config.keybinding_profile = self.keybindings.profile_name.clone();
-        config.settings_profile = self.settings_profile_name.clone();
+        config.settings_profile = self.settings_profiles.name.clone();
         config.notification_preview = self.notifications.notification_preview.clone();
         config.image_mode = self.image.image_mode.clone();
         for def in SETTINGS {
@@ -1037,19 +1018,19 @@ impl App {
     /// Cycle through settings profiles (left/right on the profile row).
     /// Uses deferred hooks since the user can't see messages while the overlay is open.
     fn cycle_settings_profile(&mut self, forward: bool) {
-        if self.available_settings_profiles.is_empty() {
+        if self.settings_profiles.available.is_empty() {
             return;
         }
-        let current_idx = self.available_settings_profiles.iter()
-            .position(|p| p.name == self.settings_profile_name)
+        let current_idx = self.settings_profiles.available.iter()
+            .position(|p| p.name == self.settings_profiles.name)
             .unwrap_or(0);
         let new_idx = if forward {
-            (current_idx + 1) % self.available_settings_profiles.len()
+            (current_idx + 1) % self.settings_profiles.available.len()
         } else {
-            (current_idx + self.available_settings_profiles.len() - 1)
-                % self.available_settings_profiles.len()
+            (current_idx + self.settings_profiles.available.len() - 1)
+                % self.settings_profiles.available.len()
         };
-        let profile = self.available_settings_profiles[new_idx].clone();
+        let profile = self.settings_profiles.available[new_idx].clone();
         self.apply_settings_profile_deferred(&profile);
     }
 
@@ -1057,7 +1038,7 @@ impl App {
     /// Hooks fire when the overlay closes (settings or profile manager Esc handler).
     fn apply_settings_profile_deferred(&mut self, profile: &crate::settings_profile::SettingsProfile) {
         profile.apply_to(self);
-        self.settings_profile_name = profile.name.clone();
+        self.settings_profiles.name = profile.name.clone();
     }
 
     /// Fire on_toggle hooks only for settings that changed since the overlay opened.
@@ -1069,23 +1050,23 @@ impl App {
 
     /// Open the settings profile manager overlay.
     fn open_settings_profile_manager(&mut self) {
-        self.available_settings_profiles = crate::settings_profile::all_settings_profiles();
-        self.settings_profile_manager_index = self.available_settings_profiles.iter()
-            .position(|p| p.name == self.settings_profile_name)
+        self.settings_profiles.available = crate::settings_profile::all_settings_profiles();
+        self.settings_profiles.index = self.settings_profiles.available.iter()
+            .position(|p| p.name == self.settings_profiles.name)
             .unwrap_or(0);
-        self.show_settings_profile_manager = true;
-        self.settings_profile_save_as = false;
-        self.settings_profile_save_as_input.clear();
+        self.settings_profiles.show = true;
+        self.settings_profiles.save_as = false;
+        self.settings_profiles.save_as_input.clear();
         // Don't overwrite settings_snapshot - keep the one from when /settings opened
     }
 
     /// Handle a key press while the settings profile manager is open.
     pub fn handle_settings_profile_manager_key(&mut self, code: KeyCode) {
         // Save-as text input mode
-        if self.settings_profile_save_as {
+        if self.settings_profiles.save_as {
             match code {
                 KeyCode::Enter => {
-                    let name = self.settings_profile_save_as_input.trim().to_string();
+                    let name = self.settings_profiles.save_as_input.trim().to_string();
                     if name.is_empty() {
                         self.status_message = "Profile name cannot be empty".to_string();
                     } else if crate::settings_profile::is_builtin(&name) {
@@ -1094,10 +1075,10 @@ impl App {
                         let profile = crate::settings_profile::SettingsProfile::from_app(self, name.clone());
                         match crate::settings_profile::save_custom_profile(&profile) {
                             Ok(()) => {
-                                self.settings_profile_name = name;
-                                self.available_settings_profiles = crate::settings_profile::all_settings_profiles();
-                                self.settings_profile_manager_index = self.available_settings_profiles.iter()
-                                    .position(|p| p.name == self.settings_profile_name)
+                                self.settings_profiles.name = name;
+                                self.settings_profiles.available = crate::settings_profile::all_settings_profiles();
+                                self.settings_profiles.index = self.settings_profiles.available.iter()
+                                    .position(|p| p.name == self.settings_profiles.name)
                                     .unwrap_or(0);
                                 self.save_settings();
                                 self.status_message = "Profile saved".to_string();
@@ -1106,18 +1087,18 @@ impl App {
                                 self.status_message = format!("Save failed: {e}");
                             }
                         }
-                        self.settings_profile_save_as = false;
+                        self.settings_profiles.save_as = false;
                     }
                 }
                 KeyCode::Esc => {
-                    self.settings_profile_save_as = false;
+                    self.settings_profiles.save_as = false;
                 }
                 KeyCode::Backspace => {
-                    self.settings_profile_save_as_input.pop();
+                    self.settings_profiles.save_as_input.pop();
                 }
                 KeyCode::Char(c) => {
-                    if self.settings_profile_save_as_input.len() < 30 {
-                        self.settings_profile_save_as_input.push(c);
+                    if self.settings_profiles.save_as_input.len() < 30 {
+                        self.settings_profiles.save_as_input.push(c);
                     }
                 }
                 _ => {}
@@ -1128,16 +1109,16 @@ impl App {
         // List navigation mode
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_profile_manager_index < self.available_settings_profiles.len().saturating_sub(1) {
-                    self.settings_profile_manager_index += 1;
+                if self.settings_profiles.index < self.settings_profiles.available.len().saturating_sub(1) {
+                    self.settings_profiles.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.settings_profile_manager_index = self.settings_profile_manager_index.saturating_sub(1);
+                self.settings_profiles.index = self.settings_profiles.index.saturating_sub(1);
             }
             KeyCode::Enter => {
                 // Load the selected profile (stay open for preview)
-                if let Some(profile) = self.available_settings_profiles.get(self.settings_profile_manager_index).cloned() {
+                if let Some(profile) = self.settings_profiles.available.get(self.settings_profiles.index).cloned() {
                     self.apply_settings_profile_deferred(&profile);
                     self.save_settings();
                     self.status_message = format!("Loaded profile: {}", profile.name);
@@ -1145,7 +1126,7 @@ impl App {
             }
             KeyCode::Char('s') => {
                 // Save over current custom profile (only if custom and settings differ)
-                if let Some(profile) = self.available_settings_profiles.get(self.settings_profile_manager_index) {
+                if let Some(profile) = self.settings_profiles.available.get(self.settings_profiles.index) {
                     if crate::settings_profile::is_builtin(&profile.name) {
                         return;
                     }
@@ -1155,10 +1136,10 @@ impl App {
                     let updated = crate::settings_profile::SettingsProfile::from_app(self, profile.name.clone());
                     match crate::settings_profile::save_custom_profile(&updated) {
                         Ok(()) => {
-                            self.settings_profile_name = updated.name.clone();
-                            self.available_settings_profiles = crate::settings_profile::all_settings_profiles();
-                            self.settings_profile_manager_index = self.available_settings_profiles.iter()
-                                .position(|p| p.name == self.settings_profile_name)
+                            self.settings_profiles.name = updated.name.clone();
+                            self.settings_profiles.available = crate::settings_profile::all_settings_profiles();
+                            self.settings_profiles.index = self.settings_profiles.available.iter()
+                                .position(|p| p.name == self.settings_profiles.name)
                                 .unwrap_or(0);
                             self.save_settings();
                             self.status_message = "Profile saved".to_string();
@@ -1171,28 +1152,28 @@ impl App {
             }
             KeyCode::Char('S') => {
                 // Save-as: open name input
-                let has_changes = !self.available_settings_profiles.iter()
-                    .any(|p| p.name == self.settings_profile_name && p.matches_app(self));
+                let has_changes = !self.settings_profiles.available.iter()
+                    .any(|p| p.name == self.settings_profiles.name && p.matches_app(self));
                 if has_changes {
-                    self.settings_profile_save_as = true;
-                    self.settings_profile_save_as_input.clear();
+                    self.settings_profiles.save_as = true;
+                    self.settings_profiles.save_as_input.clear();
                 }
             }
             KeyCode::Char('d') => {
                 // Delete custom profile
-                if let Some(profile) = self.available_settings_profiles.get(self.settings_profile_manager_index) {
+                if let Some(profile) = self.settings_profiles.available.get(self.settings_profiles.index) {
                     if crate::settings_profile::is_builtin(&profile.name) {
                         return;
                     }
                     let name = profile.name.clone();
                     match crate::settings_profile::delete_custom_profile(&name) {
                         Ok(()) => {
-                            if self.settings_profile_name == name {
-                                self.settings_profile_name = "Default".to_string();
+                            if self.settings_profiles.name == name {
+                                self.settings_profiles.name = "Default".to_string();
                             }
-                            self.available_settings_profiles = crate::settings_profile::all_settings_profiles();
-                            if self.settings_profile_manager_index >= self.available_settings_profiles.len() {
-                                self.settings_profile_manager_index = self.available_settings_profiles.len().saturating_sub(1);
+                            self.settings_profiles.available = crate::settings_profile::all_settings_profiles();
+                            if self.settings_profiles.index >= self.settings_profiles.available.len() {
+                                self.settings_profiles.index = self.settings_profiles.available.len().saturating_sub(1);
                             }
                             self.save_settings();
                             self.status_message = format!("Deleted profile: {name}");
@@ -1204,7 +1185,7 @@ impl App {
                 }
             }
             KeyCode::Esc | KeyCode::Char('q') => {
-                self.show_settings_profile_manager = false;
+                self.settings_profiles.show = false;
                 self.fire_deferred_settings_hooks();
             }
             _ => {}
@@ -2164,7 +2145,7 @@ impl App {
                             let allow_multiple = poll.allow_multiple;
                             let poll_timestamp = msg.timestamp_ms;
                             let option_count = options.len();
-                            self.poll_vote_pending = Some(PollVotePending {
+                            self.poll_vote.pending = Some(PollVotePending {
                                 conv_id,
                                 is_group,
                                 poll_author,
@@ -2172,9 +2153,9 @@ impl App {
                                 allow_multiple,
                                 options,
                             });
-                            self.poll_vote_selections = vec![false; option_count];
-                            self.poll_vote_index = 0;
-                            self.show_poll_vote = true;
+                            self.poll_vote.selections = vec![false; option_count];
+                            self.poll_vote.index = 0;
+                            self.poll_vote.show = true;
                         }
                     }
                 }
@@ -2655,20 +2636,14 @@ impl App {
                 ..Default::default()
             },
             pin_duration: PinDurationOverlayState::default(),
-            show_poll_vote: false,
-            poll_vote_index: 0,
-            poll_vote_selections: Vec::new(),
-            poll_vote_pending: None,
-            pending_polls: HashMap::new(),
+            poll_vote: PollVoteOverlayState::default(),
             expiring_msg_count: 0,
             show_about: false,
             profile: ProfileOverlayState::default(),
-            settings_profile_name: "Default".to_string(),
-            show_settings_profile_manager: false,
-            settings_profile_manager_index: 0,
-            available_settings_profiles: crate::settings_profile::all_settings_profiles(),
-            settings_profile_save_as: false,
-            settings_profile_save_as_input: String::new(),
+            settings_profiles: SettingsProfileOverlayState {
+                available: crate::settings_profile::all_settings_profiles(),
+                ..Default::default()
+            },
             settings_mouse_snapshot: true,
         }
     }
@@ -3061,7 +3036,7 @@ impl App {
             self.handle_sidebar_filter_key(code);
             return (true, None);
         }
-        if self.show_poll_vote {
+        if self.poll_vote.show {
             let send = self.handle_poll_vote_key(code);
             return (true, send);
         }
@@ -3121,7 +3096,7 @@ impl App {
             self.handle_search_key(code);
             return (true, None);
         }
-        if self.show_settings_profile_manager {
+        if self.settings_profiles.show {
             self.handle_settings_profile_manager_key(code);
             return (true, None);
         }
@@ -3728,7 +3703,7 @@ impl App {
                             style_ranges: Vec<(usize, usize, StyleType)>,
                             quote: Option<Quote>| {
             // Check for buffered poll data from a race condition (poll event arrived first)
-            let deferred_poll = self.pending_polls.remove(&(conv_id.clone(), msg_ts_ms));
+            let deferred_poll = self.poll_vote.pending_polls.remove(&(conv_id.clone(), msg_ts_ms));
             if let Some(conv) = self.conversations.get_mut(&conv_id) {
                 let pos = conv.messages.partition_point(|m| m.timestamp_ms <= msg_ts_ms);
                 conv.messages.insert(pos, DisplayMessage {
@@ -4167,7 +4142,7 @@ impl App {
             if let Some(idx) = conv.find_msg_idx(timestamp) {
                 conv.messages[idx].poll_data = Some(poll_data.clone());
             } else {
-                self.pending_polls.insert((conv_id.to_string(), timestamp), poll_data.clone());
+                self.poll_vote.pending_polls.insert((conv_id.to_string(), timestamp), poll_data.clone());
             }
         }
         self.db_warn_visible(
@@ -4399,38 +4374,38 @@ impl App {
     }
 
     pub fn handle_poll_vote_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let pending = self.poll_vote_pending.as_ref()?;
+        let pending = self.poll_vote.pending.as_ref()?;
         let option_count = pending.options.len();
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.poll_vote_index < option_count.saturating_sub(1) {
-                    self.poll_vote_index += 1;
+                if self.poll_vote.index < option_count.saturating_sub(1) {
+                    self.poll_vote.index += 1;
                 }
                 None
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.poll_vote_index = self.poll_vote_index.saturating_sub(1);
+                self.poll_vote.index = self.poll_vote.index.saturating_sub(1);
                 None
             }
             KeyCode::Char(' ') => {
                 let allow_multiple = pending.allow_multiple;
                 if allow_multiple {
-                    if let Some(sel) = self.poll_vote_selections.get_mut(self.poll_vote_index) {
+                    if let Some(sel) = self.poll_vote.selections.get_mut(self.poll_vote.index) {
                         *sel = !*sel;
                     }
                 } else {
                     // Single select: clear all, select current
-                    for sel in &mut self.poll_vote_selections {
+                    for sel in &mut self.poll_vote.selections {
                         *sel = false;
                     }
-                    if let Some(sel) = self.poll_vote_selections.get_mut(self.poll_vote_index) {
+                    if let Some(sel) = self.poll_vote.selections.get_mut(self.poll_vote.index) {
                         *sel = true;
                     }
                 }
                 None
             }
             KeyCode::Enter => {
-                let selected: Vec<i64> = self.poll_vote_selections
+                let selected: Vec<i64> = self.poll_vote.selections
                     .iter()
                     .enumerate()
                     .filter(|(_, &sel)| sel)
@@ -4439,8 +4414,8 @@ impl App {
                 if selected.is_empty() {
                     return None;
                 }
-                let pending = self.poll_vote_pending.take()?;
-                self.show_poll_vote = false;
+                let pending = self.poll_vote.pending.take()?;
+                self.poll_vote.show = false;
 
                 // Optimistic local vote
                 let voter = self.account.clone();
@@ -4456,8 +4431,8 @@ impl App {
                 })
             }
             KeyCode::Esc => {
-                self.show_poll_vote = false;
-                self.poll_vote_pending = None;
+                self.poll_vote.show = false;
+                self.poll_vote.pending = None;
                 None
             }
             _ => None,
@@ -6359,9 +6334,9 @@ impl App {
             || self.show_message_request
             || self.theme_picker.show
             || self.keybindings_overlay.show
-            || self.show_settings_profile_manager
+            || self.settings_profiles.show
             || self.pin_duration.show
-            || self.show_poll_vote
+            || self.poll_vote.show
             || self.show_about
             || self.profile.show
             || self.forward.show
@@ -9591,9 +9566,9 @@ mod tests {
         assert!(app.has_overlay());
         app.pin_duration.show = false;
 
-        app.show_poll_vote = true;
+        app.poll_vote.show = true;
         assert!(app.has_overlay());
-        app.show_poll_vote = false;
+        app.poll_vote.show = false;
 
         app.show_about = true;
         assert!(app.has_overlay());
