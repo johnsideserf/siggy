@@ -121,6 +121,10 @@ pub struct ImageRenderResult {
     pub is_preview: bool,
     pub lines: Option<Vec<Line<'static>>>,
     pub image_path: Option<String>,
+    /// Pre-encoded PNG for native_image_cache: (path, base64, pixel_w, pixel_h)
+    pub pre_native_png: Option<(String, String, u32, u32)>,
+    /// Pre-encoded full Sixel for sixel_cache: (path, sixel_string)
+    pub pre_sixel: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,22 +396,25 @@ pub struct App {
     pub identity_trust: HashMap<String, TrustLevel>,
     /// Confirmation pending for verify action (user must press v twice)
     pub verify_confirming: bool,
-    /// Show inline halfblock image previews in chat
-    pub inline_images: bool,
+    /// Image display mode: "native", "halfblock", or "none"
+    pub image_mode: String,
     /// Show link previews (title, description, thumbnail) for URLs
     pub show_link_previews: bool,
     /// Link regions detected in the last rendered frame (for OSC 8 injection)
     pub link_regions: Vec<crate::ui::LinkRegion>,
     /// Maps display text → hidden URL for attachment links (cleared each frame)
     pub link_url_map: HashMap<String, String>,
-    /// Detected terminal image protocol (Kitty, iTerm2, or Halfblock)
+    /// Detected terminal image protocol (Kitty, iTerm2, Sixel, or Halfblock)
     pub image_protocol: ImageProtocol,
+    /// Cell pixel dimensions (width, height) for Sixel encoding
+    pub cell_px: (u16, u16),
     /// Images visible on screen for native protocol overlay (cleared each frame)
     pub visible_images: Vec<VisibleImage>,
+    /// Previous scroll offset for Sixel stale pixel detection.
+    /// When scroll changes with Sixel visible, force full redraw to clear stale pixels.
+    pub sixel_prev_scroll: usize,
     /// Previous frame's visible images, for skipping redundant image redraws
     pub prev_visible_images: Vec<VisibleImage>,
-    /// Experimental: use native terminal image protocols (Kitty/iTerm2) instead of halfblock
-    pub native_images: bool,
     /// Cache of pre-resized PNGs for native protocol (path → (base64, pixel_w, pixel_h)).
     /// Populated: on-demand during native image rendering (get_or_cache_png in main.rs).
     /// Invalidation: cleared on terminal resize (clear_kitty_state). Persists across
@@ -609,6 +616,10 @@ pub struct App {
     /// Populated on-demand during iTerm2 rendering. Grows unbounded during session.
     /// Cleared on terminal resize (clear_kitty_state). Persists across conversation switches.
     pub iterm2_crop_cache: HashMap<(String, u16, u16), String>,
+    /// Cache of full Sixel-encoded images: path -> sixel_string.
+    /// Populated by pre-cache in ensure_active_images. Cleared on resize.
+    /// Partial crops are obtained instantly via `slice_sixel_bands()`.
+    pub sixel_cache: HashMap<String, String>,
     /// Current settings profile name
     pub settings_profile_name: String,
     /// Settings profile manager overlay visible
@@ -813,28 +824,12 @@ pub const SETTINGS: &[SettingDef] = &[
         on_toggle: None,
     },
     SettingDef {
-        label: "Inline image previews",
-        hint: "Render image attachments as previews in chat",
-        get: |a| a.inline_images,
-        set: |a, v| a.inline_images = v,
-        save: Some(|c, v| c.inline_images = v),
-        on_toggle: None, // UI checks the flag; cached lines stay in memory
-    },
-    SettingDef {
         label: "Link previews",
         hint: "Show title and thumbnail for URLs",
         get: |a| a.show_link_previews,
         set: |a, v| a.show_link_previews = v,
         save: Some(|c, v| c.show_link_previews = v),
         on_toggle: None, // UI checks the flag; cached lines stay in memory
-    },
-    SettingDef {
-        label: "Native images (experimental)",
-        hint: "Requires Kitty, Ghostty, WezTerm, or iTerm2",
-        get: |a| a.native_images,
-        set: |a, v| a.native_images = v,
-        save: Some(|c, v| c.native_images = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Date separators",
@@ -944,6 +939,7 @@ impl App {
         config.keybinding_profile = self.keybindings.profile_name.clone();
         config.settings_profile = self.settings_profile_name.clone();
         config.notification_preview = self.notification_preview.clone();
+        config.image_mode = self.image_mode.clone();
         for def in SETTINGS {
             if let Some(save_fn) = def.save {
                 save_fn(&mut config, (def.get)(self));
@@ -957,7 +953,7 @@ impl App {
         keybindings::save_overrides(&overrides);
     }
 
-    // Image lines are always cached in memory; the UI checks inline_images/show_link_previews
+    // Image lines are always cached in memory; the UI checks image_mode/show_link_previews
     // before displaying them. No refresh needed on toggle — it's just a visibility flag now.
 
     /// Drain completed background image renders and spawn new ones for the viewport.
@@ -984,12 +980,19 @@ impl App {
                         conv.messages[idx].image_lines =
                             Some(result.lines.unwrap_or_default());
                     }
+                    // Pre-populate native image caches from background task
+                    if let Some((path, b64, pw, ph)) = result.pre_native_png {
+                        self.native_image_cache.entry(path).or_insert((b64, pw, ph));
+                    }
+                    if let Some((path, sixel)) = result.pre_sixel {
+                        self.sixel_cache.entry(path).or_insert(sixel);
+                    }
                     drained = true;
                 }
             }
         }
 
-        if !self.inline_images {
+        if self.image_mode == "none" {
             return drained;
         }
         let Some(ref id) = self.active_conversation else { return drained };
@@ -1029,6 +1032,9 @@ impl App {
         }
 
         // Spawn background render tasks
+        let native_sixel = self.image_mode == "native"
+            && self.image_protocol == image_render::ImageProtocol::Sixel;
+        let cell_px = self.cell_px;
         for (ts, path, max_width, is_preview) in work {
             self.image_render_in_flight
                 .insert((id.clone(), ts, is_preview));
@@ -1036,12 +1042,43 @@ impl App {
             let cid = id.clone();
             tokio::task::spawn_blocking(move || {
                 let lines = image_render::render_image(Path::new(&path), max_width);
+
+                // Pre-encode PNG + full Sixel alongside halfblock so caches are
+                // populated before the image first appears in the viewport.
+                let (pre_native_png, pre_sixel) = if native_sixel {
+                    let cell_w = lines.as_ref()
+                        .and_then(|l| l.first())
+                        .map(|l| l.width().saturating_sub(2) as u32)
+                        .unwrap_or(0);
+                    let cell_h = lines.as_ref().map(|l| l.len() as u32).unwrap_or(0);
+                    if cell_w > 0 && cell_h > 0 {
+                        let png = image_render::encode_native_png(
+                            Path::new(&path), cell_w, cell_h,
+                        );
+                        let sixel = png.as_ref().and_then(|p| {
+                            image_render::encode_sixel(
+                                &p.0,
+                                cell_w as u16, cell_h as u16, cell_px,
+                            )
+                        });
+                        let pre_png = png.map(|(b64, pw, ph)| (path.clone(), b64, pw, ph));
+                        let pre_six = sixel.map(|s| (path.clone(), s));
+                        (pre_png, pre_six)
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                };
+
                 let _ = tx.send(ImageRenderResult {
                     conv_id: cid,
                     timestamp_ms: ts,
                     is_preview,
                     lines,
                     image_path: if is_preview { Some(path) } else { None },
+                    pre_native_png,
+                    pre_sixel,
                 });
             });
         }
@@ -1050,12 +1087,13 @@ impl App {
     }
 
     /// Handle a key press while the settings overlay is open.
-    /// After toggles: Preview at SETTINGS.len(), Theme at +1, Keybindings at +2, Profile at +3.
+    /// After toggles: Preview at SETTINGS.len(), Image mode at +1, Theme at +2, Keybindings at +3, Profile at +4.
     pub fn handle_settings_key(&mut self, code: KeyCode) {
         let preview_index = SETTINGS.len();
-        let theme_index = SETTINGS.len() + 1;
-        let kb_index = SETTINGS.len() + 2;
-        let profile_index = SETTINGS.len() + 3;
+        let image_mode_index = SETTINGS.len() + 1;
+        let theme_index = SETTINGS.len() + 2;
+        let kb_index = SETTINGS.len() + 3;
+        let profile_index = SETTINGS.len() + 4;
         let max_index = profile_index;
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -1078,6 +1116,12 @@ impl App {
                         "full" => "sender".to_string(),
                         "sender" => "minimal".to_string(),
                         _ => "full".to_string(),
+                    };
+                } else if self.settings_index == image_mode_index {
+                    self.image_mode = match self.image_mode.as_str() {
+                        "native" => "halfblock".to_string(),
+                        "halfblock" => "none".to_string(),
+                        _ => "native".to_string(),
                     };
                 } else if self.settings_index == theme_index {
                     self.show_settings = false;
@@ -2670,14 +2714,15 @@ impl App {
             verify_identities: Vec::new(),
             identity_trust: HashMap::new(),
             verify_confirming: false,
-            inline_images: true,
+            image_mode: "halfblock".to_string(),
             show_link_previews: true,
             link_regions: Vec::new(),
             link_url_map: HashMap::new(),
             image_protocol: image_render::detect_protocol(),
+            cell_px: image_render::detect_cell_pixel_size(),
             visible_images: Vec::new(),
             prev_visible_images: Vec::new(),
-            native_images: false,
+            sixel_prev_scroll: 0,
             native_image_cache: HashMap::new(),
             prev_active_conversation: None,
             incognito: false,
@@ -2779,6 +2824,7 @@ impl App {
             kitty_transmitted: HashSet::new(),
             kitty_pending_transmits: Vec::new(),
             iterm2_crop_cache: HashMap::new(),
+            sixel_cache: HashMap::new(),
             settings_profile_name: "Default".to_string(),
             show_settings_profile_manager: false,
             settings_profile_manager_index: 0,
@@ -3087,9 +3133,9 @@ impl App {
     }
 
     /// Clear terminal image placement state so images are retransmitted on the next frame.
-    /// The expensive base64 caches (native_image_cache, iterm2_crop_cache) are preserved
-    /// so switching back to a conversation doesn't re-decode images from disk.
-    /// Call on conversation switch.
+    /// The expensive caches (native_image_cache, iterm2_crop_cache,
+    /// sixel_cache) are preserved so switching back to a conversation doesn't
+    /// re-decode images from disk. Call on conversation switch.
     pub fn clear_kitty_placements(&mut self) {
         self.kitty_transmitted.clear();
         self.kitty_pending_transmits.clear();
@@ -3097,10 +3143,16 @@ impl App {
 
     /// Full image state reset: clear both terminal placements and base64 caches.
     /// Call on terminal resize (cell dimensions change, so cached PNGs need re-encoding).
+    ///
+    /// Sixel caches survive resize: encoding depends on cell_px (from config,
+    /// not terminal size) and halfblock dimensions (fixed at max_width=40).
+    /// Only screen positions change, which ratatui recomputes automatically.
     pub fn clear_kitty_state(&mut self) {
         self.clear_kitty_placements();
-        self.native_image_cache.clear();
-        self.iterm2_crop_cache.clear();
+        if self.image_protocol != ImageProtocol::Sixel {
+            self.native_image_cache.clear();
+            self.iterm2_crop_cache.clear();
+        }
     }
 
     /// Reset typing state and queue a stop request if we were typing.
@@ -3935,7 +3987,7 @@ impl App {
                 if let Some(dm) = conv.messages.iter_mut().rev()
                     .find(|m| m.timestamp_ms == msg_ts_ms && !m.body.starts_with('['))
                 {
-                    let (img_lines, img_path) = if self.show_link_previews && self.inline_images {
+                    let (img_lines, img_path) = if self.show_link_previews && self.image_mode != "none" {
                         if let Some(ref p) = preview.image_path {
                             (image_render::render_image(Path::new(p), 30), Some(p.clone()))
                         } else {
@@ -5271,7 +5323,7 @@ impl App {
                         let is_image = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp");
                         let prefix = if is_image { "image" } else { "attachment" };
                         let body = if text.is_empty() { format!("[{prefix}: {fname}]") } else { format!("[{prefix}: {fname}] {text}") };
-                        let (img_lines, img_path) = if is_image && self.inline_images {
+                        let (img_lines, img_path) = if is_image && self.image_mode != "none" {
                             (image_render::render_image(path, 40), Some(path.to_string_lossy().into_owned()))
                         } else {
                             (None, None)

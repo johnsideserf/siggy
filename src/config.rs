@@ -36,16 +36,28 @@ pub struct Config {
     #[serde(default = "default_clipboard_clear_seconds")]
     pub clipboard_clear_seconds: u64,
 
-    /// Show inline halfblock image previews in chat
-    #[serde(default = "default_true")]
+    /// Image display mode: "native" (terminal protocol), "halfblock", or "none"
+    #[serde(default)]
+    pub image_mode: String,
+
+    /// Override cell pixel width for Sixel sizing (0 = auto-detect)
+    #[serde(default)]
+    pub cell_pixel_width: u16,
+
+    /// Override cell pixel height for Sixel sizing (0 = auto-detect)
+    #[serde(default)]
+    pub cell_pixel_height: u16,
+
+    /// Legacy: show inline halfblock image previews (migrated to image_mode)
+    #[serde(default = "default_true", skip_serializing)]
     pub inline_images: bool,
 
     /// Show link previews (title, description, thumbnail) for URLs in messages
     #[serde(default = "default_true")]
     pub show_link_previews: bool,
 
-    /// Experimental: use native terminal image protocols (Kitty/iTerm2) over halfblock
-    #[serde(default)]
+    /// Legacy: use native terminal image protocols (migrated to image_mode)
+    #[serde(default, skip_serializing)]
     pub native_images: bool,
 
     /// Show date separator lines between messages from different days
@@ -150,6 +162,9 @@ impl Default for Config {
             desktop_notifications: false,
             notification_preview: default_notification_preview(),
             clipboard_clear_seconds: default_clipboard_clear_seconds(),
+            image_mode: "halfblock".to_string(),
+            cell_pixel_width: 0,
+            cell_pixel_height: 0,
             inline_images: true,
             show_link_previews: true,
             native_images: false,
@@ -197,8 +212,18 @@ impl Config {
         if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path)
                 .with_context(|| format!("Failed to read config from {}", config_path.display()))?;
-            let config: Config = toml::from_str(&contents)
+            let mut config: Config = toml::from_str(&contents)
                 .with_context(|| format!("Failed to parse config from {}", config_path.display()))?;
+            // Migrate legacy inline_images/native_images to image_mode
+            if config.image_mode.is_empty() {
+                config.image_mode = if config.native_images {
+                    "native".to_string()
+                } else if config.inline_images {
+                    "halfblock".to_string()
+                } else {
+                    "none".to_string()
+                };
+            }
             Ok(config)
         } else {
             Ok(Config::default())

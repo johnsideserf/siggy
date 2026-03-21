@@ -546,6 +546,45 @@ fn emit_native_images(
         return Ok(());
     }
 
+    // Sixel: slice the cached full Sixel to the visible region (instant string op).
+    if protocol == image_render::ImageProtocol::Sixel {
+        if app.has_overlay() || app.visible_images.is_empty() {
+            app.visible_images.clear();
+            return Ok(());
+        }
+
+        // Dedup: skip Sixel emit when images haven't moved (avoids cursor
+        // flash from large Sixel writes on every mouse-move/redraw).
+        if app.visible_images == app.prev_visible_images {
+            app.visible_images.clear();
+            return Ok(());
+        }
+
+        let images = std::mem::take(&mut app.visible_images);
+        queue!(backend, Hide, SavePosition)?;
+
+        for img in &images {
+            if let Some(full_sixel) = app.sixel_cache.get(&img.path) {
+                let sliced = image_render::slice_sixel_bands(
+                    full_sixel,
+                    app.cell_px.1,
+                    img.full_height,
+                    img.crop_top,
+                    img.height,
+                );
+                if let Some(sixel) = sliced {
+                    queue!(backend, MoveTo(img.x, img.y))?;
+                    write!(backend, "{sixel}")?;
+                }
+            }
+        }
+
+        queue!(backend, RestorePosition, Show)?;
+        app.prev_visible_images = images;
+        return Ok(());
+    }
+
+    // iTerm2: only re-render when images change (dedup avoids flicker).
     if app.visible_images == app.prev_visible_images {
         return Ok(());
     }
@@ -592,7 +631,7 @@ fn emit_native_images(
     }
 
     queue!(backend, RestorePosition)?;
-    backend.flush()?;
+    // No flush - let EndSynchronizedUpdate send everything atomically.
 
     app.prev_visible_images = images;
     Ok(())
@@ -889,9 +928,8 @@ async fn run_app(
     app.desktop_notifications = config.desktop_notifications;
     app.notification_preview = config.notification_preview.clone();
     app.clipboard_clear_seconds = config.clipboard_clear_seconds;
-    app.inline_images = config.inline_images;
+    app.image_mode = config.image_mode.clone();
     app.show_link_previews = config.show_link_previews;
-    app.native_images = config.native_images;
     app.incognito = incognito;
     app.date_separators = config.date_separators;
     app.show_receipts = config.show_receipts;
@@ -903,6 +941,9 @@ async fn run_app(
     app.send_read_receipts = config.send_read_receipts;
     app.mouse_enabled = config.mouse_enabled;
     app.sidebar_on_right = config.sidebar_on_right;
+    if config.cell_pixel_width > 0 && config.cell_pixel_height > 0 {
+        app.cell_px = (config.cell_pixel_width, config.cell_pixel_height);
+    }
     app.available_themes = theme::all_themes();
     app.theme = theme::find_theme(&config.theme);
     let mut kb = keybindings::find_profile(&config.keybinding_profile);
@@ -954,28 +995,55 @@ async fn run_app(
     loop {
         // Only redraw when state has changed (avoids resetting cursor blink timer every 50ms)
         if needs_redraw {
-            // Wrap entire render (clear + text + image overlay) in synchronized
-            // update so the terminal renders everything atomically.
+            let native = app.image_mode == "native";
+            let sixel_mode = native
+                && app.image_protocol == image_render::ImageProtocol::Sixel;
+
+            // Always start sync update for atomic rendering (prevents cursor flicker).
             queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
 
             // Force full redraw when active conversation changes (clears native image artifacts)
-            if app.native_images && app.active_conversation != app.prev_active_conversation {
+            if native && app.active_conversation != app.prev_active_conversation {
                 app.prev_active_conversation = app.active_conversation.clone();
                 terminal.clear()?;
             }
+            // Sixel: force full redraw when scroll changes so ratatui resends
+            // ALL cells. The text output (inside sync) overwrites the terminal
+            // buffer, then after EndSync our Sixel overlays at the new positions.
+            // Without this, stale Sixel pixels persist at old image positions
+            // because ratatui's diff only sends changed cells.
+            if sixel_mode && app.scroll_offset != app.sixel_prev_scroll {
+                app.sixel_prev_scroll = app.scroll_offset;
+                app.prev_visible_images.clear();
+                terminal.clear()?;
+            }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
-            let has_post_draw = !app.link_regions.is_empty() || app.native_images;
+            // Post-draw work that needs cursor hidden: OSC8 links use MoveTo,
+            // and non-Sixel native images write escape sequences. Sixel emit
+            // happens outside sync and handles its own cursor.
+            let has_post_draw = !app.link_regions.is_empty()
+                || (native && !sixel_mode);
             if has_post_draw && app.mode == InputMode::Insert {
                 queue!(terminal.backend_mut(), Hide)?;
             }
             emit_osc8_links(terminal.backend_mut(), &app.link_regions, app.theme.link)?;
-            if app.native_images {
+            if native && !sixel_mode {
                 emit_native_images(terminal.backend_mut(), &mut app)?;
             }
             if has_post_draw && app.mode == InputMode::Insert {
                 queue!(terminal.backend_mut(), Show)?;
             }
             execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+            // Sixel: emit AFTER sync update ends. WT composites text ON TOP
+            // of Sixel within sync, so text can't clear stale pixels. Outside
+            // sync, the text from ratatui's diff has already been processed,
+            // and our Sixel overlays cleanly on top. SavePosition/RestorePosition
+            // in emit keeps cursor at the input bar (no Hide/Show needed).
+            if sixel_mode {
+                use std::io::Write;
+                emit_native_images(terminal.backend_mut(), &mut app)?;
+                terminal.backend_mut().flush()?;
+            }
             needs_redraw = false;
         }
 

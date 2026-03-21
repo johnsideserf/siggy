@@ -929,7 +929,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut line_msg_idx: Vec<Option<usize>> = Vec::new();
 
     // Track images for native protocol overlay: (first_line_index, line_count, path)
-    let use_native = app.native_images && app.image_protocol != ImageProtocol::Halfblock;
+    let use_native = app.image_mode == "native" && app.image_protocol != ImageProtocol::Halfblock;
     let mut image_records: Vec<(usize, usize, String)> = Vec::new();
 
     for (i, msg) in visible.iter().enumerate() {
@@ -1073,7 +1073,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             line_msg_idx.push(Some(msg_index));
 
             // Render inline image preview if available (skip for deleted, skip if images disabled)
-            if !msg.is_deleted && app.inline_images {
+            if !msg.is_deleted && app.image_mode != "none" {
                 if let Some(ref image_lines) = msg.image_lines {
                     let first_idx = lines.len();
                     let count = image_lines.len();
@@ -1124,7 +1124,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     line_msg_idx.push(Some(msg_index));
 
                     // Render link preview thumbnail (only when images enabled)
-                    if app.inline_images {
+                    if app.image_mode != "none" {
                         if let Some(ref img_lines) = msg.preview_image_lines {
                             let first_idx = lines.len();
                             let count = img_lines.len();
@@ -1341,6 +1341,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     if use_native && app.image_protocol == ImageProtocol::Kitty {
         patch_kitty_placeholders(frame, app);
     }
+    // Note: Sixel does NOT use set_skip. ratatui writes halfblock at image cells,
+    // which clears stale Sixel pixels from previous positions when images scroll.
+    // Sixel is then overlaid outside the synchronized update (see main.rs).
 
     // Scrollbar on right border, inset to preserve rounded corners
     if content_height > available_height {
@@ -2383,8 +2386,26 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(app.notification_preview.clone(), preview_value_style),
     ]));
 
-    // Theme selector entry (index == SETTINGS.len() + 1)
-    let is_theme_selected = app.settings_index == SETTINGS.len() + 1;
+    // Image mode cycle entry (index == SETTINGS.len() + 1)
+    let image_mode_index = SETTINGS.len() + 1;
+    let is_image_mode_selected = app.settings_index == image_mode_index;
+    let image_mode_style = if is_image_mode_selected {
+        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.fg_secondary)
+    };
+    let image_mode_value_style = if is_image_mode_selected {
+        Style::default().bg(theme.bg_selected).fg(theme.accent)
+    } else {
+        Style::default().fg(theme.accent)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Image mode: ", image_mode_style),
+        Span::styled(app.image_mode.clone(), image_mode_value_style),
+    ]));
+
+    // Theme selector entry (index == SETTINGS.len() + 2)
+    let is_theme_selected = app.settings_index == SETTINGS.len() + 2;
     let theme_style = if is_theme_selected {
         Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
     } else {
@@ -2400,8 +2421,8 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(app.theme.name.clone(), theme_value_style),
     ]));
 
-    // Keybindings selector entry (index == SETTINGS.len() + 2)
-    let is_kb_selected = app.settings_index == SETTINGS.len() + 2;
+    // Keybindings selector entry (index == SETTINGS.len() + 3)
+    let is_kb_selected = app.settings_index == SETTINGS.len() + 3;
     let kb_style = if is_kb_selected {
         Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
     } else {
@@ -2417,8 +2438,8 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(app.keybindings.profile_name.clone(), kb_value_style),
     ]));
 
-    // Settings profile selector entry (index == SETTINGS.len() + 3)
-    let is_profile_selected = app.settings_index == SETTINGS.len() + 3;
+    // Settings profile selector entry (index == SETTINGS.len() + 4)
+    let is_profile_selected = app.settings_index == SETTINGS.len() + 4;
     let profile_style = if is_profile_selected {
         Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
     } else {
@@ -2440,9 +2461,10 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match app.settings_index - SETTINGS.len() {
             0 => "Control message content in notifications",
-            1 => "Switch between color themes",
-            2 => "Switch between keybinding presets",
-            3 => "h/l cycle, Enter manage settings profiles",
+            1 => "native (terminal protocol), halfblock, or none",
+            2 => "Switch between color themes",
+            3 => "Switch between keybinding presets",
+            4 => "h/l cycle, Enter manage settings profiles",
             _ => "",
         }
     };

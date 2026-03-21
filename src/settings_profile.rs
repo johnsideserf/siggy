@@ -2,16 +2,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::App;
 
-/// A settings profile: a named collection of the 14 persisted display toggles.
+/// A settings profile: a named collection of persisted display settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsProfile {
     pub name: String,
     pub notify_direct: bool,
     pub notify_group: bool,
     pub desktop_notifications: bool,
-    pub inline_images: bool,
+    #[serde(default = "default_halfblock")]
+    pub image_mode: String,
     pub show_link_previews: bool,
-    pub native_images: bool,
     pub date_separators: bool,
     pub show_receipts: bool,
     pub color_receipts: bool,
@@ -22,15 +22,18 @@ pub struct SettingsProfile {
     pub sidebar_on_right: bool,
 }
 
+fn default_halfblock() -> String {
+    "halfblock".to_string()
+}
+
 pub fn default_profile() -> SettingsProfile {
     SettingsProfile {
         name: "Default".to_string(),
         notify_direct: true,
         notify_group: true,
         desktop_notifications: false,
-        inline_images: true,
+        image_mode: "halfblock".to_string(),
         show_link_previews: true,
-        native_images: false,
         date_separators: true,
         show_receipts: true,
         color_receipts: true,
@@ -48,9 +51,8 @@ pub fn minimal_profile() -> SettingsProfile {
         notify_direct: false,
         notify_group: false,
         desktop_notifications: false,
-        inline_images: false,
+        image_mode: "none".to_string(),
         show_link_previews: false,
-        native_images: false,
         date_separators: false,
         show_receipts: false,
         color_receipts: false,
@@ -68,9 +70,8 @@ pub fn full_profile() -> SettingsProfile {
         notify_direct: true,
         notify_group: true,
         desktop_notifications: true,
-        inline_images: true,
+        image_mode: "native".to_string(),
         show_link_previews: true,
-        native_images: true,
         date_separators: true,
         show_receipts: true,
         color_receipts: true,
@@ -208,9 +209,8 @@ impl SettingsProfile {
             notify_direct: app.notify_direct,
             notify_group: app.notify_group,
             desktop_notifications: app.desktop_notifications,
-            inline_images: app.inline_images,
+            image_mode: app.image_mode.clone(),
             show_link_previews: app.show_link_previews,
-            native_images: app.native_images,
             date_separators: app.date_separators,
             show_receipts: app.show_receipts,
             color_receipts: app.color_receipts,
@@ -222,14 +222,13 @@ impl SettingsProfile {
         }
     }
 
-    /// Apply this profile to the app, setting all 14 toggle fields.
+    /// Apply this profile to the app.
     pub fn apply_to(&self, app: &mut App) {
         app.notify_direct = self.notify_direct;
         app.notify_group = self.notify_group;
         app.desktop_notifications = self.desktop_notifications;
-        app.inline_images = self.inline_images;
+        app.image_mode = self.image_mode.clone();
         app.show_link_previews = self.show_link_previews;
-        app.native_images = self.native_images;
         app.date_separators = self.date_separators;
         app.show_receipts = self.show_receipts;
         app.color_receipts = self.color_receipts;
@@ -245,9 +244,8 @@ impl SettingsProfile {
         self.notify_direct == app.notify_direct
             && self.notify_group == app.notify_group
             && self.desktop_notifications == app.desktop_notifications
-            && self.inline_images == app.inline_images
+            && self.image_mode == app.image_mode
             && self.show_link_previews == app.show_link_previews
-            && self.native_images == app.native_images
             && self.date_separators == app.date_separators
             && self.show_receipts == app.show_receipts
             && self.color_receipts == app.color_receipts
@@ -298,9 +296,8 @@ mod tests {
         assert!(!p.notify_direct);
         assert!(!p.notify_group);
         assert!(!p.desktop_notifications);
-        assert!(!p.inline_images);
+        assert_eq!(p.image_mode, "none");
         assert!(!p.show_link_previews);
-        assert!(!p.native_images);
         assert!(!p.date_separators);
         assert!(!p.show_receipts);
         assert!(!p.color_receipts);
@@ -317,9 +314,8 @@ mod tests {
         assert!(p.notify_direct);
         assert!(p.notify_group);
         assert!(p.desktop_notifications);
-        assert!(p.inline_images);
+        assert_eq!(p.image_mode, "native");
         assert!(p.show_link_previews);
-        assert!(p.native_images);
         assert!(p.date_separators);
         assert!(p.show_receipts);
         assert!(p.color_receipts);
