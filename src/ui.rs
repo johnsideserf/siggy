@@ -571,7 +571,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Action menu overlay
-    if app.show_action_menu {
+    if app.action_menu.show {
         draw_action_menu(frame, app, size);
     }
 
@@ -601,7 +601,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Pin duration picker overlay
-    if app.show_pin_duration {
+    if app.pin_duration.show {
         draw_pin_duration_picker(frame, app, size);
     }
 
@@ -1737,7 +1737,7 @@ fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, action) in items.iter().enumerate() {
-        let is_selected = i == app.action_menu_index;
+        let is_selected = i == app.action_menu.index;
         let icon = if app.nerd_fonts {
             format!("{} ", action.nerd_icon)
         } else {
@@ -3571,12 +3571,12 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     for (i, (_seconds, label)) in PIN_DURATIONS.iter().enumerate() {
-        let style = if i == app.pin_duration_index {
+        let style = if i == app.pin_duration.index {
             list_overlay::selection_style(theme.bg_selected, theme.fg)
         } else {
             Style::default().fg(theme.fg)
         };
-        let marker = if i == app.pin_duration_index { ">" } else { " " };
+        let marker = if i == app.pin_duration.index { ">" } else { " " };
         lines.push(Line::from(Span::styled(
             format!(" {marker} {label}"),
             style,
@@ -4347,9 +4347,9 @@ mod snapshot_tests {
     #[test]
     fn test_pin_duration_overlay() {
         let mut app = demo_app();
-        app.show_pin_duration = true;
-        app.pin_duration_index = 1;
-        app.pin_pending = Some(PinPending {
+        app.pin_duration.show = true;
+        app.pin_duration.index = 1;
+        app.pin_duration.pending = Some(PinPending {
             conv_id: "+15551234567".to_string(),
             is_group: false,
             target_author: "+15551234567".to_string(),
@@ -4362,8 +4362,8 @@ mod snapshot_tests {
     #[test]
     fn test_action_menu_overlay() {
         let mut app = demo_app();
-        app.show_action_menu = true;
-        app.action_menu_index = 0;
+        app.action_menu.show = true;
+        app.action_menu.index = 0;
         app.focused_msg_index = Some(0);
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);

@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::db::Database;
 use crate::image_render;
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
-use crate::domain::{FilePickerState, ImageState, NotificationState, ReactionState, SearchAction, SearchState, TypingState};
+use crate::domain::{ActionMenuState, FilePickerState, ImageState, NotificationState, PinDurationOverlayState, ReactionState, SearchAction, SearchState, TypingState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -465,10 +465,8 @@ pub struct App {
     pub send_read_receipts: bool,
     /// Queued read receipts to dispatch: (recipient_phone, timestamps)
     pub pending_read_receipts: Vec<(String, Vec<i64>)>,
-    /// Action menu overlay visible
-    pub show_action_menu: bool,
-    /// Cursor position in action menu
-    pub action_menu_index: usize,
+    /// Action menu overlay state
+    pub action_menu: ActionMenuState,
     /// Forward message picker overlay
     pub show_forward: bool,
     /// Forward picker cursor index
@@ -527,12 +525,8 @@ pub struct App {
     pub keybindings_profile_index: usize,
     /// All available keybinding profile names
     pub available_kb_profiles: Vec<String>,
-    /// Pin duration picker overlay visible
-    pub show_pin_duration: bool,
-    /// Cursor position in pin duration picker
-    pub pin_duration_index: usize,
-    /// Pending pin context while duration picker is open
-    pub pin_pending: Option<PinPending>,
+    /// Pin duration picker overlay state
+    pub pin_duration: PinDurationOverlayState,
     /// Poll vote overlay visible
     pub show_poll_vote: bool,
     /// Cursor position in poll vote overlay
@@ -2059,33 +2053,33 @@ impl App {
     pub fn handle_action_menu_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         let item_count = self.action_menu_items().len();
         if item_count == 0 {
-            self.show_action_menu = false;
+            self.action_menu.show = false;
             return None;
         }
         match classify_list_key(code, false) {
             ListKeyAction::Down => {
-                if self.action_menu_index < item_count - 1 {
-                    self.action_menu_index += 1;
+                if self.action_menu.index < item_count - 1 {
+                    self.action_menu.index += 1;
                 }
                 None
             }
             ListKeyAction::Up => {
-                self.action_menu_index = self.action_menu_index.saturating_sub(1);
+                self.action_menu.index = self.action_menu.index.saturating_sub(1);
                 None
             }
             ListKeyAction::Select => {
                 let items = self.action_menu_items();
-                if let Some(action) = items.get(self.action_menu_index) {
+                if let Some(action) = items.get(self.action_menu.index) {
                     let hint = action.key_hint;
-                    self.show_action_menu = false;
+                    self.action_menu.show = false;
                     self.execute_action_by_hint(hint)
                 } else {
-                    self.show_action_menu = false;
+                    self.action_menu.show = false;
                     None
                 }
             }
             ListKeyAction::Close => {
-                self.show_action_menu = false;
+                self.action_menu.show = false;
                 None
             }
             ListKeyAction::None => {
@@ -2106,7 +2100,7 @@ impl App {
                     // Only execute if this action is available in the menu
                     let items = self.action_menu_items();
                     if items.iter().any(|a| a.key_hint == hint) {
-                        self.show_action_menu = false;
+                        self.action_menu.show = false;
                         self.execute_action_by_hint(hint)
                     } else {
                         None
@@ -2686,8 +2680,7 @@ impl App {
             pending_typing_stop: None,
             send_read_receipts: true,
             pending_read_receipts: Vec::new(),
-            show_action_menu: false,
-            action_menu_index: 0,
+            action_menu: ActionMenuState::default(),
             show_forward: false,
             forward_index: 0,
             forward_filter: String::new(),
@@ -2717,9 +2710,7 @@ impl App {
             keybindings_profile_picker: false,
             keybindings_profile_index: 0,
             available_kb_profiles: keybindings::all_profile_names(),
-            show_pin_duration: false,
-            pin_duration_index: 0,
-            pin_pending: None,
+            pin_duration: PinDurationOverlayState::default(),
             show_poll_vote: false,
             poll_vote_index: 0,
             poll_vote_selections: Vec::new(),
@@ -3134,11 +3125,11 @@ impl App {
             let send = self.handle_poll_vote_key(code);
             return (true, send);
         }
-        if self.show_pin_duration {
+        if self.pin_duration.show {
             let send = self.handle_pin_duration_key(code);
             return (true, send);
         }
-        if self.show_action_menu {
+        if self.action_menu.show {
             let send = self.handle_action_menu_key(code);
             return (true, send);
         }
@@ -3392,8 +3383,8 @@ impl App {
             }
             Some(KeyAction::OpenActionMenu) => {
                 if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.show_action_menu = true;
-                    self.action_menu_index = 0;
+                    self.action_menu.show = true;
+                    self.action_menu.index = 0;
                 }
                 None
             }
@@ -3539,8 +3530,8 @@ impl App {
             }
             Some(KeyAction::OpenActionMenu) => {
                 if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.show_action_menu = true;
-                    self.action_menu_index = 0;
+                    self.action_menu.show = true;
+                    self.action_menu.index = 0;
                 }
                 None
             }
@@ -4334,14 +4325,14 @@ impl App {
             })
         } else {
             // Open pin duration picker
-            self.pin_pending = Some(PinPending {
+            self.pin_duration.pending = Some(PinPending {
                 conv_id,
                 is_group,
                 target_author,
                 target_timestamp,
             });
-            self.show_pin_duration = true;
-            self.pin_duration_index = 0;
+            self.pin_duration.show = true;
+            self.pin_duration.index = 0;
             None
         }
     }
@@ -4350,19 +4341,19 @@ impl App {
     pub fn handle_pin_duration_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         match classify_list_key(code, false) {
             ListKeyAction::Down => {
-                if self.pin_duration_index < PIN_DURATIONS.len() - 1 {
-                    self.pin_duration_index += 1;
+                if self.pin_duration.index < PIN_DURATIONS.len() - 1 {
+                    self.pin_duration.index += 1;
                 }
                 None
             }
             ListKeyAction::Up => {
-                self.pin_duration_index = self.pin_duration_index.saturating_sub(1);
+                self.pin_duration.index = self.pin_duration.index.saturating_sub(1);
                 None
             }
             ListKeyAction::Select => {
-                let duration = PIN_DURATIONS[self.pin_duration_index].0;
-                self.show_pin_duration = false;
-                let pending = self.pin_pending.take()?;
+                let duration = PIN_DURATIONS[self.pin_duration.index].0;
+                self.pin_duration.show = false;
+                let pending = self.pin_duration.pending.take()?;
 
                 // Optimistically pin
                 if let Some(conv) = self.conversations.get_mut(&pending.conv_id) {
@@ -4390,8 +4381,8 @@ impl App {
                 })
             }
             ListKeyAction::Close => {
-                self.show_pin_duration = false;
-                self.pin_pending = None;
+                self.pin_duration.show = false;
+                self.pin_duration.pending = None;
                 None
             }
             _ => None,
@@ -6421,7 +6412,7 @@ impl App {
             || self.show_contacts
             || self.search.visible
             || self.file_picker.visible
-            || self.show_action_menu
+            || self.action_menu.show
             || self.reactions.show_picker
             || self.show_delete_confirm
             || self.group_menu_state.is_some()
@@ -6429,7 +6420,7 @@ impl App {
             || self.show_theme_picker
             || self.show_keybindings
             || self.show_settings_profile_manager
-            || self.show_pin_duration
+            || self.pin_duration.show
             || self.show_poll_vote
             || self.show_about
             || self.show_profile
@@ -9632,9 +9623,9 @@ mod tests {
         assert!(app.has_overlay());
         app.file_picker.visible = false;
 
-        app.show_action_menu = true;
+        app.action_menu.show = true;
         assert!(app.has_overlay());
-        app.show_action_menu = false;
+        app.action_menu.show = false;
 
         app.reactions.show_picker = true;
         assert!(app.has_overlay());
@@ -9656,9 +9647,9 @@ mod tests {
         assert!(app.has_overlay());
         app.autocomplete_visible = false;
 
-        app.show_pin_duration = true;
+        app.pin_duration.show = true;
         assert!(app.has_overlay());
-        app.show_pin_duration = false;
+        app.pin_duration.show = false;
 
         app.show_poll_vote = true;
         assert!(app.has_overlay());
