@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::db::Database;
 use crate::image_render;
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
-use crate::domain::{ActionMenuState, FilePickerState, ImageState, NotificationState, PinDurationOverlayState, ReactionState, SearchAction, SearchState, TypingState};
+use crate::domain::{ActionMenuState, ContactsOverlayState, FilePickerState, ImageState, NotificationState, PinDurationOverlayState, ReactionState, SearchAction, SearchState, TypingState, VerifyOverlayState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -364,26 +364,14 @@ pub struct App {
     pub settings_index: usize,
     /// Help overlay visible
     pub show_help: bool,
-    /// Contacts overlay visible
-    pub show_contacts: bool,
-    /// Cursor position in contacts list
-    pub contacts_index: usize,
-    /// Type-to-filter text for contacts overlay
-    pub contacts_filter: String,
-    /// Filtered list of (phone_number, display_name) for contacts overlay
-    pub contacts_filtered: Vec<(String, String)>,
-    /// Verify identity overlay visible
-    pub show_verify: bool,
-    /// Cursor position in verify overlay (for group member list)
-    pub verify_index: usize,
-    /// Identity info entries filtered for the current overlay
-    pub verify_identities: Vec<IdentityInfo>,
+    /// State for the contacts list overlay
+    pub contacts_overlay: ContactsOverlayState,
+    /// State for the identity verification overlay
+    pub verify: VerifyOverlayState,
     /// Cached trust levels keyed by phone number.
     /// Populated: IdentityList events (full clear + repopulate on each event).
     /// Refreshed: startup via list_identities() RPC, and after verify/trust actions.
     pub identity_trust: HashMap<String, TrustLevel>,
-    /// Confirmation pending for verify action (user must press v twice)
-    pub verify_confirming: bool,
     /// Image rendering, caching, and link overlay state.
     pub image: ImageState,
     /// Previous active conversation ID, for detecting chat switches
@@ -1466,7 +1454,7 @@ impl App {
 
     /// Build the filtered contacts list from contact_names using the current filter.
     pub fn refresh_contacts_filter(&mut self) {
-        let filter_lower = self.contacts_filter.to_lowercase();
+        let filter_lower = self.contacts_overlay.filter.to_lowercase();
         let mut contacts: Vec<(String, String)> = self
             .contact_names
             .iter()
@@ -1481,8 +1469,8 @@ impl App {
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
         contacts.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-        self.contacts_filtered = contacts;
-        list_overlay::clamp_index(&mut self.contacts_index, self.contacts_filtered.len());
+        self.contacts_overlay.filtered = contacts;
+        list_overlay::clamp_index(&mut self.contacts_overlay.index, self.contacts_overlay.filtered.len());
     }
 
     /// Build the list of available group menu actions (context-dependent).
@@ -2257,45 +2245,45 @@ impl App {
     pub fn handle_verify_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.verify_confirming = false;
-                if !self.verify_identities.is_empty()
-                    && self.verify_index < self.verify_identities.len() - 1
+                self.verify.confirming = false;
+                if !self.verify.identities.is_empty()
+                    && self.verify.index < self.verify.identities.len() - 1
                 {
-                    self.verify_index += 1;
+                    self.verify.index += 1;
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.verify_confirming = false;
-                if self.verify_index > 0 {
-                    self.verify_index -= 1;
+                self.verify.confirming = false;
+                if self.verify.index > 0 {
+                    self.verify.index -= 1;
                 }
             }
             KeyCode::Char('v') | KeyCode::Enter => {
-                if let Some(id) = self.verify_identities.get(self.verify_index) {
+                if let Some(id) = self.verify.identities.get(self.verify.index) {
                     if id.safety_number.is_empty() {
                         self.status_message = "Safety number not available — cannot verify".to_string();
                         return None;
                     }
-                    if self.verify_confirming {
+                    if self.verify.confirming {
                         // Second press: actually trust with the specific safety number
                         if let Some(ref number) = id.number {
                             let recipient = number.clone();
                             let safety_number = id.safety_number.clone();
-                            self.verify_confirming = false;
+                            self.verify.confirming = false;
                             return Some(SendRequest::TrustIdentity { recipient, safety_number });
                         }
                     } else {
                         // First press: ask for confirmation
-                        self.verify_confirming = true;
+                        self.verify.confirming = true;
                     }
                 }
             }
             KeyCode::Esc => {
-                self.verify_confirming = false;
-                self.show_verify = false;
+                self.verify.confirming = false;
+                self.verify.show = false;
             }
             _ => {
-                self.verify_confirming = false;
+                self.verify.confirming = false;
             }
         }
         None
@@ -2381,33 +2369,33 @@ impl App {
     pub fn handle_contacts_key(&mut self, code: KeyCode) {
         match classify_list_key(code, true) {
             ListKeyAction::Down => {
-                if !self.contacts_filtered.is_empty()
-                    && self.contacts_index < self.contacts_filtered.len() - 1
+                if !self.contacts_overlay.filtered.is_empty()
+                    && self.contacts_overlay.index < self.contacts_overlay.filtered.len() - 1
                 {
-                    self.contacts_index += 1;
+                    self.contacts_overlay.index += 1;
                 }
             }
             ListKeyAction::Up => {
-                self.contacts_index = self.contacts_index.saturating_sub(1);
+                self.contacts_overlay.index = self.contacts_overlay.index.saturating_sub(1);
             }
             ListKeyAction::Select => {
-                if let Some((number, _)) = self.contacts_filtered.get(self.contacts_index) {
+                if let Some((number, _)) = self.contacts_overlay.filtered.get(self.contacts_overlay.index) {
                     let number = number.clone();
-                    self.show_contacts = false;
-                    self.contacts_filter.clear();
+                    self.contacts_overlay.show = false;
+                    self.contacts_overlay.filter.clear();
                     self.join_conversation(&number);
                 }
             }
             ListKeyAction::Close => {
-                self.show_contacts = false;
-                self.contacts_filter.clear();
+                self.contacts_overlay.show = false;
+                self.contacts_overlay.filter.clear();
             }
             ListKeyAction::FilterPush(c) => {
-                self.contacts_filter.push(c);
+                self.contacts_overlay.filter.push(c);
                 self.refresh_contacts_filter();
             }
             ListKeyAction::FilterPop => {
-                self.contacts_filter.pop();
+                self.contacts_overlay.filter.pop();
                 self.refresh_contacts_filter();
             }
             ListKeyAction::None => {}
@@ -2625,15 +2613,9 @@ impl App {
             show_settings: false,
             settings_index: 0,
             show_help: false,
-            show_contacts: false,
-            contacts_index: 0,
-            contacts_filter: String::new(),
-            contacts_filtered: Vec::new(),
-            show_verify: false,
-            verify_index: 0,
-            verify_identities: Vec::new(),
+            contacts_overlay: ContactsOverlayState::default(),
+            verify: VerifyOverlayState::default(),
             identity_trust: HashMap::new(),
-            verify_confirming: false,
             image: ImageState::new(image_render_tx, image_render_rx),
             prev_active_conversation: None,
             incognito: false,
@@ -3165,7 +3147,7 @@ impl App {
             self.show_help = false;
             return (true, None);
         }
-        if self.show_verify {
+        if self.verify.show {
             let send = self.handle_verify_key(code);
             return (true, send);
         }
@@ -3173,7 +3155,7 @@ impl App {
             let send = self.handle_forward_key(code);
             return (true, send);
         }
-        if self.show_contacts {
+        if self.contacts_overlay.show {
             self.handle_contacts_key(code);
             return (true, None);
         }
@@ -4678,27 +4660,27 @@ impl App {
             }
         }
         // If verify overlay is open, refresh the displayed identities
-        if self.show_verify {
+        if self.verify.show {
             if let Some(ref conv_id) = self.active_conversation {
                 let conv_id = conv_id.clone();
                 let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                 if is_group {
                     if let Some(group) = self.groups.get(&conv_id) {
                         let members: HashSet<&str> = group.members.iter().map(|s| s.as_str()).collect();
-                        self.verify_identities = identities.iter()
+                        self.verify.identities = identities.iter()
                             .filter(|id| id.number.as_ref().is_some_and(|n| members.contains(n.as_str())))
                             .cloned()
                             .collect();
                     }
                 } else {
-                    self.verify_identities = identities.iter()
+                    self.verify.identities = identities.iter()
                         .filter(|id| id.number.as_deref() == Some(conv_id.as_str()))
                         .cloned()
                         .collect();
                 }
                 // Clamp index
-                if !self.verify_identities.is_empty() && self.verify_index >= self.verify_identities.len() {
-                    self.verify_index = self.verify_identities.len() - 1;
+                if !self.verify.identities.is_empty() && self.verify.index >= self.verify.identities.len() {
+                    self.verify.index = self.verify.identities.len() - 1;
                 }
             }
         }
@@ -5442,9 +5424,9 @@ impl App {
                 self.search.open(query, self.active_conversation.as_deref(), &self.db);
             }
             InputAction::Contacts => {
-                self.show_contacts = true;
-                self.contacts_index = 0;
-                self.contacts_filter.clear();
+                self.contacts_overlay.show = true;
+                self.contacts_overlay.index = 0;
+                self.contacts_overlay.filter.clear();
                 self.refresh_contacts_filter();
             }
             InputAction::Theme => {
@@ -5468,7 +5450,7 @@ impl App {
                         // For groups, show identities for all members
                         if let Some(group) = self.groups.get(&conv_id) {
                             let members: HashSet<&str> = group.members.iter().map(|s| s.as_str()).collect();
-                            self.verify_identities = self.identity_trust.keys()
+                            self.verify.identities = self.identity_trust.keys()
                                 .filter(|num| members.contains(num.as_str()))
                                 .filter_map(|num| {
                                     // Find matching identity info from cached data
@@ -5484,11 +5466,11 @@ impl App {
                                 })
                                 .collect();
                         } else {
-                            self.verify_identities.clear();
+                            self.verify.identities.clear();
                         }
                     } else {
                         // 1:1 — show single identity
-                        self.verify_identities = self.identity_trust.get(&conv_id)
+                        self.verify.identities = self.identity_trust.get(&conv_id)
                             .map(|tl| vec![IdentityInfo {
                                 number: Some(conv_id.clone()),
                                 uuid: None,
@@ -5499,8 +5481,8 @@ impl App {
                             }])
                             .unwrap_or_default();
                     }
-                    self.show_verify = true;
-                    self.verify_index = 0;
+                    self.verify.show = true;
+                    self.verify.index = 0;
                     // Request fresh identity data
                     return Some(SendRequest::ListIdentities);
                 } else {
@@ -6409,7 +6391,7 @@ impl App {
     pub fn has_overlay(&self) -> bool {
         self.show_settings
             || self.show_help
-            || self.show_contacts
+            || self.contacts_overlay.show
             || self.search.visible
             || self.file_picker.visible
             || self.action_menu.show
@@ -9611,9 +9593,9 @@ mod tests {
         assert!(app.has_overlay());
         app.show_help = false;
 
-        app.show_contacts = true;
+        app.contacts_overlay.show = true;
         assert!(app.has_overlay());
-        app.show_contacts = false;
+        app.contacts_overlay.show = false;
 
         app.search.visible = true;
         assert!(app.has_overlay());

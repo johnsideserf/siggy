@@ -541,12 +541,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Contacts overlay (overlays everything)
-    if app.show_contacts {
+    if app.contacts_overlay.show {
         draw_contacts(frame, app, size);
     }
 
     // Verify identity overlay
-    if app.show_verify {
+    if app.verify.show {
         draw_verify(frame, app, size);
     }
 
@@ -2616,13 +2616,13 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let max_visible = CONTACTS_MAX_VISIBLE.min(app.contacts_filtered.len());
+    let max_visible = CONTACTS_MAX_VISIBLE.min(app.contacts_overlay.filtered.len());
     let pref_height = max_visible as u16 + 5; // +3 border/title +2 footer/filter
 
-    let title = if app.contacts_filter.is_empty() {
+    let title = if app.contacts_overlay.filter.is_empty() {
         " Contacts ".to_string()
     } else {
-        format!(" Contacts [{}] ", app.contacts_filter)
+        format!(" Contacts [{}] ", app.contacts_overlay.filter)
     };
 
     let (popup_area, block) = centered_popup(
@@ -2630,22 +2630,22 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
-    let (visible_rows, scroll_offset) = list_overlay::scroll_layout(inner_height, 2, app.contacts_index);
+    let (visible_rows, scroll_offset) = list_overlay::scroll_layout(inner_height, 2, app.contacts_overlay.index);
 
     let mut lines: Vec<Line> = Vec::new();
 
-    if app.contacts_filtered.is_empty() {
+    if app.contacts_overlay.filtered.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No contacts found",
             Style::default().fg(theme.fg_muted),
         )));
     } else {
-        let end = (scroll_offset + visible_rows).min(app.contacts_filtered.len());
+        let end = (scroll_offset + visible_rows).min(app.contacts_overlay.filtered.len());
         let inner_w = popup_area.width.saturating_sub(2) as usize;
 
-        for (i, (number, name)) in app.contacts_filtered[scroll_offset..end].iter().enumerate() {
+        for (i, (number, name)) in app.contacts_overlay.filtered[scroll_offset..end].iter().enumerate() {
             let actual_index = scroll_offset + i;
-            let is_selected = actual_index == app.contacts_index;
+            let is_selected = actual_index == app.contacts_overlay.index;
             let has_conversation = app.conversation_order.contains(number);
 
             // Checkmark for contacts that already have a conversation
@@ -2708,7 +2708,7 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
     let inner = popup_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
     let mut lines: Vec<Line> = Vec::new();
 
-    if app.verify_identities.is_empty() {
+    if app.verify.identities.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No identity information available",
             Style::default().fg(theme.fg_muted),
@@ -2721,16 +2721,16 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
     } else if is_group {
         // Group view: scrollable member list with trust badges
         let member_rows = inner.height.saturating_sub(7) as usize; // reserve for safety number + footer
-        let scroll_offset = if app.verify_index >= member_rows {
-            app.verify_index - member_rows + 1
+        let scroll_offset = if app.verify.index >= member_rows {
+            app.verify.index - member_rows + 1
         } else {
             0
         };
-        let end = (scroll_offset + member_rows).min(app.verify_identities.len());
+        let end = (scroll_offset + member_rows).min(app.verify.identities.len());
 
-        for (i, identity) in app.verify_identities[scroll_offset..end].iter().enumerate() {
+        for (i, identity) in app.verify.identities[scroll_offset..end].iter().enumerate() {
             let actual_idx = scroll_offset + i;
-            let is_selected = actual_idx == app.verify_index;
+            let is_selected = actual_idx == app.verify.index;
             let number = identity.number.as_deref().unwrap_or("unknown");
             let name = app.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
             let (badge, badge_color) = match identity.trust_level {
@@ -2759,7 +2759,7 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
 
         // Show selected member's safety number
-        if let Some(identity) = app.verify_identities.get(app.verify_index) {
+        if let Some(identity) = app.verify.identities.get(app.verify.index) {
             if !identity.safety_number.is_empty() {
                 lines.push(Line::from(Span::styled("  Safety Number:", Style::default().fg(theme.fg_secondary))));
                 let sn = &identity.safety_number;
@@ -2773,7 +2773,7 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         }
 
         lines.push(Line::from(""));
-        if app.verify_confirming {
+        if app.verify.confirming {
             lines.push(Line::from(Span::styled(
                 "  Compare safety numbers, then press v to confirm",
                 Style::default().fg(theme.warning),
@@ -2786,7 +2786,7 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         }
     } else {
         // 1:1 view: single identity with full details
-        let identity = &app.verify_identities[0];
+        let identity = &app.verify.identities[0];
         let number = identity.number.as_deref().unwrap_or("unknown");
         let name = app.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
 
@@ -2825,7 +2825,7 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(""));
         }
 
-        if app.verify_confirming {
+        if app.verify.confirming {
             lines.push(Line::from(Span::styled(
                 "  Compare safety numbers, then press v to confirm",
                 Style::default().fg(theme.warning),
@@ -4372,9 +4372,9 @@ mod snapshot_tests {
     #[test]
     fn test_contacts_overlay() {
         let mut app = demo_app();
-        app.show_contacts = true;
-        app.contacts_index = 0;
-        app.contacts_filtered = vec![
+        app.contacts_overlay.show = true;
+        app.contacts_overlay.index = 0;
+        app.contacts_overlay.filtered = vec![
             ("+15551234567".to_string(), "Alice".to_string()),
             ("+15559876543".to_string(), "Bob".to_string()),
         ];
