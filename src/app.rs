@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::db::Database;
 use crate::image_render;
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
-use crate::domain::{FilePickerState, ImageState, NotificationState, SearchAction, SearchState, TypingState};
+use crate::domain::{FilePickerState, ImageState, NotificationState, ReactionState, SearchAction, SearchState, TypingState};
 use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
@@ -416,16 +416,8 @@ pub struct App {
     pub focused_msg_index: Option<usize>,
     /// Jump-back stack: saved (scroll_offset, focused_msg_index) before quote jumps
     pub jump_stack: Vec<(usize, Option<usize>)>,
-    /// Reaction picker overlay visible
-    pub show_reaction_picker: bool,
-    /// Selected index in the reaction picker
-    pub reaction_picker_index: usize,
-    /// Convert emoji to text emoticons/shortcodes in display
-    pub emoji_to_text: bool,
-    /// Show emoji reactions on messages
-    pub show_reactions: bool,
-    /// Show verbose reaction display (usernames instead of counts)
-    pub reaction_verbose: bool,
+    /// Reaction display preferences and picker overlay state
+    pub reactions: ReactionState,
     /// Groups indexed by group_id (with member lists for @mention autocomplete).
     /// Populated: startup via GroupList event from list_groups() RPC.
     /// Invalidation: full replacement on each GroupList event. Never cleared otherwise.
@@ -806,24 +798,24 @@ pub const SETTINGS: &[SettingDef] = &[
     SettingDef {
         label: "Emoji to text",
         hint: "Convert emoji to text emoticons/shortcodes",
-        get: |a| a.emoji_to_text,
-        set: |a, v| a.emoji_to_text = v,
+        get: |a| a.reactions.emoji_to_text,
+        set: |a, v| a.reactions.emoji_to_text = v,
         save: Some(|c, v| c.emoji_to_text = v),
         on_toggle: None,
     },
     SettingDef {
         label: "Show reactions",
         hint: "Show emoji reactions on messages",
-        get: |a| a.show_reactions,
-        set: |a, v| a.show_reactions = v,
+        get: |a| a.reactions.show_reactions,
+        set: |a, v| a.reactions.show_reactions = v,
         save: Some(|c, v| c.show_reactions = v),
         on_toggle: None,
     },
     SettingDef {
         label: "Verbose reactions",
         hint: "Show names instead of just emoji counts",
-        get: |a| a.reaction_verbose,
-        set: |a, v| a.reaction_verbose = v,
+        get: |a| a.reactions.verbose,
+        set: |a, v| a.reactions.verbose = v,
         save: Some(|c, v| c.reaction_verbose = v),
         on_toggle: None,
     },
@@ -1889,31 +1881,31 @@ impl App {
     fn handle_reaction_picker_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         match code {
             KeyCode::Char('h') | KeyCode::Left => {
-                self.reaction_picker_index = self.reaction_picker_index.saturating_sub(1);
+                self.reactions.picker_index = self.reactions.picker_index.saturating_sub(1);
                 None
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                if self.reaction_picker_index < QUICK_REACTIONS.len() - 1 {
-                    self.reaction_picker_index += 1;
+                if self.reactions.picker_index < QUICK_REACTIONS.len() - 1 {
+                    self.reactions.picker_index += 1;
                 }
                 None
             }
             KeyCode::Char(c @ '1'..='8') => {
                 let idx = (c as u8 - b'1') as usize;
                 if idx < QUICK_REACTIONS.len() {
-                    self.reaction_picker_index = idx;
-                    self.show_reaction_picker = false;
+                    self.reactions.picker_index = idx;
+                    self.reactions.show_picker = false;
                     self.prepare_reaction_send()
                 } else {
                     None
                 }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                self.show_reaction_picker = false;
+                self.reactions.show_picker = false;
                 self.prepare_reaction_send()
             }
             KeyCode::Esc => {
-                self.show_reaction_picker = false;
+                self.reactions.show_picker = false;
                 None
             }
             _ => None,
@@ -1923,7 +1915,7 @@ impl App {
     /// Build a SendRequest::Reaction from the current picker selection and focused message.
     /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
     fn prepare_reaction_send(&mut self) -> Option<SendRequest> {
-        let emoji = QUICK_REACTIONS.get(self.reaction_picker_index)?.to_string();
+        let emoji = QUICK_REACTIONS.get(self.reactions.picker_index)?.to_string();
         let conv_id = self.active_conversation.clone()?;
         let conv = self.conversations.get(&conv_id)?;
         let is_group = conv.is_group;
@@ -2173,8 +2165,8 @@ impl App {
             "r" => {
                 // React — open reaction picker
                 if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.show_reaction_picker = true;
-                    self.reaction_picker_index = 0;
+                    self.reactions.show_picker = true;
+                    self.reactions.picker_index = 0;
                 }
                 None
             }
@@ -2662,11 +2654,7 @@ impl App {
             focused_message_time: None,
             focused_msg_index: None,
             jump_stack: Vec::new(),
-            show_reaction_picker: false,
-            reaction_picker_index: 0,
-            emoji_to_text: false,
-            show_reactions: true,
-            reaction_verbose: false,
+            reactions: ReactionState::new(),
             groups: HashMap::new(),
             uuid_to_name: HashMap::new(),
             number_to_uuid: HashMap::new(),
@@ -3162,7 +3150,7 @@ impl App {
             self.handle_file_browser_key(code);
             return (true, None);
         }
-        if self.show_reaction_picker {
+        if self.reactions.show_picker {
             let send = self.handle_reaction_picker_key(code);
             return (true, send);
         }
@@ -3335,8 +3323,8 @@ impl App {
             Some(KeyAction::CopyAllMessages) => { self.copy_selected_message(true); None }
             Some(KeyAction::React) => {
                 if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.show_reaction_picker = true;
-                    self.reaction_picker_index = 0;
+                    self.reactions.show_picker = true;
+                    self.reactions.picker_index = 0;
                 }
                 None
             }
@@ -3484,8 +3472,8 @@ impl App {
             Some(KeyAction::CopyAllMessages) => { self.copy_selected_message(true); None }
             Some(KeyAction::React) => {
                 if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.show_reaction_picker = true;
-                    self.reaction_picker_index = 0;
+                    self.reactions.show_picker = true;
+                    self.reactions.picker_index = 0;
                 }
                 None
             }
@@ -6434,7 +6422,7 @@ impl App {
             || self.search.visible
             || self.file_picker.visible
             || self.show_action_menu
-            || self.show_reaction_picker
+            || self.reactions.show_picker
             || self.show_delete_confirm
             || self.group_menu_state.is_some()
             || self.show_message_request
@@ -9648,9 +9636,9 @@ mod tests {
         assert!(app.has_overlay());
         app.show_action_menu = false;
 
-        app.show_reaction_picker = true;
+        app.reactions.show_picker = true;
         assert!(app.has_overlay());
-        app.show_reaction_picker = false;
+        app.reactions.show_picker = false;
 
         app.show_delete_confirm = true;
         assert!(app.has_overlay());

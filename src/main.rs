@@ -935,9 +935,9 @@ async fn run_app(
     app.show_receipts = config.show_receipts;
     app.color_receipts = config.color_receipts;
     app.nerd_fonts = config.nerd_fonts;
-    app.emoji_to_text = config.emoji_to_text;
-    app.show_reactions = config.show_reactions;
-    app.reaction_verbose = config.reaction_verbose;
+    app.reactions.emoji_to_text = config.emoji_to_text;
+    app.reactions.show_reactions = config.show_reactions;
+    app.reactions.verbose = config.reaction_verbose;
     app.send_read_receipts = config.send_read_receipts;
     app.mouse_enabled = config.mouse_enabled;
     app.sidebar_on_right = config.sidebar_on_right;

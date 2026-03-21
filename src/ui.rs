@@ -576,7 +576,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Reaction picker overlay
-    if app.show_reaction_picker {
+    if app.reactions.show_picker {
         draw_reaction_picker(frame, app, size);
     }
 
@@ -969,7 +969,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         if msg.is_system {
-            let body = if app.emoji_to_text { emoji_to_text(&msg.body) } else { msg.body.clone() };
+            let body = if app.reactions.emoji_to_text { emoji_to_text(&msg.body) } else { msg.body.clone() };
             lines.push(Line::from(Span::styled(
                 format!("  {body}"),
                 Style::default().fg(theme.system_msg),
@@ -978,7 +978,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             // Render quoted reply line above message
             if let Some(ref quote) = msg.quote {
-                let raw_body = if app.emoji_to_text { emoji_to_text(&quote.body) } else { quote.body.clone() };
+                let raw_body = if app.reactions.emoji_to_text { emoji_to_text(&quote.body) } else { quote.body.clone() };
                 let quote_body = truncate(&raw_body, 50);
                 lines.push(Line::from(vec![
                     Span::styled("  \u{256D} ", Style::default().fg(theme.quote)),
@@ -1060,7 +1060,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     app.image.link_url_map.insert(display_text, url);
                 }
                 spans.push(Span::raw(" ".to_string()));
-                if app.emoji_to_text {
+                if app.reactions.emoji_to_text {
                     spans.extend(body_spans.into_iter().map(|s| {
                         Span::styled(emoji_to_text(&s.content), s.style)
                     }));
@@ -1154,8 +1154,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             // Render reaction summary line (skip for deleted or when reactions hidden)
-            if app.show_reactions && !msg.is_deleted && !msg.reactions.is_empty() {
-                lines.push(build_reaction_summary(&msg.reactions, app.reaction_verbose, app.emoji_to_text, theme));
+            if app.reactions.show_reactions && !msg.is_deleted && !msg.reactions.is_empty() {
+                lines.push(build_reaction_summary(&msg.reactions, app.reactions.verbose, app.reactions.emoji_to_text, theme));
                 line_msg_idx.push(Some(msg_index));
             }
         }
@@ -1788,13 +1788,13 @@ fn draw_reaction_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut spans = vec![Span::raw(" ".to_string())];
     for (i, emoji) in QUICK_REACTIONS.iter().enumerate() {
-        let style = if i == app.reaction_picker_index {
+        let style = if i == app.reactions.picker_index {
             Style::default().bg(theme.bg_selected).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
-        let prefix = if i == app.reaction_picker_index { "[" } else { " " };
-        let suffix = if i == app.reaction_picker_index { "]" } else { " " };
+        let prefix = if i == app.reactions.picker_index { "[" } else { " " };
+        let suffix = if i == app.reactions.picker_index { "]" } else { " " };
         spans.push(Span::styled(format!("{prefix}{emoji}{suffix}"), style));
     }
 
