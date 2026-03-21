@@ -258,6 +258,24 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    /// Whether this conversation is stale and should be hidden from the default sidebar view.
+    /// A conversation is stale if it has no messages AND has no meaningful name
+    /// (e.g. empty/abandoned groups, or contacts with only a UUID hash).
+    pub fn is_stale(&self) -> bool {
+        if !self.messages.is_empty() {
+            return false;
+        }
+        if self.is_group {
+            // Group with no messages and no resolved name (name is the raw group ID)
+            self.name.is_empty() || self.name == self.id
+        } else {
+            // 1:1 contact with no messages and no usable name:
+            // keep if name is a phone number (+...), hide if name is just the raw ID
+            // (a UUID hash or "..." with no real identity)
+            !self.name.starts_with('+') && self.name == self.id
+        }
+    }
+
     /// Binary-search for a message by timestamp (messages are sorted by `timestamp_ms`).
     fn find_msg_idx(&self, ts: i64) -> Option<usize> {
         let end = self.messages.partition_point(|m| m.timestamp_ms <= ts);
@@ -9910,5 +9928,52 @@ mod tests {
 
         assert!(app.typing.indicators.contains_key("+1"),
             "1:1 typing indicator should be keyed by sender phone");
+    }
+
+    #[test]
+    fn is_stale_filters_correctly() {
+        let empty_group = Conversation {
+            name: "abc123groupid".to_string(),
+            id: "abc123groupid".to_string(),
+            messages: vec![],
+            unread: 0,
+            is_group: true,
+            expiration_timer: 0,
+            accepted: true,
+        };
+        assert!(empty_group.is_stale(), "group with no messages and name==id is stale");
+
+        let named_group = Conversation {
+            name: "Book Club".to_string(),
+            id: "abc123groupid".to_string(),
+            messages: vec![],
+            unread: 0,
+            is_group: true,
+            expiration_timer: 0,
+            accepted: true,
+        };
+        assert!(!named_group.is_stale(), "group with a real name is not stale");
+
+        let phone_contact = Conversation {
+            name: "+15551234567".to_string(),
+            id: "+15551234567".to_string(),
+            messages: vec![],
+            unread: 0,
+            is_group: false,
+            expiration_timer: 0,
+            accepted: true,
+        };
+        assert!(!phone_contact.is_stale(), "contact with phone number is not stale");
+
+        let uuid_contact = Conversation {
+            name: "8eb3dbda-1234-5678".to_string(),
+            id: "8eb3dbda-1234-5678".to_string(),
+            messages: vec![],
+            unread: 0,
+            is_group: false,
+            expiration_timer: 0,
+            accepted: true,
+        };
+        assert!(uuid_contact.is_stale(), "contact with UUID-only name is stale");
     }
 }

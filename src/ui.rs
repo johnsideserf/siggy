@@ -643,7 +643,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     let max_name_width = (area.width as usize).saturating_sub(5); // "• # " + margin
 
-    // Use filtered list when sidebar filter is active
+    // Use filtered list when sidebar filter is active.
+    // When filtering, show everything (so users can find hidden conversations).
+    // In normal view, hide stale conversations (empty groups, unresolvable contacts).
     let display_order: Vec<String> = if app.sidebar_filter_active {
         if app.sidebar_filter.is_empty() {
             app.conversation_order.clone()
@@ -651,7 +653,16 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             app.sidebar_filtered.clone()
         }
     } else {
-        app.conversation_order.clone()
+        app.conversation_order
+            .iter()
+            .filter(|id| {
+                app.active_conversation.as_ref() == Some(id)
+                    || app.conversations
+                        .get(*id)
+                        .is_some_and(|c| !c.is_stale())
+            })
+            .cloned()
+            .collect()
     };
 
     let items: Vec<ListItem> = display_order
