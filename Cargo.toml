@@ -19,7 +19,7 @@ dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 toml = "1.0"
-rusqlite = { version = "0.38", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 base64 = "0.22"
