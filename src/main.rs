@@ -1068,12 +1068,12 @@ async fn run_app(
         let has_terminal_event = event::poll(POLL_TIMEOUT)?;
 
         if has_terminal_event {
-            needs_redraw = true;
             match event::read()? {
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
+                    needs_redraw = true;
                     // Keybinding capture mode intercepts ALL keys before anything else
                     if app.keybindings_capturing {
                         app.handle_keybinding_capture(key.modifiers, key.code);
@@ -1094,16 +1094,22 @@ async fn run_app(
                     }
                 }
                 Event::Mouse(mouse) => {
+                    // Only redraw for clicks and scroll, not bare mouse moves
+                    if !matches!(mouse.kind, event::MouseEventKind::Moved) {
+                        needs_redraw = true;
+                    }
                     if let Some(req) = app.handle_mouse_event(mouse) {
                         backend.dispatch(&mut app, req).await;
                     }
                 }
                 Event::Paste(text) => {
+                    needs_redraw = true;
                     if let Some(req) = app.handle_paste(text) {
                         backend.dispatch(&mut app, req).await;
                     }
                 }
                 Event::Resize(..) => {
+                    needs_redraw = true;
                     app.clear_kitty_state();
                 }
                 _ => {}
