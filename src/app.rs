@@ -6452,6 +6452,22 @@ impl App {
         }
     }
 
+    fn open_file(&mut self, uri: &str) {
+        let path = file_uri_to_path(uri);
+        if !std::path::Path::new(&path).exists() {
+            self.status_message = format!("File not found: {path}");
+            return;
+        }
+        let filename = std::path::Path::new(&path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&path);
+        match open::that(&path) {
+            Ok(()) => self.status_message = format!("Opened {filename}"),
+            Err(e) => self.status_message = format!("Failed to open: {e}"),
+        }
+    }
+
     /// Export the active conversation's messages to a plain text file.
     fn export_chat_history(&mut self, limit: Option<usize>) {
         let conv_id = match self.active_conversation.as_ref() {
