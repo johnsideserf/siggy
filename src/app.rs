@@ -1994,6 +1994,22 @@ impl App {
                 });
             }
         }
+        if !msg.is_deleted {
+            if extract_file_uri(&msg.body).is_some() {
+                items.push(MenuAction {
+                    label: "Open attachment",
+                    key_hint: "o",
+                    nerd_icon: "\u{f15b5}",
+                });
+            }
+            if extract_http_url(&msg.body).is_some() {
+                items.push(MenuAction {
+                    label: "Open link",
+                    key_hint: "l",
+                    nerd_icon: "\u{f0337}",
+                });
+            }
+        }
         items
     }
 
@@ -2043,6 +2059,8 @@ impl App {
                         'p' => "p",
                         'v' => "v",
                         'x' => "x",
+                        'o' => "o",
+                        'l' => "l",
                         _ => return None,
                     };
                     // Only execute if this action is available in the menu
@@ -2193,6 +2211,24 @@ impl App {
                             is_group,
                             poll_timestamp,
                         });
+                    }
+                }
+                None
+            }
+            "o" => {
+                // Open attachment
+                if let Some(msg) = self.selected_message() {
+                    if let Some(uri) = extract_file_uri(&msg.body) {
+                        self.open_file(&uri);
+                    }
+                }
+                None
+            }
+            "l" => {
+                // Open link
+                if let Some(msg) = self.selected_message() {
+                    if let Some(url) = extract_http_url(&msg.body) {
+                        self.open_url(&url);
                     }
                 }
                 None
@@ -10072,5 +10108,66 @@ mod tests {
             extract_http_url(body),
             Some("https://example.com/path".to_string())
         );
+    }
+
+    // --- Action menu item tests ---
+
+    #[rstest]
+    fn action_menu_shows_open_attachment(mut app: App) {
+        let mut msg = make_msg("+1", None, None, false);
+        msg.attachments = vec![Attachment {
+            id: "123".to_string(),
+            content_type: "application/pdf".to_string(),
+            filename: Some("doc.pdf".to_string()),
+            local_path: Some("/tmp/doc.pdf".to_string()),
+        }];
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        app.active_conversation = Some("+1".to_string());
+        let items = app.action_menu_items();
+        assert!(items.iter().any(|a| a.label == "Open attachment"), "expected Open attachment in menu");
+    }
+
+    #[rstest]
+    fn action_menu_shows_open_link(mut app: App) {
+        let msg = make_msg("+1", Some("check https://example.com"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        app.active_conversation = Some("+1".to_string());
+        let items = app.action_menu_items();
+        assert!(items.iter().any(|a| a.label == "Open link"), "expected Open link in menu");
+    }
+
+    #[rstest]
+    fn action_menu_shows_both_open_items(mut app: App) {
+        // Send a message with a URL body and an attachment with a local path.
+        // The body and attachment are stored as separate DisplayMessages with the
+        // same timestamp; body is at index 0, attachment at index 1.
+        // Focus index 0 (the body message) to verify "Open link" appears.
+        let mut msg = make_msg("+1", Some("see https://example.com"), None, false);
+        msg.attachments = vec![Attachment {
+            id: "456".to_string(),
+            content_type: "image/png".to_string(),
+            filename: Some("photo.png".to_string()),
+            local_path: Some("/tmp/photo.png".to_string()),
+        }];
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        app.active_conversation = Some("+1".to_string());
+        // Index 0 is the body message ("see https://example.com")
+        app.focused_msg_index = Some(0);
+        let items_body = app.action_menu_items();
+        assert!(items_body.iter().any(|a| a.label == "Open link"), "expected Open link for body message");
+        // Index 1 is the attachment message ("[image: photo.png](file:///tmp/photo.png)")
+        app.focused_msg_index = Some(1);
+        let items_att = app.action_menu_items();
+        assert!(items_att.iter().any(|a| a.label == "Open attachment"), "expected Open attachment for attachment message");
+    }
+
+    #[rstest]
+    fn action_menu_no_open_for_plain_text(mut app: App) {
+        let msg = make_msg("+1", Some("just a regular message"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        app.active_conversation = Some("+1".to_string());
+        let items = app.action_menu_items();
+        assert!(!items.iter().any(|a| a.label == "Open attachment"), "should not have Open attachment");
+        assert!(!items.iter().any(|a| a.label == "Open link"), "should not have Open link");
     }
 }
