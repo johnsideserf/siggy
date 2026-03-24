@@ -3626,9 +3626,15 @@ impl App {
                 // Key by group ID for group messages, sender phone for 1:1
                 let conv_key = group_id.as_ref().unwrap_or(&sender).clone();
                 if is_typing {
-                    self.typing.indicators.insert(conv_key, (sender.clone(), Instant::now()));
-                } else {
-                    self.typing.indicators.remove(&conv_key);
+                    self.typing.indicators
+                        .entry(conv_key)
+                        .or_default()
+                        .insert(sender.clone(), Instant::now());
+                } else if let Some(senders) = self.typing.indicators.get_mut(&conv_key) {
+                    senders.remove(&sender);
+                    if senders.is_empty() {
+                        self.typing.indicators.remove(&conv_key);
+                    }
                 }
             }
             SignalEvent::ReactionReceived {
@@ -10187,8 +10193,8 @@ mod tests {
             "typing indicator should be keyed by group ID");
         assert!(!app.typing.indicators.contains_key("+1"),
             "typing indicator must NOT be keyed by sender phone");
-        // Value stores the sender phone so we can resolve the display name
-        assert_eq!(app.typing.indicators["group-a"].0, "+1");
+        // Inner map stores the sender phone so we can resolve the display name
+        assert!(app.typing.indicators["group-a"].contains_key("+1"));
     }
 
     #[rstest]
@@ -10221,6 +10227,50 @@ mod tests {
 
         assert!(app.typing.indicators.contains_key("+1"),
             "1:1 typing indicator should be keyed by sender phone");
+    }
+
+    #[rstest]
+    fn concurrent_typers_in_group(mut app: App) {
+        // Alice and Bob both type in the same group
+        app.handle_signal_event(SignalEvent::TypingIndicator {
+            sender: "+1".to_string(),
+            sender_name: Some("Alice".to_string()),
+            is_typing: true,
+            group_id: Some("group-a".to_string()),
+        });
+        app.handle_signal_event(SignalEvent::TypingIndicator {
+            sender: "+2".to_string(),
+            sender_name: Some("Bob".to_string()),
+            is_typing: true,
+            group_id: Some("group-a".to_string()),
+        });
+
+        let senders = &app.typing.indicators["group-a"];
+        assert_eq!(senders.len(), 2);
+        assert!(senders.contains_key("+1"));
+        assert!(senders.contains_key("+2"));
+
+        // Alice stops typing
+        app.handle_signal_event(SignalEvent::TypingIndicator {
+            sender: "+1".to_string(),
+            sender_name: None,
+            is_typing: false,
+            group_id: Some("group-a".to_string()),
+        });
+
+        let senders = &app.typing.indicators["group-a"];
+        assert_eq!(senders.len(), 1);
+        assert!(senders.contains_key("+2"));
+
+        // Bob stops typing — entry should be fully removed
+        app.handle_signal_event(SignalEvent::TypingIndicator {
+            sender: "+2".to_string(),
+            sender_name: None,
+            is_typing: false,
+            group_id: Some("group-a".to_string()),
+        });
+
+        assert!(!app.typing.indicators.contains_key("group-a"));
     }
 
     #[test]

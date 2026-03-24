@@ -1184,18 +1184,19 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(ref conv_id) = app.active_conversation {
         let typers: Vec<String> = app
             .typing.indicators
-            .iter()
-            .filter(|(key, _)| *key == conv_id)
-            .map(|(_, (sender, _))| {
-                if let Some(name) = app.contact_names.get(sender) {
-                    name.clone()
-                } else if let Some(conv) = app.conversations.get(sender) {
-                    conv.name.clone()
-                } else {
-                    sender.clone()
-                }
+            .get(conv_id)
+            .map(|senders| {
+                senders.keys().map(|sender| {
+                    if let Some(name) = app.contact_names.get(sender) {
+                        name.clone()
+                    } else if let Some(conv) = app.conversations.get(sender) {
+                        conv.name.clone()
+                    } else {
+                        sender.clone()
+                    }
+                }).collect()
             })
-            .collect();
+            .unwrap_or_default();
 
         if !typers.is_empty() {
             let text = if typers.len() == 1 {
