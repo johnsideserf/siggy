@@ -4523,7 +4523,7 @@ mod snapshot_tests {
     #[test]
     fn test_emoji_picker_overlay() {
         let mut app = demo_app();
-        app.emoji_picker.open(EmojiPickerSource::Input);
+        app.emoji_picker.open(EmojiPickerSource::Input, None);
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }

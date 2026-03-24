@@ -85,11 +85,11 @@ impl Default for EmojiPickerState {
 }
 
 impl EmojiPickerState {
-    /// Open the picker for a given source context.
-    pub fn open(&mut self, source: EmojiPickerSource) {
+    /// Open the picker for a given source context, with an optional initial search filter.
+    pub fn open(&mut self, source: EmojiPickerSource, filter: Option<String>) {
         self.visible = true;
         self.source = source;
-        self.filter.clear();
+        self.filter = filter.unwrap_or_default();
         self.selected_index = 0;
         self.category_index = 0;
         self.refresh_filter();
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn open_populates_filtered_list() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         assert!(state.visible);
         assert!(!state.filtered.is_empty());
         assert_eq!(state.selected_index, 0);
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn filter_narrows_results() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         let all_count = state.filtered.len();
 
         state.filter = "rocket".to_string();
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn category_filters_emojis() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         let all_count = state.filtered.len();
 
         // Switch to Flags category (index 9)
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn text_filter_ignores_category() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
 
         // Set a category first
         state.category_index = 9; // Flags
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn grid_navigation_down_moves_by_cols() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         state.cols = 8;
         assert_eq!(state.selected_index, 0);
 
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn grid_navigation_up_moves_by_cols() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         state.cols = 8;
         state.selected_index = 16;
 
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn grid_navigation_left_right() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         assert_eq!(state.selected_index, 0);
 
         state.handle_key(KeyCode::Right);
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn enter_returns_select() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
 
         let action = state.handle_key(KeyCode::Enter);
         assert!(matches!(action, EmojiPickerAction::Select(_)));
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn esc_returns_close() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
 
         let action = state.handle_key(KeyCode::Esc);
         assert!(matches!(action, EmojiPickerAction::Close));
@@ -358,7 +358,7 @@ mod tests {
     #[test]
     fn tab_cycles_categories() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         assert_eq!(state.category_index, 0);
 
         state.handle_key(KeyCode::Tab);
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn backtab_cycles_categories_reverse() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
         assert_eq!(state.category_index, 0);
 
         state.handle_key(KeyCode::BackTab);
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn close_resets_state() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Reaction);
+        state.open(EmojiPickerSource::Reaction, None);
         state.filter = "test".to_string();
         state.selected_index = 5;
         state.category_index = 3;
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn typing_char_appends_to_filter() {
         let mut state = EmojiPickerState::default();
-        state.open(EmojiPickerSource::Input);
+        state.open(EmojiPickerSource::Input, None);
 
         // 'r', 'o', 'c' are not h/l/j/k so they go to filter
         // but wait — these are mapped to navigation via Char match arms

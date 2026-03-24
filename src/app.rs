@@ -1851,7 +1851,7 @@ impl App {
             KeyCode::Char('e') | KeyCode::Char('/') => {
                 // Open full emoji picker from reaction context
                 self.reactions.show_picker = false;
-                self.emoji_picker.open(EmojiPickerSource::Reaction);
+                self.emoji_picker.open(EmojiPickerSource::Reaction, None);
                 None
             }
             KeyCode::Esc => {
@@ -5451,11 +5451,8 @@ impl App {
                 self.refresh_contacts_filter();
             }
             InputAction::Emoji(query) => {
-                self.emoji_picker.open(EmojiPickerSource::Input);
-                if !query.is_empty() {
-                    self.emoji_picker.filter = query;
-                    self.emoji_picker.refresh_filter();
-                }
+                let filter = if query.is_empty() { None } else { Some(query) };
+                self.emoji_picker.open(EmojiPickerSource::Input, filter);
             }
             InputAction::Theme => {
                 self.theme_picker.show = true;
