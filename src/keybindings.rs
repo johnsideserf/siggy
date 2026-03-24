@@ -506,7 +506,7 @@ pub fn action_label(action: KeyAction) -> &'static str {
         KeyAction::InsertAfterCursor => "Insert after cursor",
         KeyAction::InsertLineStart => "Insert at line start",
         KeyAction::InsertLineEnd => "Insert at line end",
-        KeyAction::OpenLineBelow => "Clear & insert",
+        KeyAction::OpenLineBelow => "Open line below",
         KeyAction::CursorLeft => "Cursor left",
         KeyAction::CursorRight => "Cursor right",
         KeyAction::LineStart => "Line start",
@@ -562,13 +562,12 @@ pub fn default_profile() -> KeyBindings {
     bind(&mut global, KeyModifiers::NONE, KeyCode::PageDown, KeyAction::PageScrollDown);
 
     // --- Normal: scroll ---
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('j'), KeyAction::ScrollDown);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('k'), KeyAction::ScrollUp);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('J'), KeyAction::FocusNextMessage);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('K'), KeyAction::FocusPrevMessage);
+    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('j'), KeyAction::FocusNextMessage);
+    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('k'), KeyAction::FocusPrevMessage);
     bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('d'), KeyAction::HalfPageDown);
     bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('u'), KeyAction::HalfPageUp);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('g'), KeyAction::ScrollToTop);
+    bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('e'), KeyAction::ScrollDown);
+    bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('y'), KeyAction::ScrollUp);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('G'), KeyAction::ScrollToBottom);
 
     // --- Normal: edit/mode-switch ---
@@ -595,7 +594,6 @@ pub fn default_profile() -> KeyBindings {
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('q'), KeyAction::Quote);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('e'), KeyAction::EditMessage);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('f'), KeyAction::ForwardMessage);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('d'), KeyAction::DeleteMessage);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('n'), KeyAction::NextSearchResult);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('N'), KeyAction::PrevSearchResult);
     bind(&mut normal, KeyModifiers::NONE, KeyCode::Enter, KeyAction::OpenActionMenu);
@@ -992,7 +990,7 @@ mod tests {
         let kb = default_profile();
         assert_eq!(
             kb.resolve(KeyModifiers::NONE, KeyCode::Char('j'), BindingMode::Normal),
-            Some(KeyAction::ScrollDown)
+            Some(KeyAction::FocusNextMessage)
         );
     }
 
@@ -1096,7 +1094,7 @@ mod tests {
     fn display_key_for_action() {
         let kb = default_profile();
         assert_eq!(kb.display_key(KeyAction::Quit), "Ctrl+c");
-        assert_eq!(kb.display_key(KeyAction::ScrollDown), "j");
+        assert_eq!(kb.display_key(KeyAction::ScrollDown), "Ctrl+e");
     }
 
     #[test]
@@ -1109,34 +1107,34 @@ mod tests {
             kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('j'), BindingMode::Normal),
             Some(KeyAction::ScrollDown)
         );
-        // Old binding should be gone
+        // Old ScrollDown binding (ctrl+e) should be gone, but j is now FocusNextMessage
         assert_eq!(
             kb.resolve(KeyModifiers::NONE, KeyCode::Char('j'), BindingMode::Normal),
-            None
+            Some(KeyAction::FocusNextMessage)
         );
     }
 
     #[test]
     fn rebind_detects_conflict() {
         let mut kb = default_profile();
-        // Rebind ScrollDown to 'k' which is already ScrollUp
+        // Rebind ScrollDown to 'k' which is already FocusPrevMessage
         let new_combo = parse_key_combo("k").unwrap();
         let displaced = kb.rebind(BindingMode::Normal, KeyAction::ScrollDown, new_combo);
-        assert_eq!(displaced, Some(KeyAction::ScrollUp));
+        assert_eq!(displaced, Some(KeyAction::FocusPrevMessage));
     }
 
     #[test]
     fn reset_action_restores_default() {
         let mut kb = default_profile();
-        // Change 'j' binding
+        // Change ctrl+e binding (ScrollDown)
         let new_combo = parse_key_combo("ctrl+j").unwrap();
         kb.rebind(BindingMode::Normal, KeyAction::ScrollDown, new_combo);
-        // Now 'j' shouldn't work
-        assert_eq!(kb.resolve(KeyModifiers::NONE, KeyCode::Char('j'), BindingMode::Normal), None);
+        // Now ctrl+e shouldn't resolve to ScrollDown
+        assert_eq!(kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('e'), BindingMode::Normal), None);
         // Reset
         kb.reset_action(BindingMode::Normal, KeyAction::ScrollDown);
         assert_eq!(
-            kb.resolve(KeyModifiers::NONE, KeyCode::Char('j'), BindingMode::Normal),
+            kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('e'), BindingMode::Normal),
             Some(KeyAction::ScrollDown)
         );
     }
