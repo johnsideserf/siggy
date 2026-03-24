@@ -28,7 +28,7 @@ expression: output
                      │││  Keybindings [Default]                             │                      │
                      │││  Esc                 Normal mode                   │                      │
                      │╰│  i / a / I / A / o   Insert mode                   │──────────────────────╯
-                     │╭│  j / k               Scroll up / down              │──────────────────────╮
-                     │││  J / K               Prev / next message           │                      │
+                     │╭│  Ctrl+e / Ctrl+y     Scroll up / down              │──────────────────────╮
+                     │││  j / k               Prev / next message           │                      │
                      │╰╰────────────────────────────────────────────────────╯──────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats

@@ -7101,6 +7101,7 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::signal::types::{Attachment, Contact, Group, Mention, SignalEvent, SignalMessage, StyleType, TextStyle};
+    use crossterm::event::{KeyCode, KeyModifiers};
     use rstest::{fixture, rstest};
 
     #[fixture]
@@ -9707,6 +9708,129 @@ mod tests {
         app.forward.show = false;
 
         assert!(!app.has_overlay());
+    }
+
+    // --- Vim normal-mode keybinding tests ---
+
+    #[rstest]
+    fn gg_scrolls_to_top(mut app: App) {
+        for i in 0..20 {
+            let msg = make_msg("+1", Some(&format!("msg {i}")), None, false);
+            app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        }
+        app.active_conversation = Some("+1".to_string());
+        app.scroll_offset = 0;
+        app.mode = InputMode::Normal;
+
+        // First g sets pending
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
+        assert_eq!(app.pending_normal_key, Some('g'));
+
+        // Second g scrolls to top
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
+        assert_eq!(app.pending_normal_key, None);
+        assert_eq!(app.scroll_offset, 20);
+    }
+
+    #[rstest]
+    fn dd_shows_delete_confirm(mut app: App) {
+        let msg = make_msg("+1", Some("hello"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        app.active_conversation = Some("+1".to_string());
+        app.mode = InputMode::Normal;
+
+        // First d sets pending
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('d'));
+        assert_eq!(app.pending_normal_key, Some('d'));
+        assert!(!app.show_delete_confirm);
+
+        // Second d triggers delete confirm
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('d'));
+        assert_eq!(app.pending_normal_key, None);
+        assert!(app.show_delete_confirm);
+    }
+
+    #[rstest]
+    fn pending_key_cancelled_by_esc(mut app: App) {
+        app.mode = InputMode::Normal;
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
+        assert_eq!(app.pending_normal_key, Some('g'));
+
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(app.pending_normal_key, None);
+    }
+
+    #[rstest]
+    fn pending_key_discarded_on_other_key(mut app: App) {
+        let msg = make_msg("+1", Some("hello"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        app.active_conversation = Some("+1".to_string());
+        app.mode = InputMode::Normal;
+
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
+        assert_eq!(app.pending_normal_key, Some('g'));
+
+        // Pressing 'j' clears pending and processes j normally
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('j'));
+        assert_eq!(app.pending_normal_key, None);
+    }
+
+    #[rstest]
+    fn o_preserves_input_buffer(mut app: App) {
+        app.mode = InputMode::Normal;
+        app.input_buffer = "hello world".to_string();
+        app.input_cursor = 5;
+
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('o'));
+
+        assert_eq!(app.mode, InputMode::Insert);
+        assert_eq!(app.input_buffer, "hello world\n");
+        assert_eq!(app.input_cursor, 12);
+    }
+
+    #[rstest]
+    fn jk_focus_messages(mut app: App) {
+        for i in 0..5 {
+            let msg = make_msg("+1", Some(&format!("msg {i}")), None, false);
+            app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        }
+        app.active_conversation = Some("+1".to_string());
+        app.mode = InputMode::Normal;
+
+        // k (FocusPrevMessage) should invoke jump_to_adjacent_message
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('k'));
+        assert!(app.focused_msg_index.is_some());
+    }
+
+    #[rstest]
+    fn pending_key_cleared_on_mode_transition(mut app: App) {
+        app.mode = InputMode::Normal;
+
+        // Press g to set pending
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
+        assert_eq!(app.pending_normal_key, Some('g'));
+
+        // Press i to enter Insert mode -- pending should be cleared
+        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('i'));
+        assert_eq!(app.pending_normal_key, None);
+        assert_eq!(app.mode, InputMode::Insert);
+    }
+
+    #[rstest]
+    fn ctrl_e_scrolls_without_focus(mut app: App) {
+        for i in 0..20 {
+            let msg = make_msg("+1", Some(&format!("msg {i}")), None, false);
+            app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        }
+        app.active_conversation = Some("+1".to_string());
+        app.mode = InputMode::Normal;
+        app.scroll_offset = 5;
+        app.focused_msg_index = Some(10);
+
+        // Ctrl-E (ScrollDown) should scroll viewport and clear focus
+        app.handle_normal_key(KeyModifiers::CONTROL, KeyCode::Char('e'));
+        assert_eq!(app.scroll_offset, 4);
+        assert_eq!(app.focused_msg_index, None);
     }
 
     // --- Helper for building a SignalMessage ---
