@@ -3218,7 +3218,14 @@ impl App {
             }
             Some(KeyAction::InsertLineStart) => { self.input_cursor = self.current_line_start(); self.mode = InputMode::Insert; None }
             Some(KeyAction::InsertLineEnd) => { self.input_cursor = self.current_line_end(); self.mode = InputMode::Insert; None }
-            Some(KeyAction::OpenLineBelow) => { self.input_buffer.clear(); self.input_cursor = 0; self.mode = InputMode::Insert; None }
+            Some(KeyAction::OpenLineBelow) => {
+                let line_end = self.current_line_end();
+                self.input_cursor = line_end;
+                self.input_buffer.insert(self.input_cursor, '\n');
+                self.input_cursor += 1;
+                self.mode = InputMode::Insert;
+                None
+            }
             Some(KeyAction::CursorLeft) => { self.input_cursor = prev_char_pos(&self.input_buffer, self.input_cursor); None }
             Some(KeyAction::CursorRight) => {
                 self.input_cursor = next_char_pos(&self.input_buffer, self.input_cursor);
