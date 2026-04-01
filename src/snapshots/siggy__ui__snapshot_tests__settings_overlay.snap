@@ -1,34 +1,35 @@
 ---
 source: src/ui.rs
+assertion_line: 4364
 expression: output
 ---
  Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
   ? +15550007777 (1) ││[08:00] <Alice> Good morning! How's your day going?                         │
-  • ##Family (2)     ││    👍  1                                                                    │
-  • Carol (1)        ││● ╭ Settings ──────────────────────────────────────╮                        │
-    ##Rust Devs      ││  │  [x] Direct message notifications              │                        │
-    Bob              ││[0│  [x] Group message notifications               │ a run                  │
-▸   Alice            ││● │  [ ] Desktop notifications                     │bed before 7            │
-    Dave             ││[0│  [x] Sidebar visible                           │e habit                 │
-                     ││● │  [x] Link previews                             │                        │
-                     ││[0│  [ ] Date separators                           │tomatic                 │
-                     ││  │  [x] Read receipts                             │                        │
-                     ││[0│  [x] Receipt colors                            │t too                   │
-                     ││✓ │  [ ] Nerd Font icons                           │                        │
-                     ││[0│  [ ] Emoji to text                             │                        │
-                     ││[0│  [x] Show reactions                            │/localmarket.example.com│
-                     ││  │  [ ] Verbose reactions                         │                        │
-                     ││  │  [x] Send read receipts                        │ry Saturday…            │
-                     ││  │  [x] Mouse support                             │                        │
-                     ││○ │  [ ] Sidebar on right                          │                        │
-                     ││✓ │  Notification preview: full                    │owded.                  │
-                     ││○ │  Image mode: halfblock                         │                        │
-                     ││○ │  Theme: Default                                │                        │
-                     ││○ │  Keybindings: Default                          │nt to browse early      │
-                     ││[0│  Profile: Default                              │                        │
-                     ││  │                                                │                        │
-                     │╰──╰────────────────────────────────────────────────╯────────────────────────╯
-                     │╭────────────────────────────────────────────────────────────────────────────╮
+  • ##Family (2)     ││  ╭ Settings ──────────────────────────────────────╮                        │
+  • Carol (1)        ││● │  Notifications                                 │                        │
+    ##Rust Devs      ││  │    [x] Direct message notifications            │                        │
+    Bob              ││[0│    [x] Group message notifications             │ a run                  │
+▸   Alice            ││● │    [ ] Desktop notifications                   │bed before 7            │
+    Dave             ││[0│    Notification preview: full                  │e habit                 │
+                     ││● │  Display                                       │                        │
+                     ││[0│    [x] Link previews                           │tomatic                 │
+                     ││  │    [ ] Date separators                         │                        │
+                     ││[0│    [x] Read receipts                           │t too                   │
+                     ││✓ │    [x] Receipt colors                          │                        │
+                     ││[0│    [ ] Nerd Font icons                         │                        │
+                     ││[0│    [ ] Emoji to text                           │/localmarket.example.com│
+                     ││  │    Image mode: halfblock                       │                        │
+                     ││  │  Messages                                      │ry Saturday…            │
+                     ││  │    [x] Show reactions                          │                        │
+                     ││○ │    [ ] Verbose reactions                       │                        │
+                     ││✓ │    [x] Send read receipts                      │owded.                  │
+                     ││○ │  Interface                                     │                        │
+                     ││○ │    [x] Sidebar visible                         │                        │
+                     ││○ │    [x] Mouse support                           │nt to browse early      │
+                     ││[0│    [ ] Sidebar on right                        │                        │
+                     ││  │    Customize...                                │                        │
+                     │╰──│  Play a sound for incoming direct messages     │────────────────────────╯
+                     │╭──╰────────────────────────────────────────────────╯────────────────────────╮
                      ││  Type a message...                                                         │
                      │╰────────────────────────────────────────────────────────────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats

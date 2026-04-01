@@ -10,7 +10,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
+use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, SettingDef, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
 use crate::domain::CATEGORIES;
 use crate::keybindings::{self, BindingMode, KeyAction};
 use crate::list_overlay;
@@ -26,7 +26,7 @@ const MSG_WINDOW_MULTIPLIER: usize = 10;
 
 // Popup dimensions
 const SETTINGS_POPUP_WIDTH: u16 = 50;
-const SETTINGS_POPUP_HEIGHT: u16 = 18;
+const SETTINGS_POPUP_HEIGHT: u16 = 25;
 const CONTACTS_POPUP_WIDTH: u16 = 50;
 const CONTACTS_MAX_VISIBLE: usize = 20;
 const FILE_BROWSER_POPUP_WIDTH: u16 = 60;
@@ -536,6 +536,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Settings overlay (overlays everything)
     if app.show_settings {
         draw_settings(frame, app, size);
+    }
+
+    // Customize sub-menu overlay (Theme, Keybindings, Profile)
+    if app.show_customize {
+        draw_customize(frame, app, size);
     }
 
     // Help overlay (overlays everything)
@@ -2436,13 +2441,15 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
 fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let height = SETTINGS_POPUP_HEIGHT + 5; // extra lines for preview + theme + keybindings + profile + hint
+    let height = SETTINGS_POPUP_HEIGHT;
     let (popup_area, block) = centered_popup(
         frame, area, SETTINGS_POPUP_WIDTH, height, " Settings ", theme,
     );
 
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, def) in SETTINGS.iter().enumerate() {
+    let header_style = Style::default().fg(theme.fg_muted).add_modifier(Modifier::BOLD);
+
+    // Render a toggle row
+    let render_toggle = |lines: &mut Vec<Line>, i: usize, def: &SettingDef| {
         let enabled = app.setting_value(i);
         let checkbox = if enabled { "[x]" } else { "[ ]" };
         let is_selected = i == app.settings_index;
@@ -2458,99 +2465,57 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(theme.fg_muted)
         };
-
         lines.push(Line::from(vec![
-            Span::styled(format!("  {} ", checkbox), check_style),
+            Span::styled(format!("    {} ", checkbox), check_style),
             Span::styled(def.label.to_string(), style),
         ]));
-    }
+    };
 
-    // Notification preview cycle entry (index == SETTINGS.len())
+    // Render a special (non-toggle) row
+    let render_special = |lines: &mut Vec<Line>, label: &str, value: &str, index: usize| {
+        let is_selected = app.settings_index == index;
+        let label_style = if is_selected {
+            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+        let value_style = if is_selected {
+            Style::default().bg(theme.bg_selected).fg(theme.accent)
+        } else {
+            Style::default().fg(theme.accent)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {label}"), label_style),
+            Span::styled(value.to_string(), value_style),
+        ]));
+    };
+
+    use crate::app::{SETTINGS_SECTION_DISPLAY, SETTINGS_SECTION_MESSAGES, SETTINGS_SECTION_INTERFACE};
+
     let preview_index = SETTINGS.len();
-    let is_preview_selected = app.settings_index == preview_index;
-    let preview_style = if is_preview_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg_secondary)
-    };
-    let preview_value_style = if is_preview_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.accent)
-    } else {
-        Style::default().fg(theme.accent)
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  Notification preview: ", preview_style),
-        Span::styled(app.notifications.notification_preview.clone(), preview_value_style),
-    ]));
-
-    // Image mode cycle entry (index == SETTINGS.len() + 1)
     let image_mode_index = SETTINGS.len() + 1;
-    let is_image_mode_selected = app.settings_index == image_mode_index;
-    let image_mode_style = if is_image_mode_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg_secondary)
-    };
-    let image_mode_value_style = if is_image_mode_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.accent)
-    } else {
-        Style::default().fg(theme.accent)
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  Image mode: ", image_mode_style),
-        Span::styled(app.image.image_mode.clone(), image_mode_value_style),
-    ]));
+    let customize_index = SETTINGS.len() + 2;
 
-    // Theme selector entry (index == SETTINGS.len() + 2)
-    let is_theme_selected = app.settings_index == SETTINGS.len() + 2;
-    let theme_style = if is_theme_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg_secondary)
-    };
-    let theme_value_style = if is_theme_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.accent)
-    } else {
-        Style::default().fg(theme.accent)
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  Theme: ", theme_style),
-        Span::styled(app.theme.name.clone(), theme_value_style),
-    ]));
+    let mut lines: Vec<Line> = Vec::new();
 
-    // Keybindings selector entry (index == SETTINGS.len() + 3)
-    let is_kb_selected = app.settings_index == SETTINGS.len() + 3;
-    let kb_style = if is_kb_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg_secondary)
-    };
-    let kb_value_style = if is_kb_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.accent)
-    } else {
-        Style::default().fg(theme.accent)
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  Keybindings: ", kb_style),
-        Span::styled(app.keybindings.profile_name.clone(), kb_value_style),
-    ]));
+    // — Notifications —
+    lines.push(Line::from(Span::styled("  Notifications", header_style)));
+    for (i, def) in SETTINGS.iter().enumerate().take(SETTINGS_SECTION_DISPLAY) { render_toggle(&mut lines, i, def); }
+    render_special(&mut lines, "Notification preview: ", &app.notifications.notification_preview, preview_index);
 
-    // Settings profile selector entry (index == SETTINGS.len() + 4)
-    let is_profile_selected = app.settings_index == SETTINGS.len() + 4;
-    let profile_style = if is_profile_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg_secondary)
-    };
-    let profile_value_style = if is_profile_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.accent)
-    } else {
-        Style::default().fg(theme.accent)
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  Profile: ", profile_style),
-        Span::styled(app.settings_profiles.name.clone(), profile_value_style),
-    ]));
+    // — Display —
+    lines.push(Line::from(Span::styled("  Display", header_style)));
+    for (i, def) in SETTINGS.iter().enumerate().take(SETTINGS_SECTION_MESSAGES).skip(SETTINGS_SECTION_DISPLAY) { render_toggle(&mut lines, i, def); }
+    render_special(&mut lines, "Image mode: ", &app.image.image_mode, image_mode_index);
+
+    // — Messages —
+    lines.push(Line::from(Span::styled("  Messages", header_style)));
+    for (i, def) in SETTINGS.iter().enumerate().take(SETTINGS_SECTION_INTERFACE).skip(SETTINGS_SECTION_MESSAGES) { render_toggle(&mut lines, i, def); }
+
+    // — Interface —
+    lines.push(Line::from(Span::styled("  Interface", header_style)));
+    for (i, def) in SETTINGS.iter().enumerate().skip(SETTINGS_SECTION_INTERFACE) { render_toggle(&mut lines, i, def); }
+    render_special(&mut lines, "Customize...", "", customize_index);
 
     // Hint line for the currently selected item
     let hint = if app.settings_index < SETTINGS.len() {
@@ -2559,17 +2524,36 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         match app.settings_index - SETTINGS.len() {
             0 => "Control message content in notifications",
             1 => "native (terminal protocol), halfblock, or none",
-            2 => "Switch between color themes",
-            3 => "Switch between keybinding presets",
-            4 => "h/l cycle, Enter manage settings profiles",
+            2 => "Theme, keybindings, and settings profiles",
             _ => "",
         }
     };
-    lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("  {hint}"),
         Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
     )));
+
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
+}
+
+fn draw_customize(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let items = ["Theme", "Keybindings", "Settings profile"];
+    let (popup_area, block) = centered_popup(
+        frame, area, 30, 5, " Customize ", theme,
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, label) in items.iter().enumerate() {
+        let is_selected = i == app.customize_index;
+        let style = if is_selected {
+            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+        lines.push(Line::from(Span::styled(format!("  {label}"), style)));
+    }
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);

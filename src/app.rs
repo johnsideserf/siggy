@@ -380,6 +380,10 @@ pub struct App {
     pub show_settings: bool,
     /// Cursor position in settings list
     pub settings_index: usize,
+    /// Customize sub-menu overlay visible (Theme, Keybindings, Profile)
+    pub show_customize: bool,
+    /// Cursor position in customize sub-menu
+    pub customize_index: usize,
     /// Help overlay visible
     pub show_help: bool,
     /// State for the contacts list overlay
@@ -667,7 +671,28 @@ pub struct SettingDef {
     on_toggle: Option<fn(&mut App)>,
 }
 
+/// Section boundary indices within the SETTINGS array.
+pub const SETTINGS_SECTION_DISPLAY: usize = 3;
+pub const SETTINGS_SECTION_MESSAGES: usize = 9;
+pub const SETTINGS_SECTION_INTERFACE: usize = 12;
+
+/// Visual order of settings items (logical indices into the combined toggle+special list).
+/// Toggle indices 0..SETTINGS.len() map to SETTINGS entries.
+/// Special indices: SETTINGS.len() = preview, +1 = image mode, +2 = customize.
+/// Navigation walks this array so j/k follows the visual layout.
+pub const SETTINGS_VISUAL_ORDER: &[usize] = &[
+    // Notifications
+    0, 1, 2, 15, // DM, Group, Desktop, Notification preview
+    // Display
+    3, 4, 5, 6, 7, 8, 16, // Link previews .. Emoji to text, Image mode
+    // Messages
+    9, 10, 11, // Show reactions, Verbose reactions, Send read receipts
+    // Interface
+    12, 13, 14, 17, // Sidebar visible, Mouse, Sidebar on right, Customize...
+];
+
 pub const SETTINGS: &[SettingDef] = &[
+    // — Notifications (0–2) —
     SettingDef {
         label: "Direct message notifications",
         hint: "Play a sound for incoming direct messages",
@@ -692,21 +717,14 @@ pub const SETTINGS: &[SettingDef] = &[
         save: Some(|c, v| c.desktop_notifications = v),
         on_toggle: None,
     },
-    SettingDef {
-        label: "Sidebar visible",
-        hint: "Show the conversation list sidebar",
-        get: |a| a.sidebar_visible,
-        set: |a, v| a.sidebar_visible = v,
-        save: None, // runtime-only, not persisted
-        on_toggle: None,
-    },
+    // — Display (3–8) —
     SettingDef {
         label: "Link previews",
         hint: "Show title and thumbnail for URLs",
         get: |a| a.image.show_link_previews,
         set: |a, v| a.image.show_link_previews = v,
         save: Some(|c, v| c.show_link_previews = v),
-        on_toggle: None, // UI checks the flag; cached lines stay in memory
+        on_toggle: None,
     },
     SettingDef {
         label: "Date separators",
@@ -748,6 +766,7 @@ pub const SETTINGS: &[SettingDef] = &[
         save: Some(|c, v| c.emoji_to_text = v),
         on_toggle: None,
     },
+    // — Messages (9–11) —
     SettingDef {
         label: "Show reactions",
         hint: "Show emoji reactions on messages",
@@ -770,6 +789,15 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.send_read_receipts,
         set: |a, v| a.send_read_receipts = v,
         save: Some(|c, v| c.send_read_receipts = v),
+        on_toggle: None,
+    },
+    // — Interface (12–14) —
+    SettingDef {
+        label: "Sidebar visible",
+        hint: "Show the conversation list sidebar",
+        get: |a| a.sidebar_visible,
+        set: |a, v| a.sidebar_visible = v,
+        save: None, // runtime-only, not persisted
         on_toggle: None,
     },
     SettingDef {
@@ -965,28 +993,28 @@ impl App {
     }
 
     /// Handle a key press while the settings overlay is open.
-    /// After toggles: Preview at SETTINGS.len(), Image mode at +1, Theme at +2, Keybindings at +3, Profile at +4.
+    /// Navigation follows SETTINGS_VISUAL_ORDER so j/k matches the visual layout.
+    /// After toggles: Preview at SETTINGS.len(), Image mode at +1, Customize at +2.
     pub fn handle_settings_key(&mut self, code: KeyCode) {
         let preview_index = SETTINGS.len();
         let image_mode_index = SETTINGS.len() + 1;
-        let theme_index = SETTINGS.len() + 2;
-        let kb_index = SETTINGS.len() + 3;
-        let profile_index = SETTINGS.len() + 4;
-        let max_index = profile_index;
+        let customize_index = SETTINGS.len() + 2;
+
+        // Find current position in visual order
+        let visual_pos = SETTINGS_VISUAL_ORDER.iter()
+            .position(|&i| i == self.settings_index)
+            .unwrap_or(0);
+
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_index < max_index {
-                    self.settings_index += 1;
+                if visual_pos + 1 < SETTINGS_VISUAL_ORDER.len() {
+                    self.settings_index = SETTINGS_VISUAL_ORDER[visual_pos + 1];
                 }
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.settings_index = self.settings_index.saturating_sub(1);
-            }
-            KeyCode::Char('h') | KeyCode::Left if self.settings_index == profile_index => {
-                self.cycle_settings_profile(false);
-            }
-            KeyCode::Char('l') | KeyCode::Right if self.settings_index == profile_index => {
-                self.cycle_settings_profile(true);
+                if visual_pos > 0 {
+                    self.settings_index = SETTINGS_VISUAL_ORDER[visual_pos - 1];
+                }
             }
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
                 if self.settings_index == preview_index {
@@ -1001,22 +1029,9 @@ impl App {
                         "halfblock" => "none".to_string(),
                         _ => "native".to_string(),
                     };
-                } else if self.settings_index == theme_index {
-                    self.show_settings = false;
-                    self.save_settings();
-                    self.theme_picker.show = true;
-                    self.theme_picker.index = self.theme_picker.available_themes.iter()
-                        .position(|t| t.name == self.theme.name)
-                        .unwrap_or(0);
-                } else if self.settings_index == kb_index {
-                    self.show_settings = false;
-                    self.save_settings();
-                    self.keybindings_overlay.show = true;
-                    self.keybindings_overlay.index = 0;
-                } else if self.settings_index == profile_index {
-                    self.show_settings = false;
-                    self.save_settings();
-                    self.open_settings_profile_manager();
+                } else if self.settings_index == customize_index {
+                    self.show_customize = true;
+                    self.customize_index = 0;
                 } else {
                     self.toggle_setting(self.settings_index);
                 }
@@ -1030,23 +1045,44 @@ impl App {
         }
     }
 
-    /// Cycle through settings profiles (left/right on the profile row).
-    /// Uses deferred hooks since the user can't see messages while the overlay is open.
-    fn cycle_settings_profile(&mut self, forward: bool) {
-        if self.settings_profiles.available.is_empty() {
-            return;
+    /// Handle a key press in the Customize sub-menu (Theme, Keybindings, Profile).
+    pub fn handle_customize_key(&mut self, code: KeyCode) {
+        const ITEMS: usize = 3; // Theme, Keybindings, Profile
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.customize_index + 1 < ITEMS {
+                    self.customize_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.customize_index = self.customize_index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
+                self.show_customize = false;
+                self.show_settings = false;
+                self.save_settings();
+                match self.customize_index {
+                    0 => {
+                        self.theme_picker.show = true;
+                        self.theme_picker.index = self.theme_picker.available_themes.iter()
+                            .position(|t| t.name == self.theme.name)
+                            .unwrap_or(0);
+                    }
+                    1 => {
+                        self.keybindings_overlay.show = true;
+                        self.keybindings_overlay.index = 0;
+                    }
+                    2 => {
+                        self.open_settings_profile_manager();
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.show_customize = false;
+            }
+            _ => {}
         }
-        let current_idx = self.settings_profiles.available.iter()
-            .position(|p| p.name == self.settings_profiles.name)
-            .unwrap_or(0);
-        let new_idx = if forward {
-            (current_idx + 1) % self.settings_profiles.available.len()
-        } else {
-            (current_idx + self.settings_profiles.available.len() - 1)
-                % self.settings_profiles.available.len()
-        };
-        let profile = self.settings_profiles.available[new_idx].clone();
-        self.apply_settings_profile_deferred(&profile);
     }
 
     /// Apply a profile without firing expensive hooks (image re-rendering).
@@ -2624,6 +2660,8 @@ impl App {
             autocomplete_index: 0,
             show_settings: false,
             settings_index: 0,
+            show_customize: false,
+            customize_index: 0,
             show_help: false,
             contacts_overlay: ContactsOverlayState::default(),
             verify: VerifyOverlayState::default(),
@@ -3196,6 +3234,10 @@ impl App {
         }
         if self.keybindings_overlay.show {
             self.handle_keybindings_key(code);
+            return (true, None);
+        }
+        if self.show_customize {
+            self.handle_customize_key(code);
             return (true, None);
         }
         if self.show_settings {
