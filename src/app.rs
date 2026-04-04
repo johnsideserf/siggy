@@ -47,7 +47,6 @@ fn floor_char_boundary(buf: &str, pos: usize) -> usize {
     p
 }
 
-
 impl App {
     /// Like `db_warn` but also surfaces the error in the status bar so the user sees it.
     fn db_warn_visible<T>(&mut self, result: Result<T, impl std::fmt::Display>, context: &str) {
@@ -4823,7 +4822,6 @@ impl App {
         }
     }
 
-
     /// Handle a line of user input; returns Some((conv_id, body, is_group, local_ts_ms)) if we need to send a message
     pub fn handle_input(&mut self) -> Option<SendRequest> {
         let input = self.input_buffer.clone();
@@ -6306,7 +6304,6 @@ fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
         && row < rect.y + rect.height
 }
 
-
 /// Convert a local file path to a file:/// URI (forward slashes, for terminal Ctrl+Click).
 fn path_to_file_uri(path: &str) -> String {
     let normalized = path.replace('\\', "/");
@@ -6766,7 +6763,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-use crate::db::Database;
+    use crate::db::Database;
     use crate::signal::types::{Attachment, Contact, Group, Mention, SignalEvent, SignalMessage, StyleType, TextStyle};
     use crossterm::event::{KeyCode, KeyModifiers};
     use rstest::{fixture, rstest};
@@ -9185,7 +9182,6 @@ use crate::db::Database;
         assert!(req.is_none());
         assert!(app.status_message.contains(expected_msg));
     }
-
 
     // --- Mouse support tests ---
 
