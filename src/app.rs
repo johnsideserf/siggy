@@ -1,4 +1,4 @@
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Utc};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
+use crate::conversation_store::{ConversationStore, db_warn, short_name};
+pub use crate::conversation_store::{Conversation, DisplayMessage, Quote};
 use crate::db::Database;
 use crate::image_render;
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
@@ -15,7 +17,7 @@ use crate::image_render::ImageProtocol;
 use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
 use crate::theme::{self, Theme};
-use crate::signal::types::{Contact, Group, IdentityInfo, LinkPreview, Mention, MessageStatus, PollData, PollOption, PollVote, Reaction, SignalEvent, SignalMessage, StyleType, TextStyle, TrustLevel};
+use crate::signal::types::{Contact, Group, IdentityInfo, MessageStatus, PollData, PollOption, PollVote, Reaction, SignalEvent, SignalMessage, StyleType, TrustLevel};
 
 /// Sentinel lifetime for paste temp files awaiting send confirmation from signal-cli.
 /// If signal-cli never confirms, the file is deleted after this many seconds.
@@ -45,12 +47,6 @@ fn floor_char_boundary(buf: &str, pos: usize) -> usize {
     p
 }
 
-/// Log a database error via debug_log (no-op when --debug is off).
-fn db_warn<T>(result: Result<T, impl std::fmt::Display>, context: &str) {
-    if let Err(e) = result {
-        crate::debug_log::logf(format_args!("db {context}: {e}"));
-    }
-}
 
 impl App {
     /// Like `db_warn` but also surfaces the error in the status bar so the user sees it.
@@ -159,16 +155,6 @@ pub struct MenuAction {
     pub nerd_icon: &'static str,
 }
 
-/// Quoted reply context attached to a message.
-#[derive(Debug, Clone)]
-pub struct Quote {
-    pub author: String,
-    pub body: String,
-    pub timestamp_ms: i64,
-    /// Original phone number / account ID for wire protocol (not resolved to display name)
-    pub author_id: String,
-}
-
 /// Context saved when the pin duration picker is open (remembers which message is being pinned).
 pub struct PinPending {
     pub conv_id: String,
@@ -187,118 +173,10 @@ pub struct PollVotePending {
     pub options: Vec<PollOption>,
 }
 
-/// A single displayed message in a conversation
-#[derive(Debug, Clone)]
-pub struct DisplayMessage {
-    pub sender: String,
-    pub timestamp: DateTime<Utc>,
-    pub body: String,
-    pub is_system: bool,
-    /// Pre-rendered halfblock image lines (for image attachments)
-    pub image_lines: Option<Vec<Line<'static>>>,
-    /// Local filesystem path for native protocol rendering (Kitty/iTerm2)
-    pub image_path: Option<String>,
-    /// Delivery/read status (Some for outgoing, None for incoming)
-    pub status: Option<MessageStatus>,
-    /// Millisecond epoch timestamp for receipt matching
-    pub timestamp_ms: i64,
-    /// Emoji reactions on this message
-    pub reactions: Vec<Reaction>,
-    /// Byte ranges of @mentions in body (for styling)
-    pub mention_ranges: Vec<(usize, usize)>,
-    /// Byte ranges + style type for text styling (bold, italic, etc.)
-    pub style_ranges: Vec<(usize, usize, StyleType)>,
-    /// Quoted reply context
-    pub quote: Option<Quote>,
-    /// Whether this message has been edited
-    pub is_edited: bool,
-    /// Whether this message has been remotely deleted
-    pub is_deleted: bool,
-    /// Whether this message is pinned
-    pub is_pinned: bool,
-    /// Phone number / ID of the sender (for wire protocol; "you" for outgoing)
-    pub sender_id: String,
-    /// Disappearing message timer (seconds, 0 = no expiration)
-    pub expires_in_seconds: i64,
-    /// When the expiration countdown started (epoch ms, 0 = not started)
-    pub expiration_start_ms: i64,
-    /// Poll data (for poll-create messages)
-    pub poll_data: Option<PollData>,
-    /// Votes received for this poll
-    pub poll_votes: Vec<PollVote>,
-    /// Link preview metadata
-    pub preview: Option<LinkPreview>,
-    /// Pre-rendered halfblock image lines for link preview thumbnail
-    pub preview_image_lines: Option<Vec<Line<'static>>>,
-    /// Local filesystem path for native protocol link preview thumbnail
-    pub preview_image_path: Option<String>,
-}
-
-impl DisplayMessage {
-    pub fn format_time(&self) -> String {
-        let local: DateTime<Local> = self.timestamp.with_timezone(&Local);
-        local.format("%H:%M").to_string()
-    }
-}
-
-/// A conversation (1:1 or group)
-#[derive(Debug, Clone)]
-pub struct Conversation {
-    /// Display name (contact name/number or group name)
-    pub name: String,
-    /// Unique key — phone number for 1:1, group ID for groups
-    pub id: String,
-    pub messages: Vec<DisplayMessage>,
-    pub unread: usize,
-    pub is_group: bool,
-    /// Disappearing message timer in seconds (0 = off)
-    pub expiration_timer: i64,
-    /// Whether this conversation has been accepted (message requests are unaccepted)
-    pub accepted: bool,
-}
-
-impl Conversation {
-    /// Whether this conversation is stale and should be hidden from the default sidebar view.
-    /// A conversation is stale if it has no messages AND has no meaningful name
-    /// (e.g. empty/abandoned groups, or contacts with only a UUID hash).
-    pub fn is_stale(&self) -> bool {
-        if !self.messages.is_empty() {
-            return false;
-        }
-        if self.is_group {
-            // Group with no messages and no resolved name (name is the raw group ID)
-            self.name.is_empty() || self.name == self.id
-        } else {
-            // 1:1 contact with no messages and no usable name:
-            // keep if name is a phone number (+...), hide if name is just the raw ID
-            // (a UUID hash or "..." with no real identity)
-            !self.name.starts_with('+') && self.name == self.id
-        }
-    }
-
-    /// Binary-search for a message by timestamp (messages are sorted by `timestamp_ms`).
-    fn find_msg_idx(&self, ts: i64) -> Option<usize> {
-        let end = self.messages.partition_point(|m| m.timestamp_ms <= ts);
-        if end > 0 && self.messages[end - 1].timestamp_ms == ts {
-            Some(end - 1)
-        } else {
-            None
-        }
-    }
-}
-
 /// Application state
 pub struct App {
-    /// All conversations keyed by phone number (1:1) or group ID (groups).
-    /// Populated: startup from SQLite (load_from_db), then get_or_create_conversation()
-    /// on incoming messages, group list events, and outgoing syncs.
-    /// Invalidation: individual conversations may be deleted via message request UI.
-    /// Never fully cleared during runtime.
-    pub conversations: HashMap<String, Conversation>,
-    /// Ordered list of conversation IDs for sidebar display.
-    /// Populated: startup from SQLite. Reordered via move_conversation_to_top() on
-    /// incoming/outgoing messages. New conversations appended at the end.
-    pub conversation_order: Vec<String>,
+    /// Conversation data: conversations, ordering, contact names, groups, read markers.
+    pub store: ConversationStore,
     /// Currently selected conversation ID
     pub active_conversation: Option<String>,
     /// Text input buffer
@@ -338,10 +216,6 @@ pub struct App {
     pub sidebar_filtered: Vec<String>,
     /// Typing indicator state (inbound indicators + outbound typing tracking).
     pub typing: TypingState,
-    /// Last-read message index per conversation (for unread marker).
-    /// Populated: startup from DB unread counts, then bumped on message insertion and
-    /// read sync events. Persisted to SQLite via read_markers table.
-    pub last_read_index: HashMap<String, usize>,
     /// Whether we are connected to signal-cli
     pub connected: bool,
     /// True until the first ContactList event arrives (initial sync in progress)
@@ -356,14 +230,6 @@ pub struct App {
     pub db: Database,
     /// Persistent error from signal-cli connection failure
     pub connection_error: Option<String>,
-    /// Contact/group name lookup (number/id → display name) for name resolution.
-    /// Populated: startup (ContactList + GroupList events), then incrementally from
-    /// message envelopes (sourceName), typing indicators, reactions, pins, and poll votes.
-    /// Invalidation: additive-only (new entries added, old entries never removed or updated).
-    /// Stale data: if a contact changes their profile name, the old name persists until
-    /// a message arrives with the new sourceName. signal-cli's listContacts may return
-    /// name=None for contacts whose profile isn't cached, so envelope names fill the gaps.
-    pub contact_names: HashMap<String, String>,
     /// Notification preferences and clipboard auto-clear state
     pub notifications: NotificationState,
     /// Conversations muted from notifications
@@ -400,8 +266,6 @@ pub struct App {
     pub prev_active_conversation: Option<String>,
     /// Incognito mode — in-memory DB, no local persistence
     pub incognito: bool,
-    /// Conversations that have more messages in the database to load
-    pub has_more_messages: HashSet<String>,
     /// Set by the renderer when the active conversation is scrolled to the top and has more
     pub at_scroll_top: bool,
     /// Show date separator lines between messages from different days
@@ -432,17 +296,6 @@ pub struct App {
     pub reactions: ReactionState,
         /// Emoji picker overlay state
     pub emoji_picker: EmojiPickerState,
-    /// Groups indexed by group_id (with member lists for @mention autocomplete).
-    /// Populated: startup via GroupList event from list_groups() RPC.
-    /// Invalidation: full replacement on each GroupList event. Never cleared otherwise.
-    /// Stale data: group membership changes on other devices only appear after restart.
-    pub groups: HashMap<String, Group>,
-    /// UUID → display name mapping (built from contact list).
-    /// Populated: startup via ContactList event. Additive-only, never cleared.
-    pub uuid_to_name: HashMap<String, String>,
-    /// Phone number → UUID mapping (for sending mentions).
-    /// Populated: startup via ContactList and GroupList events. Additive-only, never cleared.
-    pub number_to_uuid: HashMap<String, String>,
     /// Current autocomplete mode (Command vs Mention)
     pub autocomplete_mode: AutocompleteMode,
     /// Mention autocomplete candidates: (phone, display_name, uuid)
@@ -873,7 +726,7 @@ impl App {
                 result.timestamp_ms,
                 result.is_preview,
             ));
-            if let Some(conv) = self.conversations.get_mut(&result.conv_id) {
+            if let Some(conv) = self.store.conversations.get_mut(&result.conv_id) {
                 if let Some(idx) = conv.find_msg_idx(result.timestamp_ms) {
                     if result.is_preview {
                         // Store empty vec on None to prevent infinite retry for broken images
@@ -903,7 +756,7 @@ impl App {
         }
         let Some(ref id) = self.active_conversation else { return drained };
         let id = id.clone();
-        let Some(conv) = self.conversations.get(&id) else { return drained };
+        let Some(conv) = self.store.conversations.get(&id) else { return drained };
         let len = conv.messages.len();
         if len == 0 {
             return drained;
@@ -1456,7 +1309,7 @@ impl App {
     pub fn refresh_contacts_filter(&mut self) {
         let filter_lower = self.contacts_overlay.filter.to_lowercase();
         let mut contacts: Vec<(String, String)> = self
-            .contact_names
+            .store.contact_names
             .iter()
             .filter(|(_, name)| !name.is_empty())
             .filter(|(number, name)| {
@@ -1476,7 +1329,7 @@ impl App {
     /// Build the list of available group menu actions (context-dependent).
     pub fn group_menu_items(&self) -> Vec<MenuAction> {
         let is_group = self.active_conversation.as_ref()
-            .and_then(|id| self.conversations.get(id))
+            .and_then(|id| self.store.conversations.get(id))
             .is_some_and(|c| c.is_group);
         if is_group {
             vec![
@@ -1497,11 +1350,11 @@ impl App {
     pub fn refresh_group_add_filter(&mut self) {
         let filter_lower = self.group_menu.filter.to_lowercase();
         let existing_members: HashSet<&str> = self.active_conversation.as_ref()
-            .and_then(|id| self.groups.get(id))
+            .and_then(|id| self.store.groups.get(id))
             .map(|g| g.members.iter().map(|s| s.as_str()).collect())
             .unwrap_or_default();
         let mut contacts: Vec<(String, String)> = self
-            .contact_names
+            .store.contact_names
             .iter()
             .filter(|(_, name)| !name.is_empty())
             .filter(|(number, _)| !existing_members.contains(number.as_str()))
@@ -1527,14 +1380,14 @@ impl App {
     pub fn refresh_group_remove_filter(&mut self) {
         let filter_lower = self.group_menu.filter.to_lowercase();
         let members: Vec<String> = self.active_conversation.as_ref()
-            .and_then(|id| self.groups.get(id))
+            .and_then(|id| self.store.groups.get(id))
             .map(|g| g.members.clone())
             .unwrap_or_default();
         let mut result: Vec<(String, String)> = members
             .into_iter()
             .filter(|phone| *phone != self.account)
             .map(|phone| {
-                let name = self.contact_names.get(&phone)
+                let name = self.store.contact_names.get(&phone)
                     .cloned()
                     .unwrap_or_else(|| phone.clone());
                 (phone, name)
@@ -1776,9 +1629,9 @@ impl App {
             "m" => {
                 // Populate member list for display
                 let members: Vec<(String, String)> = self.active_conversation.as_ref()
-                    .and_then(|id| self.groups.get(id))
+                    .and_then(|id| self.store.groups.get(id))
                     .map(|g| g.members.iter().map(|phone| {
-                        let name = self.contact_names.get(phone)
+                        let name = self.store.contact_names.get(phone)
                             .cloned()
                             .unwrap_or_else(|| phone.clone());
                         (phone.clone(), name)
@@ -1798,7 +1651,7 @@ impl App {
             "n" => {
                 // Pre-fill with current group name
                 let name = self.active_conversation.as_ref()
-                    .and_then(|id| self.conversations.get(id))
+                    .and_then(|id| self.store.conversations.get(id))
                     .map(|c| c.name.clone())
                     .unwrap_or_default();
                 self.group_menu.input = name;
@@ -1825,8 +1678,8 @@ impl App {
         };
         match code {
             KeyCode::Char('a') => {
-                let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
-                if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                     conv.accepted = true;
                 }
                 self.db_warn_visible(self.db.update_accepted(&conv_id, true), "update_accepted");
@@ -1838,9 +1691,9 @@ impl App {
                 })
             }
             KeyCode::Char('d') => {
-                let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
-                self.conversations.remove(&conv_id);
-                self.conversation_order.retain(|id| id != &conv_id);
+                let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                self.store.conversations.remove(&conv_id);
+                self.store.conversation_order.retain(|id| id != &conv_id);
                 self.scroll_positions.remove(&conv_id);
                 self.db_warn_visible(self.db.delete_conversation(&conv_id), "delete_conversation");
                 self.show_message_request = false;
@@ -1911,7 +1764,7 @@ impl App {
     /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
     fn prepare_reaction_send_emoji(&mut self, emoji: &str) -> Option<SendRequest> {
         let conv_id = self.active_conversation.clone()?;
-        let conv = self.conversations.get(&conv_id)?;
+        let conv = self.store.conversations.get(&conv_id)?;
         let is_group = conv.is_group;
 
         let index = self.focused_msg_index.unwrap_or_else(|| {
@@ -1924,7 +1777,7 @@ impl App {
             self.account.clone()
         } else {
             // Reverse lookup: find the phone number for this display name
-            self.contact_names
+            self.store.contact_names
                 .iter()
                 .find(|(_, name)| name.as_str() == msg.sender)
                 .map(|(num, _)| num.clone())
@@ -1935,7 +1788,7 @@ impl App {
         let is_remove = msg.reactions.iter().any(|r| r.sender == "you" && r.emoji == emoji);
 
         // Optimistic local update
-        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
             if let Some(msg) = conv.messages.get_mut(index) {
                 if is_remove {
                     msg.reactions.retain(|r| !(r.sender == "you" && r.emoji == emoji));
@@ -2216,7 +2069,7 @@ impl App {
                     if let Some(ref poll) = msg.poll_data {
                         if !poll.closed {
                             let conv_id = self.active_conversation.clone().unwrap_or_default();
-                            let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                            let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                             let poll_author = if msg.sender_id.is_empty() || msg.sender_id == "you" {
                                 self.account.clone()
                             } else {
@@ -2247,10 +2100,10 @@ impl App {
                 if let Some(msg) = self.selected_message() {
                     if msg.sender == "you" && msg.poll_data.as_ref().is_some_and(|p| !p.closed) {
                         let conv_id = self.active_conversation.clone()?;
-                        let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                        let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                         let poll_timestamp = msg.timestamp_ms;
                         // Optimistic close
-                        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                             if let Some(idx) = conv.find_msg_idx(poll_timestamp) {
                                 if let Some(ref mut poll) = conv.messages[idx].poll_data {
                                     poll.closed = true;
@@ -2346,9 +2199,9 @@ impl App {
 
     fn update_forward_filter(&mut self) {
         let filter = self.forward.filter.to_lowercase();
-        self.forward.filtered = self.conversation_order.iter()
+        self.forward.filtered = self.store.conversation_order.iter()
             .filter_map(|id| {
-                let conv = self.conversations.get(id)?;
+                let conv = self.store.conversations.get(id)?;
                 if !conv.accepted { return None; }
                 // Exclude the current conversation
                 if self.active_conversation.as_deref() == Some(id.as_str()) { return None; }
@@ -2377,12 +2230,14 @@ impl App {
             }
             ListKeyAction::Select => {
                 if let Some((conv_id, name)) = self.forward.filtered.get(self.forward.index).cloned() {
-                    let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                    let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                     let body = format!("[Forwarded]\n{}", self.forward.body);
                     let local_ts_ms = chrono::Utc::now().timestamp_millis();
                     self.forward.show = false;
                     self.status_message = format!("Forwarded to {name}");
-                    self.move_conversation_to_top(&conv_id);
+                    if self.store.move_conversation_to_top(&conv_id) && self.sidebar_filter_active {
+                        self.refresh_sidebar_filter();
+                    }
                     return Some(SendRequest::Message {
                         recipient: conv_id,
                         body,
@@ -2464,7 +2319,7 @@ impl App {
             Some(id) => id.clone(),
             None => return,
         };
-        let conv = match self.conversations.get(&conv_id) {
+        let conv = match self.store.conversations.get(&conv_id) {
             Some(c) => c,
             None => return,
         };
@@ -2506,7 +2361,7 @@ impl App {
             Some(id) => id.clone(),
             None => return,
         };
-        let found = self.conversations.get(&conv_id)
+        let found = self.store.conversations.get(&conv_id)
             .and_then(|c| c.find_msg_idx(quote_ts))
             .is_some();
 
@@ -2622,8 +2477,7 @@ impl App {
     pub fn new(account: String, db: Database) -> Self {
         let (image_render_tx, image_render_rx) = mpsc::channel();
         Self {
-            conversations: HashMap::new(),
-            conversation_order: Vec::new(),
+            store: ConversationStore::new(),
             active_conversation: None,
             input_buffer: String::new(),
             input_cursor: 0,
@@ -2643,7 +2497,6 @@ impl App {
             sidebar_filter: String::new(),
             sidebar_filtered: Vec::new(),
             typing: TypingState::default(),
-            last_read_index: HashMap::new(),
             connected: false,
             loading: true,
             startup_status: "Starting signal-cli...".to_string(),
@@ -2651,7 +2504,6 @@ impl App {
             mode: InputMode::Insert,
             db,
             connection_error: None,
-            contact_names: HashMap::new(),
             notifications: NotificationState::new(),
             muted_conversations: HashSet::new(),
             blocked_conversations: HashSet::new(),
@@ -2669,7 +2521,6 @@ impl App {
             image: ImageState::new(image_render_tx, image_render_rx),
             prev_active_conversation: None,
             incognito: false,
-            has_more_messages: HashSet::new(),
             at_scroll_top: false,
             date_separators: true,
             show_receipts: true,
@@ -2683,9 +2534,6 @@ impl App {
             jump_stack: Vec::new(),
             reactions: ReactionState::new(),
             emoji_picker: EmojiPickerState::default(),
-            groups: HashMap::new(),
-            uuid_to_name: HashMap::new(),
-            number_to_uuid: HashMap::new(),
             autocomplete_mode: AutocompleteMode::Command,
             mention_candidates: Vec::new(),
             join_candidates: Vec::new(),
@@ -2789,23 +2637,23 @@ impl App {
 
             // Mark conversations that may have more messages in DB
             if msg_count >= Self::PAGE_SIZE {
-                self.has_more_messages.insert(id.clone());
+                self.store.has_more_messages.insert(id.clone());
             }
-            self.conversations.insert(id.clone(), conv);
+            self.store.conversations.insert(id.clone(), conv);
             // Derive last_read_index from unread count
             if msg_count > 0 {
                 let read_index = msg_count.saturating_sub(unread);
-                self.last_read_index.insert(id, read_index);
+                self.store.last_read_index.insert(id, read_index);
             }
         }
 
-        self.conversation_order = order;
+        self.store.conversation_order = order;
         self.muted_conversations = self.db.load_muted()?;
         self.blocked_conversations = self.db.load_blocked()?;
 
         // Fix 1:1 conversations still named as phone numbers: scan message senders
         // for a real display name (from source_name in previous sessions).
-        for conv in self.conversations.values_mut() {
+        for conv in self.store.conversations.values_mut() {
             if !conv.is_group && conv.name == conv.id && conv.name.starts_with('+') {
                 // Find the most recent non-"you" sender with a real name
                 if let Some(name) = conv.messages.iter().rev()
@@ -2825,11 +2673,11 @@ impl App {
     pub fn load_more_messages(&mut self) {
         self.at_scroll_top = false;
         let conv_id = match self.active_conversation.as_ref() {
-            Some(id) if self.has_more_messages.contains(id) => id.clone(),
+            Some(id) if self.store.has_more_messages.contains(id) => id.clone(),
             _ => return,
         };
 
-        let already_loaded = self.conversations.get(&conv_id)
+        let already_loaded = self.store.conversations.get(&conv_id)
             .map(|c| c.messages.len()).unwrap_or(0);
 
         let new_msgs = match self.db.load_messages_page(&conv_id, Self::PAGE_SIZE, already_loaded) {
@@ -2838,7 +2686,7 @@ impl App {
         };
 
         if new_msgs.len() < Self::PAGE_SIZE {
-            self.has_more_messages.remove(&conv_id);
+            self.store.has_more_messages.remove(&conv_id);
         }
 
         if new_msgs.is_empty() {
@@ -2871,13 +2719,13 @@ impl App {
         }).collect();
 
         // Prepend to conversation
-        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
             processed.append(&mut conv.messages);
             conv.messages = processed;
         }
 
         // Shift message indexes that reference this conversation
-        if let Some(read_idx) = self.last_read_index.get_mut(&conv_id) {
+        if let Some(read_idx) = self.store.last_read_index.get_mut(&conv_id) {
             *read_idx += prepend_count;
         }
         if self.active_conversation.as_ref() == Some(&conv_id) {
@@ -2898,10 +2746,10 @@ impl App {
     pub(crate) fn refresh_sidebar_filter(&mut self) {
         let query = self.sidebar_filter.to_lowercase();
         self.sidebar_filtered = self
-            .conversation_order
+            .store.conversation_order
             .iter()
             .filter(|id| {
-                self.conversations
+                self.store.conversations
                     .get(*id)
                     .is_some_and(|c| c.name.to_lowercase().contains(&query))
             })
@@ -2953,8 +2801,8 @@ impl App {
     /// Mark current conversation as fully read
     pub fn mark_read(&mut self) {
         if let Some(ref conv_id) = self.active_conversation {
-            if let Some(conv) = self.conversations.get(conv_id) {
-                self.last_read_index
+            if let Some(conv) = self.store.conversations.get(conv_id) {
+                self.store.last_read_index
                     .insert(conv_id.clone(), conv.messages.len());
             }
             // Persist read marker
@@ -2972,7 +2820,7 @@ impl App {
         if !self.send_read_receipts {
             return;
         }
-        let conv = match self.conversations.get(conv_id) {
+        let conv = match self.store.conversations.get(conv_id) {
             Some(c) => c,
             None => return,
         };
@@ -3021,7 +2869,7 @@ impl App {
     fn build_typing_request(&self, stop: bool) -> Option<SendRequest> {
         let conv_id = self.active_conversation.as_ref()?;
         let is_group = self
-            .conversations
+            .store.conversations
             .get(conv_id)
             .map(|c| c.is_group)
             .unwrap_or(false);
@@ -3259,7 +3107,7 @@ impl App {
                 ('g', KeyCode::Char('g')) => {
                     // gg = scroll to top
                     if let Some(ref id) = self.active_conversation {
-                        if let Some(conv) = self.conversations.get(id) {
+                        if let Some(conv) = self.store.conversations.get(id) {
                             self.scroll_offset = conv.messages.len();
                         }
                     }
@@ -3663,7 +3511,7 @@ impl App {
             SignalEvent::TypingIndicator { sender, sender_name, is_typing, group_id } => {
                 // Store name in contact lookup if we learned it from this event
                 if let Some(ref name) = sender_name {
-                    self.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
+                    self.store.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
                 }
                 // Key by group ID for group messages, sender phone for 1:1
                 let conv_key = group_id.as_ref().unwrap_or(&sender).clone();
@@ -3683,7 +3531,7 @@ impl App {
                 conv_id, emoji, sender, sender_name, target_author, target_timestamp, is_remove,
             } => {
                 if let Some(ref name) = sender_name {
-                    self.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
+                    self.store.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
                 }
                 self.handle_reaction(&conv_id, &emoji, &sender, &target_author, target_timestamp, is_remove);
             }
@@ -3701,7 +3549,7 @@ impl App {
                 conv_id, sender, sender_name, target_author: _, target_timestamp,
             } => {
                 if let Some(ref name) = sender_name {
-                    self.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
+                    self.store.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
                 }
                 self.handle_pin_received(&conv_id, &sender, target_timestamp, true);
             }
@@ -3709,7 +3557,7 @@ impl App {
                 conv_id, sender, sender_name, target_author: _, target_timestamp,
             } => {
                 if let Some(ref name) = sender_name {
-                    self.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
+                    self.store.contact_names.entry(sender.clone()).or_insert_with(|| name.clone());
                 }
                 self.handle_pin_received(&conv_id, &sender, target_timestamp, false);
             }
@@ -3720,7 +3568,7 @@ impl App {
                 conv_id, target_timestamp, voter, voter_name, option_indexes, vote_count,
             } => {
                 if let Some(ref name) = voter_name {
-                    self.contact_names.entry(voter.clone()).or_insert_with(|| name.clone());
+                    self.store.contact_names.entry(voter.clone()).or_insert_with(|| name.clone());
                 }
                 self.handle_poll_vote(&conv_id, target_timestamp, &voter, voter_name.as_deref(), &option_indexes, vote_count);
             }
@@ -3732,10 +3580,10 @@ impl App {
             }
             SignalEvent::ExpirationTimerChanged { conv_id, seconds, body, timestamp, timestamp_ms } => {
                 // Update conversation timer
-                let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
-                let conv_name = self.contact_names.get(&conv_id).cloned().unwrap_or_else(|| conv_id.to_string());
-                self.get_or_create_conversation(&conv_id, &conv_name, is_group);
-                if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                let conv_name = self.store.contact_names.get(&conv_id).cloned().unwrap_or_else(|| conv_id.to_string());
+                self.store.get_or_create_conversation(&conv_id, &conv_name, is_group, &self.db);
+                if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                     conv.expiration_timer = seconds;
                 }
                 self.db_warn_visible(self.db.update_expiration_timer(&conv_id, seconds), "update_expiration_timer");
@@ -3768,17 +3616,21 @@ impl App {
             msg.source.clone()
         };
 
-        self.move_conversation_to_top(&conv_id);
+        if self.store.move_conversation_to_top(&conv_id) && self.sidebar_filter_active {
+
+            self.refresh_sidebar_filter();
+
+        }
 
         // Store source_name in contact lookup for future resolution (typing indicators, etc.)
         if !msg.is_outgoing {
             if let Some(ref name) = msg.source_name {
-                self.contact_names.entry(msg.source.clone()).or_insert_with(|| name.clone());
+                self.store.contact_names.entry(msg.source.clone()).or_insert_with(|| name.clone());
             }
             // Populate UUID->name for @mention resolution
             if let (Some(ref uuid), Some(ref name)) = (&msg.source_uuid, &msg.source_name) {
                 if !name.is_empty() {
-                    self.uuid_to_name.entry(uuid.clone()).or_insert_with(|| name.clone());
+                    self.store.uuid_to_name.entry(uuid.clone()).or_insert_with(|| name.clone());
                 }
             }
         }
@@ -3791,7 +3643,7 @@ impl App {
             .as_deref()
             .or(if is_group { None } else { msg.source_name.as_deref() })
             .unwrap_or_else(|| {
-                self.contact_names.get(&conv_id).map(|s| s.as_str()).unwrap_or(&conv_id)
+                self.store.contact_names.get(&conv_id).map(|s| s.as_str()).unwrap_or(&conv_id)
             })
             .to_string();
 
@@ -3800,7 +3652,7 @@ impl App {
         } else {
             msg.source_name
                 .clone()
-                .or_else(|| self.contact_names.get(&msg.source).cloned())
+                .or_else(|| self.store.contact_names.get(&msg.source).cloned())
                 .unwrap_or_else(|| short_name(&msg.source))
         };
 
@@ -3811,10 +3663,10 @@ impl App {
         };
 
         // Ensure conversation exists; detect message requests for new 1:1 from unknown senders
-        let is_new = !self.conversations.contains_key(&conv_id);
-        self.get_or_create_conversation(&conv_id, &conv_name, is_group);
-        if is_new && !msg.is_outgoing && !is_group && !self.contact_names.contains_key(&conv_id) {
-            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+        let is_new = !self.store.conversations.contains_key(&conv_id);
+        self.store.get_or_create_conversation(&conv_id, &conv_name, is_group, &self.db);
+        if is_new && !msg.is_outgoing && !is_group && !self.store.contact_names.contains_key(&conv_id) {
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                 conv.accepted = false;
             }
             self.db_warn_visible(self.db.update_accepted(&conv_id, false), "update_accepted");
@@ -3835,7 +3687,7 @@ impl App {
         };
 
         // Keep conversation's expiration_timer in sync with incoming messages
-        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
             if conv.expiration_timer != msg_expires_in {
                 conv.expiration_timer = msg_expires_in;
                 db_warn(self.db.update_expiration_timer(&conv_id, msg_expires_in), "update_expiration_timer");
@@ -3844,17 +3696,17 @@ impl App {
 
         // Resolve @mentions before the push closure borrows self mutably
         let resolved_body = msg.body.as_ref().map(|body| {
-            self.resolve_mentions(body, &msg.mentions)
+            self.store.resolve_mentions(body, &msg.mentions)
         });
 
         // Resolve text styles (UTF-16 → byte offsets, accounting for mention replacements)
         let resolved_styles = resolved_body.as_ref().map(|(resolved, _)| {
-            self.resolve_text_styles(resolved, &msg.text_styles, &msg.mentions)
+            self.store.resolve_text_styles(resolved, &msg.text_styles, &msg.mentions)
         }).unwrap_or_default();
 
         // Resolve quote from wire format
         let msg_quote = msg.quote.as_ref().map(|(ts, author_phone, body)| {
-            let author_display = self.contact_names.get(author_phone)
+            let author_display = self.store.contact_names.get(author_phone)
                 .cloned()
                 .unwrap_or_else(|| if *author_phone == self.account { "you".to_string() } else { author_phone.clone() });
             (Quote { author: author_display, body: body.clone(), timestamp_ms: *ts, author_id: author_phone.clone() }, author_phone.clone(), body.clone(), *ts)
@@ -3873,7 +3725,7 @@ impl App {
                             quote: Option<Quote>| {
             // Check for buffered poll data from a race condition (poll event arrived first)
             let deferred_poll = self.poll_vote.pending_polls.remove(&(conv_id.clone(), msg_ts_ms));
-            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                 let pos = conv.messages.partition_point(|m| m.timestamp_ms <= msg_ts_ms);
                 conv.messages.insert(pos, DisplayMessage {
                     sender: sender_display.clone(),
@@ -3901,7 +3753,7 @@ impl App {
                     preview_image_path: None,
                 });
                 // Bump last_read_index if we inserted before the read marker
-                if let Some(read_idx) = self.last_read_index.get_mut(&conv_id) {
+                if let Some(read_idx) = self.store.last_read_index.get_mut(&conv_id) {
                     if pos <= *read_idx {
                         *read_idx += 1;
                     }
@@ -3962,7 +3814,7 @@ impl App {
 
         // Attach first link preview to the body message (not attachment messages)
         if let Some(preview) = msg.previews.into_iter().next() {
-            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                 if let Some(dm) = conv.messages.iter_mut().rev()
                     .find(|m| m.timestamp_ms == msg_ts_ms && !m.body.starts_with('['))
                 {
@@ -3990,10 +3842,10 @@ impl App {
             .unwrap_or(false);
 
         if !is_active && !msg.is_outgoing {
-            if let Some(c) = self.conversations.get_mut(&conv_id) {
+            if let Some(c) = self.store.conversations.get_mut(&conv_id) {
                 c.unread += 1;
             }
-            let conv_accepted = self.conversations.get(&conv_id).map(|c| c.accepted).unwrap_or(true);
+            let conv_accepted = self.store.conversations.get(&conv_id).map(|c| c.accepted).unwrap_or(true);
             let not_muted_or_blocked = conv_accepted
                 && !self.muted_conversations.contains(&conv_id)
                 && !self.blocked_conversations.contains(&conv_id);
@@ -4004,7 +3856,7 @@ impl App {
             if self.notifications.desktop_notifications && not_muted_or_blocked {
                 let notif_body = msg.body.as_deref().unwrap_or("");
                 let notif_group = if is_group {
-                    self.conversations.get(&conv_id).map(|c| c.name.clone())
+                    self.store.conversations.get(&conv_id).map(|c| c.name.clone())
                 } else {
                     None
                 };
@@ -4019,13 +3871,13 @@ impl App {
         }
 
         // Active conversation: send read receipt and advance read marker
-        let conv_accepted = self.conversations.get(&conv_id).map(|c| c.accepted).unwrap_or(true);
+        let conv_accepted = self.store.conversations.get(&conv_id).map(|c| c.accepted).unwrap_or(true);
         if is_active {
             if !msg.is_outgoing && conv_accepted && !self.blocked_conversations.contains(&conv_id) {
                 self.queue_single_read_receipt(&sender_id, msg_ts_ms);
             }
-            if let Some(conv) = self.conversations.get(&conv_id) {
-                self.last_read_index.insert(conv_id.clone(), conv.messages.len());
+            if let Some(conv) = self.store.conversations.get(&conv_id) {
+                self.store.last_read_index.insert(conv_id.clone(), conv.messages.len());
             }
             if let Ok(Some(rowid)) = self.db.last_message_rowid(&conv_id) {
                 db_warn(self.db.save_read_marker(&conv_id, rowid), "save_read_marker");
@@ -4040,10 +3892,10 @@ impl App {
         timestamp: DateTime<Utc>,
         timestamp_ms: i64,
     ) {
-        let is_group = self.conversations.get(conv_id).map(|c| c.is_group).unwrap_or(false);
-        let conv_name = self.contact_names.get(conv_id).cloned().unwrap_or_else(|| conv_id.to_string());
-        self.get_or_create_conversation(conv_id, &conv_name, is_group);
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        let is_group = self.store.conversations.get(conv_id).map(|c| c.is_group).unwrap_or(false);
+        let conv_name = self.store.contact_names.get(conv_id).cloned().unwrap_or_else(|| conv_id.to_string());
+        self.store.get_or_create_conversation(conv_id, &conv_name, is_group, &self.db);
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             let pos = conv.messages.partition_point(|m| m.timestamp_ms <= timestamp_ms);
             conv.messages.insert(pos, DisplayMessage {
                 sender: String::new(),
@@ -4071,7 +3923,7 @@ impl App {
                 preview_image_path: None,
             });
             // Bump last_read_index if we inserted before the read marker
-            if let Some(read_idx) = self.last_read_index.get_mut(conv_id) {
+            if let Some(read_idx) = self.store.last_read_index.get_mut(conv_id) {
                 if pos <= *read_idx {
                     *read_idx += 1;
                 }
@@ -4094,7 +3946,7 @@ impl App {
         let now_ms = Utc::now().timestamp_millis();
         let mut removed_count: usize = 0;
 
-        for conv in self.conversations.values_mut() {
+        for conv in self.store.conversations.values_mut() {
             let before = conv.messages.len();
             conv.messages.retain(|m| {
                 if m.expires_in_seconds > 0 && m.expiration_start_ms > 0 {
@@ -4130,20 +3982,20 @@ impl App {
         is_remove: bool,
     ) {
         // Find the message in memory and update reactions.
-        // Pre-resolve names to avoid borrow conflict with self.conversations.
+        // Pre-resolve names to avoid borrow conflict with self.store.conversations.
         let account = &self.account;
-        let target_display = self.contact_names.get(target_author).cloned();
+        let target_display = self.store.contact_names.get(target_author).cloned();
         // Resolve sender phone number to display name for rendering
         let is_self = sender == self.account;
         let sender_display = if is_self {
             "you".to_string()
         } else {
-            self.contact_names
+            self.store.contact_names
                 .get(sender)
                 .cloned()
                 .unwrap_or_else(|| sender.to_string())
         };
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             let found = conv.find_msg_idx(target_timestamp).and_then(|idx| {
                 let m = &conv.messages[idx];
                 let matches = if m.sender == "you" {
@@ -4193,7 +4045,7 @@ impl App {
             KeyCode::Char('y') => {
                 self.show_delete_confirm = false;
                 let conv_id = self.active_conversation.clone()?;
-                let conv = self.conversations.get(&conv_id)?;
+                let conv = self.store.conversations.get(&conv_id)?;
                 let is_group = conv.is_group;
                 let index = self.focused_msg_index.unwrap_or_else(|| {
                     conv.messages.len().saturating_sub(1)
@@ -4203,7 +4055,7 @@ impl App {
                 let target_timestamp = msg.timestamp_ms;
 
                 // Apply local delete
-                let conv = self.conversations.get_mut(&conv_id)?;
+                let conv = self.store.conversations.get_mut(&conv_id)?;
                 let msg = conv.messages.get_mut(index)?;
                 msg.is_deleted = true;
                 msg.body = "[deleted]".to_string();
@@ -4227,14 +4079,14 @@ impl App {
                 // Local-only delete (for outgoing messages)
                 self.show_delete_confirm = false;
                 let conv_id = self.active_conversation.clone()?;
-                let conv = self.conversations.get(&conv_id)?;
+                let conv = self.store.conversations.get(&conv_id)?;
                 let index = self.focused_msg_index.unwrap_or_else(|| {
                     conv.messages.len().saturating_sub(1)
                 });
                 let msg = conv.messages.get(index)?;
                 let target_timestamp = msg.timestamp_ms;
 
-                let conv = self.conversations.get_mut(&conv_id)?;
+                let conv = self.store.conversations.get_mut(&conv_id)?;
                 let msg = conv.messages.get_mut(index)?;
                 msg.is_deleted = true;
                 msg.body = "[deleted]".to_string();
@@ -4254,7 +4106,7 @@ impl App {
     }
 
     fn handle_edit_received(&mut self, conv_id: &str, target_timestamp: i64, new_body: &str) {
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             if let Some(idx) = conv.find_msg_idx(target_timestamp) {
                 conv.messages[idx].body = new_body.to_string();
                 conv.messages[idx].is_edited = true;
@@ -4267,7 +4119,7 @@ impl App {
     }
 
     fn handle_remote_delete(&mut self, conv_id: &str, target_timestamp: i64) {
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             if let Some(idx) = conv.find_msg_idx(target_timestamp) {
                 conv.messages[idx].is_deleted = true;
                 conv.messages[idx].body = "[deleted]".to_string();
@@ -4281,7 +4133,7 @@ impl App {
     }
 
     fn handle_pin_received(&mut self, conv_id: &str, sender: &str, target_timestamp: i64, pinned: bool) {
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             if let Some(idx) = conv.find_msg_idx(target_timestamp) {
                 conv.messages[idx].is_pinned = pinned;
             }
@@ -4294,7 +4146,7 @@ impl App {
         let sender_display = if sender == self.account {
             "you".to_string()
         } else {
-            self.contact_names.get(sender).cloned().unwrap_or_else(|| sender.to_string())
+            self.store.contact_names.get(sender).cloned().unwrap_or_else(|| sender.to_string())
         };
         let action = if pinned { "pinned" } else { "unpinned" };
         let body = format!("{sender_display} {action} a message");
@@ -4307,7 +4159,7 @@ impl App {
         // The poll arrives as a regular message too — find it and attach poll_data.
         // If the message hasn't arrived yet (race), buffer the poll data so
         // handle_message can attach it when the message arrives.
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             if let Some(idx) = conv.find_msg_idx(timestamp) {
                 conv.messages[idx].poll_data = Some(poll_data.clone());
             } else {
@@ -4329,7 +4181,7 @@ impl App {
         option_indexes: &[i64],
         vote_count: i64,
     ) {
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             if let Some(idx) = conv.find_msg_idx(target_timestamp) {
                 let msg = &mut conv.messages[idx];
                 // Upsert vote in memory
@@ -4354,7 +4206,7 @@ impl App {
     }
 
     fn handle_poll_terminated(&mut self, conv_id: &str, target_timestamp: i64) {
-        if let Some(conv) = self.conversations.get_mut(conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
             if let Some(idx) = conv.find_msg_idx(target_timestamp) {
                 if let Some(ref mut poll) = conv.messages[idx].poll_data {
                     poll.closed = true;
@@ -4376,7 +4228,7 @@ impl App {
         let target_timestamp = msg.timestamp_ms;
         let author_phone = msg.sender_id.clone();
         let conv_id = self.active_conversation.clone()?;
-        let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+        let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
 
         let target_author = if author_phone.is_empty() || author_phone == "you" {
             self.account.clone()
@@ -4386,7 +4238,7 @@ impl App {
 
         if was_pinned {
             // Unpin immediately — no duration needed
-            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                 if let Some(idx) = conv.find_msg_idx(target_timestamp) {
                     conv.messages[idx].is_pinned = false;
                 }
@@ -4440,7 +4292,7 @@ impl App {
                 let pending = self.pin_duration.pending.take()?;
 
                 // Optimistically pin
-                if let Some(conv) = self.conversations.get_mut(&pending.conv_id) {
+                if let Some(conv) = self.store.conversations.get_mut(&pending.conv_id) {
                     if let Some(idx) = conv.find_msg_idx(pending.target_timestamp) {
                         conv.messages[idx].is_pinned = true;
                     }
@@ -4616,14 +4468,14 @@ impl App {
 
         for (sender, timestamp) in &read_messages {
             // First try direct match: sender is a 1:1 conversation
-            if self.conversations.contains_key(sender.as_str()) {
+            if self.store.conversations.contains_key(sender.as_str()) {
                 let entry = max_ts_per_conv.entry(sender.clone()).or_insert(0);
                 *entry = (*entry).max(*timestamp);
                 continue;
             }
             // Otherwise, scan group conversations for a message matching this timestamp
             let mut found = false;
-            for (conv_id, conv) in &self.conversations {
+            for (conv_id, conv) in &self.store.conversations {
                 if !conv.is_group {
                     continue;
                 }
@@ -4644,7 +4496,7 @@ impl App {
 
         // For each conversation, advance the read marker
         for (conv_id, max_ts) in &max_ts_per_conv {
-            let new_read_idx = if let Some(conv) = self.conversations.get(conv_id) {
+            let new_read_idx = if let Some(conv) = self.store.conversations.get(conv_id) {
                 // partition_point gives the index of the first message with ts > max_ts
                 conv.messages.partition_point(|m| m.timestamp_ms <= *max_ts)
             } else {
@@ -4652,12 +4504,12 @@ impl App {
             };
 
             // Only advance, never retreat
-            let current = self.last_read_index.get(conv_id).copied().unwrap_or(0);
+            let current = self.store.last_read_index.get(conv_id).copied().unwrap_or(0);
             if new_read_idx > current {
-                self.last_read_index.insert(conv_id.clone(), new_read_idx);
+                self.store.last_read_index.insert(conv_id.clone(), new_read_idx);
 
                 // Recompute unread from remaining messages after the read marker
-                if let Some(conv) = self.conversations.get_mut(conv_id) {
+                if let Some(conv) = self.store.conversations.get_mut(conv_id) {
                     let unread = conv.messages[new_read_idx..]
                         .iter()
                         .filter(|m| !m.is_system && m.status.is_none())
@@ -4683,20 +4535,20 @@ impl App {
             // Store name in lookup for future message resolution
             if let Some(ref name) = contact.name {
                 if !name.is_empty() {
-                    self.contact_names.insert(contact.number.clone(), name.clone());
+                    self.store.contact_names.insert(contact.number.clone(), name.clone());
                 }
             }
             // Build UUID maps for @mention resolution
             if let Some(ref uuid) = contact.uuid {
                 if let Some(ref name) = contact.name {
                     if !name.is_empty() {
-                        self.uuid_to_name.insert(uuid.clone(), name.clone());
+                        self.store.uuid_to_name.insert(uuid.clone(), name.clone());
                     }
                 }
-                self.number_to_uuid.insert(contact.number.clone(), uuid.clone());
+                self.store.number_to_uuid.insert(contact.number.clone(), uuid.clone());
             }
             // Update name on existing conversations only — don't create new ones
-            if let Some(conv) = self.conversations.get_mut(&contact.number) {
+            if let Some(conv) = self.store.conversations.get_mut(&contact.number) {
                 if let Some(ref contact_name) = contact.name {
                     if !contact_name.is_empty() && conv.name != *contact_name {
                         conv.name = contact_name.clone();
@@ -4706,12 +4558,12 @@ impl App {
             }
         }
         // Auto-accept unaccepted 1:1 conversations whose sender is now a known contact
-        let to_accept: Vec<String> = self.conversations.iter()
-            .filter(|(_, c)| !c.accepted && !c.is_group && self.contact_names.contains_key(&c.id))
+        let to_accept: Vec<String> = self.store.conversations.iter()
+            .filter(|(_, c)| !c.accepted && !c.is_group && self.store.contact_names.contains_key(&c.id))
             .map(|(id, _)| id.clone())
             .collect();
         for id in to_accept {
-            if let Some(conv) = self.conversations.get_mut(&id) {
+            if let Some(conv) = self.store.conversations.get_mut(&id) {
                 conv.accepted = true;
                 db_warn(self.db.update_accepted(&id, true), "update_accepted");
             }
@@ -4719,38 +4571,38 @@ impl App {
 
         // Re-resolve reaction senders: DB stores phone numbers but display
         // needs contact names (or "you" for own reactions).
-        self.resolve_stored_names();
+        self.store.resolve_stored_names(&self.account);
     }
 
     fn handle_group_list(&mut self, groups: Vec<Group>) {
         for group in groups {
             // Store name in lookup for future message resolution
             if !group.name.is_empty() {
-                self.contact_names.insert(group.id.clone(), group.name.clone());
+                self.store.contact_names.insert(group.id.clone(), group.name.clone());
             }
             // Store UUID↔phone mappings from group members
             for (phone, uuid) in &group.member_uuids {
-                self.number_to_uuid.entry(phone.clone()).or_insert_with(|| uuid.clone());
+                self.store.number_to_uuid.entry(phone.clone()).or_insert_with(|| uuid.clone());
             }
             // Populate UUID->name from group members (phone->uuid + phone->name)
             for (phone, uuid) in &group.member_uuids {
-                if let Some(name) = self.contact_names.get(phone) {
+                if let Some(name) = self.store.contact_names.get(phone) {
                     if !name.is_empty() {
-                        self.uuid_to_name.entry(uuid.clone()).or_insert_with(|| name.clone());
+                        self.store.uuid_to_name.entry(uuid.clone()).or_insert_with(|| name.clone());
                     }
                 }
             }
             // Store group for @mention member lookup
-            self.groups.insert(group.id.clone(), group.clone());
+            self.store.groups.insert(group.id.clone(), group.clone());
             // Groups are always "active" (you're a member), so create conversations
-            let conv = self.get_or_create_conversation(&group.id, &group.name, true);
+            let conv = self.store.get_or_create_conversation(&group.id, &group.name, true, &self.db);
             if !group.name.is_empty() && conv.name != group.name {
                 conv.name = group.name.clone();
                 db_warn(self.db.upsert_conversation(&group.id, &group.name, true), "upsert_conversation");
             }
         }
         // Re-resolve reaction senders with any new names from group members.
-        self.resolve_stored_names();
+        self.store.resolve_stored_names(&self.account);
     }
 
     fn handle_identity_list(&mut self, identities: Vec<IdentityInfo>) {
@@ -4765,9 +4617,9 @@ impl App {
         if self.verify.show {
             if let Some(ref conv_id) = self.active_conversation {
                 let conv_id = conv_id.clone();
-                let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                 if is_group {
-                    if let Some(group) = self.groups.get(&conv_id) {
+                    if let Some(group) = self.store.groups.get(&conv_id) {
                         let members: HashSet<&str> = group.members.iter().map(|s| s.as_str()).collect();
                         self.verify.identities = identities.iter()
                             .filter(|id| id.number.as_ref().is_some_and(|n| members.contains(n.as_str())))
@@ -4786,228 +4638,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// Re-resolve reaction senders and quote authors across all conversations.
-    /// Uses contact_names first, then falls back to sender_id→sender mappings
-    /// from the messages themselves (covers people not in formal contacts but
-    /// whose display name was captured from the wire at message time).
-    fn resolve_stored_names(&mut self) {
-        // Build phone→name lookup from message sender_id fields
-        let mut phone_to_name: HashMap<String, String> = HashMap::new();
-        for conv in self.conversations.values() {
-            for msg in &conv.messages {
-                if !msg.sender_id.is_empty()
-                    && msg.sender_id != "you"
-                    && !msg.sender.is_empty()
-                    && msg.sender != msg.sender_id
-                {
-                    phone_to_name.insert(msg.sender_id.clone(), msg.sender.clone());
-                }
-            }
-        }
-
-        // Merge contact_names on top (takes priority)
-        for (phone, name) in &self.contact_names {
-            phone_to_name.insert(phone.clone(), name.clone());
-        }
-
-        // Resolve reaction senders and quote authors
-        for conv in self.conversations.values_mut() {
-            for msg in &mut conv.messages {
-                // Resolve reaction senders
-                for reaction in &mut msg.reactions {
-                    if reaction.sender == "you" {
-                        continue;
-                    }
-                    if reaction.sender == self.account {
-                        reaction.sender = "you".to_string();
-                    } else if let Some(name) = phone_to_name.get(&reaction.sender) {
-                        reaction.sender = name.clone();
-                    }
-                }
-                // Resolve quote author
-                if let Some(ref mut quote) = msg.quote {
-                    if quote.author == self.account {
-                        quote.author = "you".to_string();
-                    } else if let Some(name) = phone_to_name.get(&quote.author) {
-                        quote.author = name.clone();
-                    }
-                }
-            }
-        }
-    }
-
-    /// Resolve U+FFFC placeholders in a message body using bodyRanges mentions.
-    /// Returns (resolved_body, mention_byte_ranges) where mention_byte_ranges are
-    /// (start, end) byte offsets of each `@Name` in the resolved body.
-    fn resolve_mentions(&self, body: &str, mentions: &[Mention]) -> (String, Vec<(usize, usize)>) {
-        if mentions.is_empty() {
-            return (body.to_string(), Vec::new());
-        }
-
-        // Sort mentions by start descending so replacements don't shift earlier offsets
-        let mut sorted: Vec<&Mention> = mentions.iter().collect();
-        sorted.sort_by(|a, b| b.start.cmp(&a.start));
-
-        // Convert body to UTF-16 for offset mapping
-        let utf16: Vec<u16> = body.encode_utf16().collect();
-        let mut result_utf16 = utf16.clone();
-        for mention in &sorted {
-            if mention.start >= result_utf16.len() {
-                continue;
-            }
-            let name = self
-                .uuid_to_name
-                .get(&mention.uuid)
-                .cloned()
-                .unwrap_or_else(|| {
-                    // Truncated UUID fallback
-                    let short = if mention.uuid.len() > 8 {
-                        &mention.uuid[..8]
-                    } else {
-                        &mention.uuid
-                    };
-                    short.to_string()
-                });
-            let replacement = format!("@{name}");
-            let replacement_utf16: Vec<u16> = replacement.encode_utf16().collect();
-            let end = (mention.start + mention.length).min(result_utf16.len());
-            result_utf16.splice(mention.start..end, replacement_utf16);
-        }
-
-        let resolved = String::from_utf16_lossy(&result_utf16);
-
-        // Compute byte ranges for each @Name in the resolved string
-        // Replacements were applied in reverse order, so recalculate forward
-        let mut ranges: Vec<(usize, usize)> = Vec::new();
-        let mut sorted_fwd: Vec<&Mention> = mentions.iter().collect();
-        sorted_fwd.sort_by_key(|m| m.start);
-
-        // Re-build with forward pass to get accurate byte offsets
-        let resolved_utf16: Vec<u16> = resolved.encode_utf16().collect();
-        let mut byte_pos = 0;
-        let resolved_bytes = resolved.as_bytes();
-
-        // Build utf16_offset -> byte_offset mapping
-        let mut utf16_to_byte: Vec<usize> = Vec::with_capacity(resolved_utf16.len() + 1);
-        for ch in resolved.chars() {
-            let utf16_len = ch.len_utf16();
-            let utf8_len = ch.len_utf8();
-            for _ in 0..utf16_len {
-                utf16_to_byte.push(byte_pos);
-            }
-            byte_pos += utf8_len;
-        }
-        utf16_to_byte.push(byte_pos); // sentinel for end
-
-        // Calculate where each mention ended up after all replacements
-        // We need to track how earlier replacements shifted offsets
-        let mut offset_shift: i64 = 0;
-        for mention in &sorted_fwd {
-            let adjusted_start = (mention.start as i64 + offset_shift) as usize;
-            let name = self
-                .uuid_to_name
-                .get(&mention.uuid)
-                .cloned()
-                .unwrap_or_else(|| {
-                    let short = if mention.uuid.len() > 8 {
-                        &mention.uuid[..8]
-                    } else {
-                        &mention.uuid
-                    };
-                    short.to_string()
-                });
-            let replacement_utf16_len = format!("@{name}").encode_utf16().count();
-            let byte_start = utf16_to_byte.get(adjusted_start).copied().unwrap_or(resolved_bytes.len());
-            let byte_end = utf16_to_byte
-                .get(adjusted_start + replacement_utf16_len)
-                .copied()
-                .unwrap_or(resolved_bytes.len());
-            ranges.push((byte_start, byte_end));
-            // This mention replaced `mention.length` UTF-16 units with `replacement_utf16_len`
-            offset_shift += replacement_utf16_len as i64 - mention.length as i64;
-        }
-
-        (resolved, ranges)
-    }
-
-    /// Convert text style ranges from UTF-16 offsets (on the original body) to byte offsets
-    /// on the resolved body (after mention replacement). Mentions may change the body length,
-    /// so we need to account for the offset shift caused by mention replacements.
-    fn resolve_text_styles(
-        &self,
-        resolved_body: &str,
-        text_styles: &[TextStyle],
-        mentions: &[Mention],
-    ) -> Vec<(usize, usize, StyleType)> {
-        if text_styles.is_empty() {
-            return Vec::new();
-        }
-
-        // Calculate how mention replacements shift UTF-16 offsets.
-        // Build a sorted list of (original_utf16_start, original_utf16_len, replacement_utf16_len)
-        let mut mention_shifts: Vec<(usize, i64)> = Vec::new(); // (original_start, cumulative_shift_after)
-        if !mentions.is_empty() {
-            let mut sorted_mentions: Vec<&Mention> = mentions.iter().collect();
-            sorted_mentions.sort_by_key(|m| m.start);
-            let mut cumulative: i64 = 0;
-            for m in &sorted_mentions {
-                let name = self
-                    .uuid_to_name
-                    .get(&m.uuid)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        let short = if m.uuid.len() > 8 { &m.uuid[..8] } else { &m.uuid };
-                        short.to_string()
-                    });
-                let replacement_utf16_len = format!("@{name}").encode_utf16().count() as i64;
-                let original_len = m.length as i64;
-                cumulative += replacement_utf16_len - original_len;
-                mention_shifts.push((m.start + m.length, cumulative));
-            }
-        }
-
-        // For a given original UTF-16 offset, compute the shifted offset after mention replacements
-        let shift_offset = |orig: usize| -> usize {
-            let mut shift: i64 = 0;
-            for &(boundary, cum_shift) in &mention_shifts {
-                if orig >= boundary {
-                    shift = cum_shift;
-                } else {
-                    break;
-                }
-            }
-            (orig as i64 + shift) as usize
-        };
-
-        // Build UTF-16 to byte offset mapping for the resolved body
-        let mut utf16_to_byte: Vec<usize> = Vec::new();
-        let mut byte_pos = 0;
-        for ch in resolved_body.chars() {
-            for _ in 0..ch.len_utf16() {
-                utf16_to_byte.push(byte_pos);
-            }
-            byte_pos += ch.len_utf8();
-        }
-        utf16_to_byte.push(byte_pos); // sentinel
-
-        let body_byte_len = resolved_body.len();
-
-        text_styles
-            .iter()
-            .filter_map(|ts| {
-                let shifted_start = shift_offset(ts.start);
-                let shifted_end = shift_offset(ts.start + ts.length);
-                let byte_start = utf16_to_byte.get(shifted_start).copied().unwrap_or(body_byte_len);
-                let byte_end = utf16_to_byte.get(shifted_end).copied().unwrap_or(body_byte_len);
-                if byte_start < byte_end && byte_end <= body_byte_len {
-                    Some((byte_start, byte_end, ts.style))
-                } else {
-                    None
-                }
-            })
-            .collect()
     }
 
     /// Prepare outgoing mentions: replace @Name with U+FFFC and compute UTF-16 offsets.
@@ -5061,7 +4691,7 @@ impl App {
             ));
             let effective_ts = if server_ts != 0 { server_ts } else { local_ts };
             let mut found = false;
-            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                 // Find the outgoing message with matching local timestamp
                 if let Some(idx) = conv.find_msg_idx(local_ts).filter(|&idx| conv.messages[idx].sender == "you") {
                     conv.messages[idx].timestamp_ms = effective_ts;
@@ -5099,7 +4729,7 @@ impl App {
         }
         if let Some((conv_id, local_ts)) = self.pending_sends.remove(rpc_id) {
             let mut found = false;
-            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                 if let Some(idx) = conv.find_msg_idx(local_ts).filter(|&idx| conv.messages[idx].sender == "you") {
                     conv.messages[idx].status = Some(MessageStatus::Failed);
                     found = true;
@@ -5152,7 +4782,7 @@ impl App {
 
         // Try matching in the 1:1 conversation keyed by the receipt sender
         let conv_id = sender.to_string();
-        if let Some(conv) = self.conversations.get_mut(&conv_id) {
+        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
             for ts in timestamps {
                 if Self::try_upgrade_receipt(&self.db, &conv_id, conv, *ts, new_status) {
                     matched_any = true;
@@ -5164,7 +4794,7 @@ impl App {
         // where sender is a member but conv is keyed by group ID)
         if !matched_any {
             for ts in timestamps {
-                for (cid, conv) in &mut self.conversations {
+                for (cid, conv) in &mut self.store.conversations {
                     if Self::try_upgrade_receipt(&self.db, cid, conv, *ts, new_status) {
                         matched_any = true;
                         break;
@@ -5193,40 +4823,6 @@ impl App {
         }
     }
 
-    fn get_or_create_conversation(
-        &mut self,
-        id: &str,
-        name: &str,
-        is_group: bool,
-    ) -> &mut Conversation {
-        if !self.conversations.contains_key(id) {
-            // New conversation — always persist
-            db_warn(self.db.upsert_conversation(id, name, is_group), "upsert_conversation");
-            self.conversations.insert(
-                id.to_string(),
-                Conversation {
-                    name: name.to_string(),
-                    id: id.to_string(),
-                    messages: Vec::new(),
-                    unread: 0,
-                    is_group,
-                    expiration_timer: 0,
-                    accepted: true,
-                },
-            );
-            self.conversation_order.push(id.to_string());
-        } else if name != id {
-            // Existing conversation — only update if we have a real display name
-            // (not a phone-number fallback where name == id). This prevents
-            // messages arriving before ContactList from overwriting a good name.
-            let conv = self.conversations.get_mut(id).unwrap();
-            if conv.name != name {
-                conv.name = name.to_string();
-                db_warn(self.db.upsert_conversation(id, name, is_group), "upsert_conversation");
-            }
-        }
-        self.conversations.get_mut(id).unwrap()
-    }
 
     /// Handle a line of user input; returns Some((conv_id, body, is_group, local_ts_ms)) if we need to send a message
     pub fn handle_input(&mut self) -> Option<SendRequest> {
@@ -5251,12 +4847,12 @@ impl App {
                 if let Some((edit_ts, edit_conv_id)) = self.editing_message.take() {
                     if !text.is_empty() {
                         // Extract original quote fields (immutable borrow) before mutating
-                        let original_quote = self.conversations.get(&edit_conv_id)
+                        let original_quote = self.store.conversations.get(&edit_conv_id)
                             .and_then(|conv| conv.find_msg_idx(edit_ts).map(|idx| &conv.messages[idx]))
                             .filter(|msg| msg.sender == "you")
                             .and_then(|msg| msg.quote.as_ref())
                             .map(|q| (q.timestamp_ms, q.author_id.clone(), q.body.clone()));
-                        if let Some(conv) = self.conversations.get_mut(&edit_conv_id) {
+                        if let Some(conv) = self.store.conversations.get_mut(&edit_conv_id) {
                             if let Some(idx) = conv.find_msg_idx(edit_ts).filter(|&idx| conv.messages[idx].sender == "you") {
                                 conv.messages[idx].body = text.clone();
                                 conv.messages[idx].is_edited = true;
@@ -5288,7 +4884,7 @@ impl App {
                 if let Some(ref conv_id) = self.active_conversation {
                     let attachment = self.pending_attachment.take();
                     let is_group = self
-                        .conversations
+                        .store.conversations
                         .get(conv_id)
                         .map(|c| c.is_group)
                         .unwrap_or(false);
@@ -5331,7 +4927,7 @@ impl App {
                     let local_ts_ms = now.timestamp_millis();
                     // Build quote for display if replying
                     let quote = self.reply_target.as_ref().map(|(author_phone, body, ts)| {
-                        let author_display = self.contact_names.get(author_phone)
+                        let author_display = self.store.contact_names.get(author_phone)
                             .cloned()
                             .unwrap_or_else(|| if *author_phone == self.account { "you".to_string() } else { author_phone.clone() });
                         Quote { author: author_display, body: body.clone(), timestamp_ms: *ts, author_id: author_phone.clone() }
@@ -5341,11 +4937,11 @@ impl App {
                     let quote_body = self.reply_target.as_ref().map(|(_, body, _)| body.clone());
 
                     // Outgoing messages inherit the conversation's expiration timer
-                    let out_expires = self.conversations.get(&conv_id)
+                    let out_expires = self.store.conversations.get(&conv_id)
                         .map(|c| c.expiration_timer).unwrap_or(0);
                     let out_expiry_start = if out_expires > 0 { local_ts_ms } else { 0 };
 
-                    if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                    if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                         conv.messages.push(DisplayMessage {
                             sender: "you".to_string(),
                             timestamp: now,
@@ -5393,7 +4989,9 @@ impl App {
                     self.scroll_offset = 0;
                     self.focused_msg_index = None;
                     self.reply_target = None;
-                    self.move_conversation_to_top(&conv_id);
+                    if self.store.move_conversation_to_top(&conv_id) && self.sidebar_filter_active {
+                        self.refresh_sidebar_filter();
+                    }
                     return Some(SendRequest::Message {
                         recipient: conv_id,
                         body: wire_body,
@@ -5461,12 +5059,12 @@ impl App {
                 if let Some(ref conv_id) = self.active_conversation {
                     let conv_id = conv_id.clone();
                     if self.muted_conversations.remove(&conv_id) {
-                        let name = self.conversations.get(&conv_id)
+                        let name = self.store.conversations.get(&conv_id)
                             .map(|c| c.name.as_str()).unwrap_or(&conv_id);
                         self.status_message = format!("unmuted {name}");
                         db_warn(self.db.set_muted(&conv_id, false), "set_muted");
                     } else {
-                        let name = self.conversations.get(&conv_id)
+                        let name = self.store.conversations.get(&conv_id)
                             .map(|c| c.name.as_str()).unwrap_or(&conv_id);
                         self.status_message = format!("muted {name}");
                         self.muted_conversations.insert(conv_id.clone());
@@ -5479,13 +5077,13 @@ impl App {
             InputAction::Block => {
                 if let Some(ref conv_id) = self.active_conversation {
                     let conv_id = conv_id.clone();
-                    let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                    let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                     if self.blocked_conversations.contains(&conv_id) {
-                        let name = self.conversations.get(&conv_id)
+                        let name = self.store.conversations.get(&conv_id)
                             .map(|c| c.name.as_str()).unwrap_or(&conv_id);
                         self.status_message = format!("{name} is already blocked");
                     } else {
-                        let name = self.conversations.get(&conv_id)
+                        let name = self.store.conversations.get(&conv_id)
                             .map(|c| c.name.as_str()).unwrap_or(&conv_id);
                         self.status_message = format!("blocked {name}");
                         self.blocked_conversations.insert(conv_id.clone());
@@ -5499,15 +5097,15 @@ impl App {
             InputAction::Unblock => {
                 if let Some(ref conv_id) = self.active_conversation {
                     let conv_id = conv_id.clone();
-                    let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                    let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                     if self.blocked_conversations.remove(&conv_id) {
-                        let name = self.conversations.get(&conv_id)
+                        let name = self.store.conversations.get(&conv_id)
                             .map(|c| c.name.as_str()).unwrap_or(&conv_id);
                         self.status_message = format!("unblocked {name}");
                         db_warn(self.db.set_blocked(&conv_id, false), "set_blocked");
                         return Some(SendRequest::Unblock { recipient: conv_id, is_group });
                     } else {
-                        let name = self.conversations.get(&conv_id)
+                        let name = self.store.conversations.get(&conv_id)
                             .map(|c| c.name.as_str()).unwrap_or(&conv_id);
                         self.status_message = format!("{name} is not blocked");
                     }
@@ -5551,11 +5149,11 @@ impl App {
             InputAction::Verify => {
                 if let Some(ref conv_id) = self.active_conversation {
                     let conv_id = conv_id.clone();
-                    let conv = &self.conversations[&conv_id];
+                    let conv = &self.store.conversations[&conv_id];
                     // Filter identities for this conversation
                     if conv.is_group {
                         // For groups, show identities for all members
-                        if let Some(group) = self.groups.get(&conv_id) {
+                        if let Some(group) = self.store.groups.get(&conv_id) {
                             let members: HashSet<&str> = group.members.iter().map(|s| s.as_str()).collect();
                             self.verify.identities = self.identity_trust.keys()
                                 .filter(|num| members.contains(num.as_str()))
@@ -5616,9 +5214,9 @@ impl App {
                     Ok(seconds) => {
                         if let Some(ref conv_id) = self.active_conversation {
                             let conv_id = conv_id.clone();
-                            let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                            let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                             // Update locally immediately
-                            if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                                 conv.expiration_timer = seconds;
                             }
                             self.db_warn_visible(self.db.update_expiration_timer(&conv_id, seconds), "update_expiration_timer");
@@ -5640,7 +5238,7 @@ impl App {
             InputAction::Poll { question, options, allow_multiple } => {
                 if let Some(ref conv_id) = self.active_conversation {
                     let conv_id = conv_id.clone();
-                    let is_group = self.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
+                    let is_group = self.store.conversations.get(&conv_id).map(|c| c.is_group).unwrap_or(false);
                     let now = Utc::now();
                     let local_ts_ms = now.timestamp_millis();
 
@@ -5656,7 +5254,7 @@ impl App {
 
                     // Optimistic local message
                     let poll_data_for_db = poll_data.clone();
-                    if let Some(conv) = self.conversations.get_mut(&conv_id) {
+                    if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
                         conv.messages.push(DisplayMessage {
                             sender: "you".to_string(),
                             timestamp: now,
@@ -5758,7 +5356,7 @@ impl App {
             let mut candidates: Vec<(String, String)> = Vec::new();
 
             // Collect contacts from contact_names
-            for (phone, name) in &self.contact_names {
+            for (phone, name) in &self.store.contact_names {
                 // Skip group IDs (they don't start with '+')
                 if !phone.starts_with('+') {
                     continue;
@@ -5773,7 +5371,7 @@ impl App {
             }
 
             // Collect groups
-            for group in self.groups.values() {
+            for group in self.store.groups.values() {
                 let display = format!("#{}", group.name);
                 if filter_lower.is_empty()
                     || group.name.to_lowercase().contains(&filter_lower)
@@ -5783,8 +5381,8 @@ impl App {
             }
 
             // Also include existing conversations not yet covered
-            for conv_id in &self.conversation_order {
-                if let Some(conv) = self.conversations.get(conv_id) {
+            for conv_id in &self.store.conversation_order {
+                if let Some(conv) = self.store.conversations.get(conv_id) {
                     let already_listed = candidates.iter().any(|(_, val)| {
                         val == conv_id
                     });
@@ -5819,7 +5417,7 @@ impl App {
 
         // Try @mention autocomplete
         if let Some(ref conv_id) = self.active_conversation {
-            if let Some(conv) = self.conversations.get(conv_id) {
+            if let Some(conv) = self.store.conversations.get(conv_id) {
                 if let Some(trigger_pos) = self.find_mention_trigger() {
                     let after_at = &self.input_buffer[trigger_pos + 1..self.input_cursor];
                     let filter_lower = after_at.to_lowercase();
@@ -5827,14 +5425,14 @@ impl App {
                     let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
                     if conv.is_group {
                         // Group: offer all group members
-                        if let Some(group) = self.groups.get(conv_id) {
+                        if let Some(group) = self.store.groups.get(conv_id) {
                             for member_phone in &group.members {
                                 let name = self
-                                    .contact_names
+                                    .store.contact_names
                                     .get(member_phone)
                                     .cloned()
                                     .unwrap_or_else(|| member_phone.clone());
-                                let uuid = self.number_to_uuid.get(member_phone).cloned();
+                                let uuid = self.store.number_to_uuid.get(member_phone).cloned();
                                 if filter_lower.is_empty()
                                     || name.to_lowercase().contains(&filter_lower)
                                     || member_phone.contains(&filter_lower)
@@ -5846,11 +5444,11 @@ impl App {
                     } else {
                         // 1:1 chat: offer the contact as a mention candidate
                         let name = self
-                            .contact_names
+                            .store.contact_names
                             .get(conv_id)
                             .cloned()
                             .unwrap_or_else(|| conv_id.clone());
-                        let uuid = self.number_to_uuid.get(conv_id).cloned();
+                        let uuid = self.store.number_to_uuid.get(conv_id).cloned();
                         if filter_lower.is_empty()
                             || name.to_lowercase().contains(&filter_lower)
                             || conv_id.contains(&filter_lower)
@@ -6244,11 +5842,11 @@ impl App {
         self.clear_kitty_placements();
 
         // Try exact match first
-        if self.conversations.contains_key(target) {
-            let read_from = self.last_read_index.get(target).copied().unwrap_or(0);
+        if self.store.conversations.contains_key(target) {
+            let read_from = self.store.last_read_index.get(target).copied().unwrap_or(0);
             self.queue_read_receipts_for_conv(target, read_from);
             self.active_conversation = Some(target.to_string());
-            if let Some(conv) = self.conversations.get_mut(target) {
+            if let Some(conv) = self.store.conversations.get_mut(target) {
                 conv.unread = 0;
             }
             self.restore_scroll_position(target);
@@ -6260,16 +5858,16 @@ impl App {
         // Try matching by name (case-insensitive)
         let target_lower = target.to_lowercase();
         let found_id = self
-            .conversations
+            .store.conversations
             .iter()
             .find(|(_, conv)| conv.name.to_lowercase().contains(&target_lower))
             .map(|(id, _)| id.clone());
 
         if let Some(id) = found_id {
-            let read_from = self.last_read_index.get(&id).copied().unwrap_or(0);
+            let read_from = self.store.last_read_index.get(&id).copied().unwrap_or(0);
             self.queue_read_receipts_for_conv(&id, read_from);
             self.active_conversation = Some(id.clone());
-            if let Some(conv) = self.conversations.get_mut(&id) {
+            if let Some(conv) = self.store.conversations.get_mut(&id) {
                 conv.unread = 0;
             }
             self.restore_scroll_position(&id);
@@ -6280,7 +5878,7 @@ impl App {
 
         // Create a new 1:1 conversation if target looks like a phone number
         if target.starts_with('+') {
-            self.get_or_create_conversation(target, target, false);
+            self.store.get_or_create_conversation(target, target, false, &self.db);
             self.active_conversation = Some(target.to_string());
             self.scroll_offset = 0;
             self.focused_msg_index = None;
@@ -6291,7 +5889,7 @@ impl App {
     }
 
     pub fn next_conversation(&mut self) {
-        if self.conversation_order.is_empty() {
+        if self.store.conversation_order.is_empty() {
             return;
         }
         self.clear_sidebar_filter();
@@ -6303,14 +5901,14 @@ impl App {
         let idx = self
             .active_conversation
             .as_ref()
-            .and_then(|id| self.conversation_order.iter().position(|x| x == id))
-            .map(|i| (i + 1) % self.conversation_order.len())
+            .and_then(|id| self.store.conversation_order.iter().position(|x| x == id))
+            .map(|i| (i + 1) % self.store.conversation_order.len())
             .unwrap_or(0);
-        let new_id = self.conversation_order[idx].clone();
-        let read_from = self.last_read_index.get(&new_id).copied().unwrap_or(0);
+        let new_id = self.store.conversation_order[idx].clone();
+        let read_from = self.store.last_read_index.get(&new_id).copied().unwrap_or(0);
         self.queue_read_receipts_for_conv(&new_id, read_from);
         self.active_conversation = Some(new_id.clone());
-        if let Some(conv) = self.conversations.get_mut(&new_id) {
+        if let Some(conv) = self.store.conversations.get_mut(&new_id) {
             conv.unread = 0;
         }
         self.restore_scroll_position(&new_id);
@@ -6319,7 +5917,7 @@ impl App {
     }
 
     pub fn prev_conversation(&mut self) {
-        if self.conversation_order.is_empty() {
+        if self.store.conversation_order.is_empty() {
             return;
         }
         self.clear_sidebar_filter();
@@ -6328,18 +5926,18 @@ impl App {
         self.pending_attachment = None;
         self.reset_typing_with_stop();
         self.clear_kitty_placements();
-        let len = self.conversation_order.len();
+        let len = self.store.conversation_order.len();
         let idx = self
             .active_conversation
             .as_ref()
-            .and_then(|id| self.conversation_order.iter().position(|x| x == id))
+            .and_then(|id| self.store.conversation_order.iter().position(|x| x == id))
             .map(|i| if i == 0 { len - 1 } else { i - 1 })
             .unwrap_or(0);
-        let new_id = self.conversation_order[idx].clone();
-        let read_from = self.last_read_index.get(&new_id).copied().unwrap_or(0);
+        let new_id = self.store.conversation_order[idx].clone();
+        let read_from = self.store.last_read_index.get(&new_id).copied().unwrap_or(0);
         self.queue_read_receipts_for_conv(&new_id, read_from);
         self.active_conversation = Some(new_id.clone());
-        if let Some(conv) = self.conversations.get_mut(&new_id) {
+        if let Some(conv) = self.store.conversations.get_mut(&new_id) {
             conv.unread = 0;
         }
         self.restore_scroll_position(&new_id);
@@ -6349,13 +5947,13 @@ impl App {
 
     fn update_status(&mut self) {
         if let Some(ref id) = self.active_conversation {
-            if let Some(conv) = self.conversations.get(id) {
+            if let Some(conv) = self.store.conversations.get(id) {
                 let prefix = if conv.is_group { "#" } else { "" };
                 self.status_message = format!("connected | {}{}", prefix, conv.name);
             }
             // Show message request overlay for unaccepted conversations
             self.show_message_request = self.active_conversation.as_ref()
-                .and_then(|id| self.conversations.get(id))
+                .and_then(|id| self.store.conversations.get(id))
                 .is_some_and(|c| !c.accepted);
         } else {
             self.status_message = "connected | no conversation selected".to_string();
@@ -6368,17 +5966,12 @@ impl App {
         self.status_message = "connected | no conversation selected".to_string();
     }
 
-    /// Total unread count across all conversations
-    pub fn total_unread(&self) -> usize {
-        self.conversations.values().map(|c| c.unread).sum()
-    }
-
     /// Get the message at the current scroll position.
     /// Returns the message at the bottom of the visible viewport.
     /// scroll_offset=0 means the newest message; higher values go older.
     pub fn selected_message(&self) -> Option<&DisplayMessage> {
         let conv_id = self.active_conversation.as_ref()?;
-        let conv = self.conversations.get(conv_id)?;
+        let conv = self.store.conversations.get(conv_id)?;
         let index = self.focused_msg_index.unwrap_or_else(|| {
             conv.messages.len().saturating_sub(1)
         });
@@ -6392,7 +5985,7 @@ impl App {
             Some(id) => id.clone(),
             None => return,
         };
-        let conv = match self.conversations.get(&conv_id) {
+        let conv = match self.store.conversations.get(&conv_id) {
             Some(c) => c,
             None => return,
         };
@@ -6572,7 +6165,7 @@ impl App {
                 let sidebar_list = if self.sidebar_filter_active && !self.sidebar_filtered.is_empty() {
                     &self.sidebar_filtered
                 } else {
-                    &self.conversation_order
+                    &self.store.conversation_order
                 };
                 if index < sidebar_list.len() {
                     let conv_id = sidebar_list[index].clone();
@@ -6644,7 +6237,7 @@ impl App {
                 return;
             }
         };
-        let conv = match self.conversations.get(&conv_id) {
+        let conv = match self.store.conversations.get(&conv_id) {
             Some(c) => c,
             None => return,
         };
@@ -6703,18 +6296,6 @@ impl App {
         }
     }
 
-    fn move_conversation_to_top(&mut self, id: &str) {
-        let pos = match self.conversation_order.iter().position(|c| c == id) {
-            Some(pos) => pos,
-            None => return,
-        };
-
-        self.conversation_order.remove(pos);
-        self.conversation_order.insert(0, id.to_string());
-        if self.sidebar_filter_active {
-            self.refresh_sidebar_filter();
-        }
-    }
 }
 
 /// Simple point-in-rect hit test for mouse coordinates.
@@ -6725,17 +6306,6 @@ fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
         && row < rect.y + rect.height
 }
 
-/// Shorten a phone number for display: +15551234567 -> +1***4567
-fn short_name(number: &str) -> String {
-    let chars: Vec<char> = number.chars().collect();
-    if chars.len() > 6 {
-        let prefix: String = chars[..2].iter().collect();
-        let last4: String = chars[chars.len() - 4..].iter().collect();
-        format!("{prefix}***{last4}")
-    } else {
-        number.to_string()
-    }
-}
 
 /// Convert a local file path to a file:/// URI (forward slashes, for terminal Ctrl+Click).
 fn path_to_file_uri(path: &str) -> String {
@@ -7110,14 +6680,14 @@ impl App {
             let id = conv.id.clone();
             let msg_count = conv.messages.len();
             let unread = conv.unread;
-            self.conversations.insert(id.clone(), conv);
+            self.store.conversations.insert(id.clone(), conv);
             if msg_count > 0 {
-                self.last_read_index
+                self.store.last_read_index
                     .insert(id, msg_count.saturating_sub(unread));
             }
         }
 
-        self.conversation_order = order;
+        self.store.conversation_order = order;
         self.active_conversation = Some(alice_id.clone());
         self.status_message = "connected | demo mode".to_string();
 
@@ -7131,13 +6701,13 @@ impl App {
             (&dad_id, "Dad", "ffff-dad-uuid"),
         ];
         for (phone, name, uuid) in &demo_contacts {
-            self.contact_names.insert(phone.to_string(), name.to_string());
-            self.uuid_to_name.insert(uuid.to_string(), name.to_string());
-            self.number_to_uuid.insert(phone.to_string(), uuid.to_string());
+            self.store.contact_names.insert(phone.to_string(), name.to_string());
+            self.store.uuid_to_name.insert(uuid.to_string(), name.to_string());
+            self.store.number_to_uuid.insert(phone.to_string(), uuid.to_string());
         }
 
         // Populate groups with correct members
-        self.groups.insert(
+        self.store.groups.insert(
             rust_id.clone(),
             Group {
                 id: rust_id,
@@ -7146,7 +6716,7 @@ impl App {
                 member_uuids: vec![],
             },
         );
-        self.groups.insert(
+        self.store.groups.insert(
             family_id.clone(),
             Group {
                 id: family_id,
@@ -7157,7 +6727,7 @@ impl App {
         );
 
         // Add sample reactions
-        if let Some(conv) = self.conversations.get_mut(&alice_id) {
+        if let Some(conv) = self.store.conversations.get_mut(&alice_id) {
             // Alice's first message gets a thumbs up from "you"
             if let Some(msg) = conv.messages.get_mut(0) {
                 msg.reactions.push(Reaction { emoji: "\u{1f44d}".to_string(), sender: "you".to_string() });
@@ -7171,7 +6741,7 @@ impl App {
                 msg.reactions.push(Reaction { emoji: "\u{1f389}".to_string(), sender: "you".to_string() });
             }
         }
-        if let Some(conv) = self.conversations.get_mut("group_rustdevs") {
+        if let Some(conv) = self.store.conversations.get_mut("group_rustdevs") {
             // "desugaring docs" message gets multiple reactions
             if let Some(msg) = conv.messages.get_mut(3) {
                 msg.reactions.push(Reaction { emoji: "\u{1f44d}".to_string(), sender: "Alice".to_string() });
@@ -7183,7 +6753,7 @@ impl App {
                 msg.reactions.push(Reaction { emoji: "\u{1f4cc}".to_string(), sender: "Dave".to_string() });
             }
         }
-        if let Some(conv) = self.conversations.get_mut("group_family") {
+        if let Some(conv) = self.store.conversations.get_mut("group_family") {
             // "Count me in!" gets hearts from both parents
             if let Some(msg) = conv.messages.get_mut(2) {
                 msg.reactions.push(Reaction { emoji: "\u{2764}\u{fe0f}".to_string(), sender: "Mom".to_string() });
@@ -7196,7 +6766,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::Database;
+use crate::db::Database;
     use crate::signal::types::{Attachment, Contact, Group, Mention, SignalEvent, SignalMessage, StyleType, TextStyle};
     use crossterm::event::{KeyCode, KeyModifiers};
     use rstest::{fixture, rstest};
@@ -7213,7 +6783,7 @@ mod tests {
 
     #[rstest]
     fn contact_list_does_not_create_conversations(mut app: App) {
-        assert!(app.conversations.is_empty());
+        assert!(app.store.conversations.is_empty());
 
         app.handle_signal_event(SignalEvent::ContactList(vec![
             Contact { number: "+1".to_string(), name: Some("Alice".to_string()), uuid: None },
@@ -7221,10 +6791,10 @@ mod tests {
         ]));
 
         // No conversations created — only name lookup populated
-        assert!(app.conversations.is_empty());
-        assert!(app.conversation_order.is_empty());
-        assert_eq!(app.contact_names["+1"], "Alice");
-        assert_eq!(app.contact_names["+2"], "Bob");
+        assert!(app.store.conversations.is_empty());
+        assert!(app.store.conversation_order.is_empty());
+        assert_eq!(app.store.contact_names["+1"], "Alice");
+        assert_eq!(app.store.contact_names["+2"], "Bob");
     }
 
     #[rstest]
@@ -7236,11 +6806,11 @@ mod tests {
         ]));
 
         // Groups always create conversations (you're a member)
-        assert_eq!(app.conversations.len(), 2);
-        assert_eq!(app.conversations["g1"].name, "Family");
-        assert_eq!(app.conversations["g2"].name, "Work");
-        assert!(app.conversations["g1"].is_group);
-        assert_eq!(app.contact_names["g1"], "Family");
+        assert_eq!(app.store.conversations.len(), 2);
+        assert_eq!(app.store.conversations["g1"].name, "Family");
+        assert_eq!(app.store.conversations["g2"].name, "Work");
+        assert!(app.store.conversations["g1"].is_group);
+        assert_eq!(app.store.contact_names["g1"], "Family");
     }
 
     // --- Contact names enrich existing conversations ---
@@ -7267,14 +6837,14 @@ mod tests {
             previews: Vec::new(),
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.conversations["+15551234567"].name, "+15551234567");
+        assert_eq!(app.store.conversations["+15551234567"].name, "+15551234567");
 
         // Contact list arrives with a proper name — updates existing conv
         app.handle_signal_event(SignalEvent::ContactList(vec![
             Contact { number: "+15551234567".to_string(), name: Some("Alice".to_string()), uuid: None },
         ]));
 
-        assert_eq!(app.conversations["+15551234567"].name, "Alice");
+        assert_eq!(app.store.conversations["+15551234567"].name, "Alice");
     }
 
     #[rstest]
@@ -7299,14 +6869,14 @@ mod tests {
             previews: Vec::new(),
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.conversations["+1"].name, "Alice");
+        assert_eq!(app.store.conversations["+1"].name, "Alice");
 
         // Contact arrives with no name — should NOT overwrite
         app.handle_signal_event(SignalEvent::ContactList(vec![
             Contact { number: "+1".to_string(), name: None, uuid: None },
         ]));
 
-        assert_eq!(app.conversations["+1"].name, "Alice");
+        assert_eq!(app.store.conversations["+1"].name, "Alice");
     }
 
     // --- Name lookup used when creating conversations from messages ---
@@ -7318,7 +6888,7 @@ mod tests {
         app.handle_signal_event(SignalEvent::ContactList(vec![
             Contact { number: "+1".to_string(), name: Some("Alice".to_string()), uuid: None },
         ]));
-        assert!(app.conversations.is_empty());
+        assert!(app.store.conversations.is_empty());
 
         // Message arrives with no source_name — should use lookup
         let msg = SignalMessage {
@@ -7340,9 +6910,9 @@ mod tests {
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
-        assert_eq!(app.conversations.len(), 1);
-        assert_eq!(app.conversations["+1"].name, "Alice");
-        assert_eq!(app.conversations["+1"].messages[0].sender, "Alice");
+        assert_eq!(app.store.conversations.len(), 1);
+        assert_eq!(app.store.conversations["+1"].name, "Alice");
+        assert_eq!(app.store.conversations["+1"].messages[0].sender, "Alice");
     }
 
     #[rstest]
@@ -7352,7 +6922,7 @@ mod tests {
         app.handle_signal_event(SignalEvent::GroupList(vec![
             Group { id: "g1".to_string(), name: "Family".to_string(), members: vec![], member_uuids: vec![] },
         ]));
-        assert_eq!(app.conversations.len(), 1);
+        assert_eq!(app.store.conversations.len(), 1);
 
         // Message arrives in that group (no group_name in metadata)
         let msg = SignalMessage {
@@ -7375,9 +6945,9 @@ mod tests {
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
         // Still 1 conversation, name preserved from group list
-        assert_eq!(app.conversations.len(), 1);
-        assert_eq!(app.conversations["g1"].name, "Family");
-        assert_eq!(app.conversations["g1"].messages.len(), 1);
+        assert_eq!(app.store.conversations.len(), 1);
+        assert_eq!(app.store.conversations["g1"].name, "Family");
+        assert_eq!(app.store.conversations["g1"].messages.len(), 1);
     }
 
     // --- No duplicate conversations ---
@@ -7410,9 +6980,9 @@ mod tests {
             app.handle_signal_event(SignalEvent::MessageReceived(msg));
         }
 
-        assert_eq!(app.conversations.len(), 1);
-        assert_eq!(app.conversation_order.len(), 1);
-        assert_eq!(app.conversations["+1"].messages.len(), 3);
+        assert_eq!(app.store.conversations.len(), 1);
+        assert_eq!(app.store.conversation_order.len(), 1);
+        assert_eq!(app.store.conversations["+1"].messages.len(), 3);
     }
 
     // --- Autocomplete tests ---
@@ -7471,8 +7041,8 @@ mod tests {
 
     #[rstest]
     fn join_autocomplete_shows_contacts(mut app: App) {
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
-        app.contact_names.insert("+2".to_string(), "Bob".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+2".to_string(), "Bob".to_string());
         app.input_buffer = "/join ".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
@@ -7482,7 +7052,7 @@ mod tests {
 
     #[rstest]
     fn join_autocomplete_shows_groups(mut app: App) {
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Family".to_string(),
             members: vec![],
@@ -7498,8 +7068,8 @@ mod tests {
 
     #[rstest]
     fn join_autocomplete_filters_by_name(mut app: App) {
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
-        app.contact_names.insert("+2".to_string(), "Bob".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+2".to_string(), "Bob".to_string());
         app.input_buffer = "/join al".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
@@ -7509,8 +7079,8 @@ mod tests {
 
     #[rstest]
     fn join_autocomplete_filters_by_phone(mut app: App) {
-        app.contact_names.insert("+1234".to_string(), "Alice".to_string());
-        app.contact_names.insert("+5678".to_string(), "Bob".to_string());
+        app.store.contact_names.insert("+1234".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+5678".to_string(), "Bob".to_string());
         app.input_buffer = "/join +123".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
@@ -7520,7 +7090,7 @@ mod tests {
 
     #[rstest]
     fn join_autocomplete_alias(mut app: App) {
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.input_buffer = "/j ".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
@@ -7530,7 +7100,7 @@ mod tests {
 
     #[rstest]
     fn join_autocomplete_no_match_hides(mut app: App) {
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.input_buffer = "/join zzz".to_string();
         app.update_autocomplete();
         assert!(!app.autocomplete_visible);
@@ -7538,7 +7108,7 @@ mod tests {
 
     #[rstest]
     fn apply_join_autocomplete(mut app: App) {
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.input_buffer = "/join al".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
@@ -7550,7 +7120,7 @@ mod tests {
 
     #[rstest]
     fn apply_join_autocomplete_group(mut app: App) {
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Family".to_string(),
             members: vec![],
@@ -7567,7 +7137,7 @@ mod tests {
     #[rstest]
     fn join_autocomplete_includes_conversations(mut app: App) {
         // Create a conversation that isn't in contact_names
-        app.get_or_create_conversation("+9999", "+9999", false);
+        app.store.get_or_create_conversation("+9999", "+9999", false, &app.db);
         app.input_buffer = "/join +999".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
@@ -7577,8 +7147,8 @@ mod tests {
     #[rstest]
     fn join_autocomplete_skips_group_ids_in_contacts(mut app: App) {
         // group IDs in contact_names don't start with '+'
-        app.contact_names.insert("g1".to_string(), "Family".to_string());
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("g1".to_string(), "Family".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.input_buffer = "/join ".to_string();
         app.update_autocomplete();
         assert!(app.autocomplete_visible);
@@ -7591,7 +7161,7 @@ mod tests {
 
     #[rstest]
     fn join_autocomplete_index_clamped(mut app: App) {
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.input_buffer = "/join ".to_string();
         app.update_autocomplete();
         app.autocomplete_index = 100; // way out of bounds
@@ -7756,7 +7326,7 @@ mod tests {
     fn handle_input_saves_to_history(mut app: App) {
 
         // Need an active conversation for SendText to work
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
 
         app.input_buffer = "hello".to_string();
@@ -7774,7 +7344,7 @@ mod tests {
     #[rstest]
     fn handle_input_trims_and_skips_empty(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
 
         // Whitespace-only input should not be saved
@@ -7792,7 +7362,7 @@ mod tests {
     #[rstest]
     fn handle_input_resets_history_index(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
 
         app.input_history = vec!["old".to_string()];
@@ -7929,7 +7499,7 @@ mod tests {
     #[rstest]
     fn enter_sends_multiline_message(mut app: App) {
         app.mode = InputMode::Insert;
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.input_buffer = "hello\nworld".to_string();
         app.input_cursor = 11;
@@ -7961,7 +7531,7 @@ mod tests {
             ).unwrap();
         }
         app.load_from_db().unwrap();
-        assert!(app.has_more_messages.contains(conv_id));
+        assert!(app.store.has_more_messages.contains(conv_id));
     }
 
     #[rstest]
@@ -7970,7 +7540,7 @@ mod tests {
         app.db.upsert_conversation(conv_id, "Small", false).unwrap();
         app.db.insert_message(conv_id, "Alice", "2025-01-01T00:00:00Z", "only one", false, None, 0).unwrap();
         app.load_from_db().unwrap();
-        assert!(!app.has_more_messages.contains(conv_id));
+        assert!(!app.store.has_more_messages.contains(conv_id));
     }
 
     #[rstest]
@@ -7990,31 +7560,31 @@ mod tests {
         app.active_conversation = Some(conv_id.to_string());
 
         // Should have 100 messages loaded, has_more set
-        assert_eq!(app.conversations[conv_id].messages.len(), 100);
-        assert!(app.has_more_messages.contains(conv_id));
+        assert_eq!(app.store.conversations[conv_id].messages.len(), 100);
+        assert!(app.store.has_more_messages.contains(conv_id));
 
         // The loaded messages should be the 100 most recent (msg50..msg149)
-        assert_eq!(app.conversations[conv_id].messages[0].body, "msg50");
-        assert_eq!(app.conversations[conv_id].messages[99].body, "msg149");
+        assert_eq!(app.store.conversations[conv_id].messages[0].body, "msg50");
+        assert_eq!(app.store.conversations[conv_id].messages[99].body, "msg149");
 
         // Set last_read_index and focused_msg_index to verify they shift
-        app.last_read_index.insert(conv_id.to_string(), 90);
+        app.store.last_read_index.insert(conv_id.to_string(), 90);
         app.focused_msg_index = Some(95);
 
         // Trigger load_more
         app.load_more_messages();
 
         // Should now have 150 messages, oldest first
-        assert_eq!(app.conversations[conv_id].messages.len(), 150);
-        assert_eq!(app.conversations[conv_id].messages[0].body, "msg0");
-        assert_eq!(app.conversations[conv_id].messages[149].body, "msg149");
+        assert_eq!(app.store.conversations[conv_id].messages.len(), 150);
+        assert_eq!(app.store.conversations[conv_id].messages[0].body, "msg0");
+        assert_eq!(app.store.conversations[conv_id].messages[149].body, "msg149");
 
         // Indexes should have shifted by 50 (the prepend count)
-        assert_eq!(app.last_read_index[conv_id], 140);
+        assert_eq!(app.store.last_read_index[conv_id], 140);
         assert_eq!(app.focused_msg_index, Some(145));
 
         // No more messages to load
-        assert!(!app.has_more_messages.contains(conv_id));
+        assert!(!app.store.has_more_messages.contains(conv_id));
     }
 
     // --- Receipt handling tests ---
@@ -8024,9 +7594,9 @@ mod tests {
 
         // Create a conversation with an outgoing message
         let conv_id = "+1";
-        app.get_or_create_conversation(conv_id, "Alice", false);
+        app.store.get_or_create_conversation(conv_id, "Alice", false, &app.db);
         let ts_ms = 1700000000000_i64;
-        if let Some(conv) = app.conversations.get_mut(conv_id) {
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
             conv.messages.push(DisplayMessage {
                 sender: "you".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -8061,7 +7631,7 @@ mod tests {
             timestamps: vec![ts_ms],
         });
         assert_eq!(
-            app.conversations[conv_id].messages[0].status,
+            app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Delivered)
         );
 
@@ -8072,7 +7642,7 @@ mod tests {
             timestamps: vec![ts_ms],
         });
         assert_eq!(
-            app.conversations[conv_id].messages[0].status,
+            app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Read)
         );
     }
@@ -8081,9 +7651,9 @@ mod tests {
     fn receipt_does_not_downgrade_status(mut app: App) {
 
         let conv_id = "+1";
-        app.get_or_create_conversation(conv_id, "Alice", false);
+        app.store.get_or_create_conversation(conv_id, "Alice", false, &app.db);
         let ts_ms = 1700000000000_i64;
-        if let Some(conv) = app.conversations.get_mut(conv_id) {
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
             conv.messages.push(DisplayMessage {
                 sender: "you".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -8118,7 +7688,7 @@ mod tests {
             timestamps: vec![ts_ms],
         });
         assert_eq!(
-            app.conversations[conv_id].messages[0].status,
+            app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Read)
         );
     }
@@ -8127,11 +7697,11 @@ mod tests {
     fn send_timestamp_upgrades_sending_to_sent(mut app: App) {
 
         let conv_id = "+1";
-        app.get_or_create_conversation(conv_id, "Alice", false);
+        app.store.get_or_create_conversation(conv_id, "Alice", false, &app.db);
         let local_ts = 1700000000000_i64;
         let server_ts = 1700000000123_i64;
 
-        if let Some(conv) = app.conversations.get_mut(conv_id) {
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
             conv.messages.push(DisplayMessage {
                 sender: "you".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -8167,7 +7737,7 @@ mod tests {
             server_ts,
         });
 
-        let msg = &app.conversations[conv_id].messages[0];
+        let msg = &app.store.conversations[conv_id].messages[0];
         assert_eq!(msg.status, Some(MessageStatus::Sent));
         assert_eq!(msg.timestamp_ms, server_ts);
     }
@@ -8176,10 +7746,10 @@ mod tests {
     fn send_failed_sets_failed_status(mut app: App) {
 
         let conv_id = "+1";
-        app.get_or_create_conversation(conv_id, "Alice", false);
+        app.store.get_or_create_conversation(conv_id, "Alice", false, &app.db);
         let local_ts = 1700000000000_i64;
 
-        if let Some(conv) = app.conversations.get_mut(conv_id) {
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
             conv.messages.push(DisplayMessage {
                 sender: "you".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -8214,7 +7784,7 @@ mod tests {
         });
 
         assert_eq!(
-            app.conversations[conv_id].messages[0].status,
+            app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Failed)
         );
     }
@@ -8316,19 +7886,19 @@ mod tests {
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
-        assert_eq!(app.conversations["+1"].messages[0].status, None);
+        assert_eq!(app.store.conversations["+1"].messages[0].status, None);
     }
 
     #[rstest]
     fn receipt_before_send_timestamp_is_buffered_and_replayed(mut app: App) {
 
         let conv_id = "+1";
-        app.get_or_create_conversation(conv_id, "Alice", false);
+        app.store.get_or_create_conversation(conv_id, "Alice", false, &app.db);
         let local_ts = 1700000000000_i64;
         let server_ts = 1700000000123_i64;
 
         // Create outgoing message with local timestamp (Sending state)
-        if let Some(conv) = app.conversations.get_mut(conv_id) {
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
             conv.messages.push(DisplayMessage {
                 sender: "you".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -8367,7 +7937,7 @@ mod tests {
 
         // Receipt should be buffered, message still Sending
         assert_eq!(
-            app.conversations[conv_id].messages[0].status,
+            app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Sending)
         );
         assert_eq!(app.pending_receipts.len(), 1);
@@ -8380,7 +7950,7 @@ mod tests {
 
         // Message should now be Delivered (Sending → Sent by SendTimestamp, then → Delivered by replayed receipt)
         assert_eq!(
-            app.conversations[conv_id].messages[0].status,
+            app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Delivered)
         );
         assert!(app.pending_receipts.is_empty());
@@ -8409,7 +7979,7 @@ mod tests {
             previews: Vec::new(),
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let ts_ms = app.conversations["+1"].messages[0].timestamp_ms;
+        let ts_ms = app.store.conversations["+1"].messages[0].timestamp_ms;
 
         // React with thumbs up
         app.handle_signal_event(SignalEvent::ReactionReceived {
@@ -8422,7 +7992,7 @@ mod tests {
             is_remove: false,
         });
 
-        let reactions = &app.conversations["+1"].messages[0].reactions;
+        let reactions = &app.store.conversations["+1"].messages[0].reactions;
         assert_eq!(reactions.len(), 1);
         assert_eq!(reactions[0].emoji, "\u{1f44d}");
         // Sender should be resolved to display name
@@ -8450,7 +8020,7 @@ mod tests {
             previews: Vec::new(),
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let ts_ms = app.conversations["+1"].messages[0].timestamp_ms;
+        let ts_ms = app.store.conversations["+1"].messages[0].timestamp_ms;
 
         // First reaction
         app.handle_signal_event(SignalEvent::ReactionReceived {
@@ -8473,7 +8043,7 @@ mod tests {
             is_remove: false,
         });
 
-        let reactions = &app.conversations["+1"].messages[0].reactions;
+        let reactions = &app.store.conversations["+1"].messages[0].reactions;
         assert_eq!(reactions.len(), 1);
         assert_eq!(reactions[0].emoji, "\u{2764}\u{fe0f}");
     }
@@ -8499,7 +8069,7 @@ mod tests {
             previews: Vec::new(),
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let ts_ms = app.conversations["+1"].messages[0].timestamp_ms;
+        let ts_ms = app.store.conversations["+1"].messages[0].timestamp_ms;
 
         // Add reaction
         app.handle_signal_event(SignalEvent::ReactionReceived {
@@ -8511,7 +8081,7 @@ mod tests {
             target_timestamp: ts_ms,
             is_remove: false,
         });
-        assert_eq!(app.conversations["+1"].messages[0].reactions.len(), 1);
+        assert_eq!(app.store.conversations["+1"].messages[0].reactions.len(), 1);
 
         // Remove it
         app.handle_signal_event(SignalEvent::ReactionReceived {
@@ -8523,7 +8093,7 @@ mod tests {
             target_timestamp: ts_ms,
             is_remove: true,
         });
-        assert_eq!(app.conversations["+1"].messages[0].reactions.len(), 0);
+        assert_eq!(app.store.conversations["+1"].messages[0].reactions.len(), 0);
     }
 
     #[rstest]
@@ -8531,9 +8101,9 @@ mod tests {
 
         // Send a message (outgoing) — simulate by creating conversation and pushing directly
         let conv_id = "+1";
-        app.get_or_create_conversation(conv_id, "Alice", false);
+        app.store.get_or_create_conversation(conv_id, "Alice", false, &app.db);
         let ts_ms = 1700000000000_i64;
-        if let Some(conv) = app.conversations.get_mut(conv_id) {
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
             conv.messages.push(DisplayMessage {
                 sender: "you".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -8572,7 +8142,7 @@ mod tests {
             is_remove: false,
         });
 
-        let reactions = &app.conversations[conv_id].messages[0].reactions;
+        let reactions = &app.store.conversations[conv_id].messages[0].reactions;
         assert_eq!(reactions.len(), 1);
         assert_eq!(reactions[0].sender, "Alice");
     }
@@ -8580,7 +8150,7 @@ mod tests {
     #[rstest]
     fn handle_reaction_unknown_message_persists_to_db(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
 
         // Reaction for a message not in memory (timestamp doesn't match any)
         app.handle_signal_event(SignalEvent::ReactionReceived {
@@ -8594,7 +8164,7 @@ mod tests {
         });
 
         // No reactions on any message (none matched)
-        assert!(app.conversations["+1"].messages.is_empty());
+        assert!(app.store.conversations["+1"].messages.is_empty());
         // But it was persisted to DB
         let db_reactions = app.db.load_reactions("+1").unwrap();
         assert_eq!(db_reactions.len(), 1);
@@ -8603,11 +8173,11 @@ mod tests {
     #[rstest]
     fn contact_list_resolves_reactions_and_quotes(mut app: App) {
 
-        app.get_or_create_conversation("+1", "+1", false);
+        app.store.get_or_create_conversation("+1", "+1", false, &app.db);
 
         // Simulate DB-loaded messages: one from a contact (+2=Bob), one from
         // a non-contact (+3=Charlie, known only from sender_id on a message)
-        let conv = app.conversations.get_mut("+1").unwrap();
+        let conv = app.store.conversations.get_mut("+1").unwrap();
         conv.messages.push(DisplayMessage {
             sender: "Charlie".to_string(),
             body: "hey".to_string(),
@@ -8696,7 +8266,7 @@ mod tests {
             Contact { number: "+2".to_string(), name: Some("Bob".to_string()), uuid: None },
         ]));
 
-        let msgs = &app.conversations["+1"].messages;
+        let msgs = &app.store.conversations["+1"].messages;
 
         // Reactions resolved: +2→Bob (contact), own→you, +3→Charlie (from sender_id)
         assert_eq!(msgs[1].reactions[0].sender, "Bob");
@@ -8730,12 +8300,12 @@ mod tests {
         #[case] expected_tags: &[&str],
     ) {
         for (uuid, name) in uuid_names {
-            app.uuid_to_name.insert(uuid.to_string(), name.to_string());
+            app.store.uuid_to_name.insert(uuid.to_string(), name.to_string());
         }
         let mentions: Vec<Mention> = mention_data.iter()
             .map(|(start, length, uuid)| Mention { start: *start, length: *length, uuid: uuid.to_string() })
             .collect();
-        let (resolved, ranges) = app.resolve_mentions(body, &mentions);
+        let (resolved, ranges) = app.store.resolve_mentions(body, &mentions);
         assert_eq!(resolved, expected_body);
         assert_eq!(ranges.len(), expected_tags.len());
         for (range, tag) in ranges.iter().zip(expected_tags.iter()) {
@@ -8747,8 +8317,8 @@ mod tests {
     fn mention_autocomplete_in_direct_chat(mut app: App) {
 
         // Create a 1:1 conversation with a known contact
-        app.get_or_create_conversation("+1", "Alice", false);
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.active_conversation = Some("+1".to_string());
         app.input_buffer = "@Al".to_string();
         app.input_cursor = 3;
@@ -8765,15 +8335,15 @@ mod tests {
     fn mention_autocomplete_in_group(mut app: App) {
 
         // Set up group with members
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Test Group".to_string(),
             members: vec!["+1".to_string(), "+2".to_string()],
             member_uuids: vec![],
         });
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
-        app.contact_names.insert("+2".to_string(), "Bob".to_string());
-        app.get_or_create_conversation("g1", "Test Group", true);
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+2".to_string(), "Bob".to_string());
+        app.store.get_or_create_conversation("g1", "Test Group", true, &app.db);
         app.active_conversation = Some("g1".to_string());
 
         app.input_buffer = "@Al".to_string();
@@ -8790,15 +8360,15 @@ mod tests {
     fn apply_mention_autocomplete(mut app: App) {
 
         // Set up group with members
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Test Group".to_string(),
             members: vec!["+1".to_string()],
             member_uuids: vec![],
         });
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
-        app.number_to_uuid.insert("+1".to_string(), "uuid-alice".to_string());
-        app.get_or_create_conversation("g1", "Test Group", true);
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.number_to_uuid.insert("+1".to_string(), "uuid-alice".to_string());
+        app.store.get_or_create_conversation("g1", "Test Group", true, &app.db);
         app.active_conversation = Some("g1".to_string());
 
         app.input_buffer = "Hey @Al".to_string();
@@ -8846,8 +8416,8 @@ mod tests {
             },
         ]));
 
-        assert_eq!(app.uuid_to_name.get("uuid-alice").unwrap(), "Alice");
-        assert_eq!(app.number_to_uuid.get("+1").unwrap(), "uuid-alice");
+        assert_eq!(app.store.uuid_to_name.get("uuid-alice").unwrap(), "Alice");
+        assert_eq!(app.store.number_to_uuid.get("+1").unwrap(), "uuid-alice");
     }
 
     #[rstest]
@@ -8862,14 +8432,14 @@ mod tests {
             },
         ]));
 
-        assert!(app.groups.contains_key("g1"));
-        assert_eq!(app.groups["g1"].members.len(), 2);
+        assert!(app.store.groups.contains_key("g1"));
+        assert_eq!(app.store.groups["g1"].members.len(), 2);
     }
 
     #[rstest]
     fn incoming_message_resolves_mentions(mut app: App) {
 
-        app.uuid_to_name.insert("uuid-bob".to_string(), "Bob".to_string());
+        app.store.uuid_to_name.insert("uuid-bob".to_string(), "Bob".to_string());
 
         let msg = SignalMessage {
             source: "+1".to_string(),
@@ -8890,7 +8460,7 @@ mod tests {
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
 
-        let conv = &app.conversations["+1"];
+        let conv = &app.store.conversations["+1"];
         assert_eq!(conv.messages[0].body, "@Bob check this");
         assert_eq!(conv.messages[0].mention_ranges.len(), 1);
     }
@@ -8909,7 +8479,7 @@ mod tests {
     #[rstest]
     fn empty_text_with_attachment_sends(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.pending_attachment = Some(std::path::PathBuf::from("/tmp/photo.jpg"));
         app.input_buffer.clear();
@@ -8932,17 +8502,17 @@ mod tests {
 
     #[rstest]
     fn clears_attachment_on_next_conversation(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.pending_attachment = Some(std::path::PathBuf::from("/tmp/photo.jpg"));
-        app.get_or_create_conversation("+2", "Bob", false);
+        app.store.get_or_create_conversation("+2", "Bob", false, &app.db);
         app.next_conversation();
         assert!(app.pending_attachment.is_none());
     }
 
     #[rstest]
     fn clears_attachment_on_part_command(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.pending_attachment = Some(std::path::PathBuf::from("/tmp/photo.jpg"));
         app.input_buffer = "/part".to_string();
@@ -8954,7 +8524,7 @@ mod tests {
     #[rstest]
     fn search_opens_overlay(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
 
         // Insert a message into the DB so search has something to find
@@ -8996,7 +8566,7 @@ mod tests {
     #[rstest]
     fn search_overlay_typing_refines(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello world", false, None, 1000).unwrap();
         app.db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "goodbye world", false, None, 2000).unwrap();
@@ -9024,8 +8594,8 @@ mod tests {
             timestamp_ms: ts_ms,
         });
 
-        assert!(app.conversations.contains_key("+15551234567"));
-        let conv = &app.conversations["+15551234567"];
+        assert!(app.store.conversations.contains_key("+15551234567"));
+        let conv = &app.store.conversations["+15551234567"];
         assert_eq!(conv.messages.len(), 1);
         assert!(conv.messages[0].is_system);
         assert_eq!(conv.messages[0].body, "Missed voice call");
@@ -9056,8 +8626,8 @@ mod tests {
         app.handle_signal_event(SignalEvent::MessageReceived(msg1));
 
         // Conversation exists with 1 message, last_read_index should be 0 (unread)
-        assert_eq!(app.conversations["+15551234567"].messages.len(), 1);
-        let read_idx = app.last_read_index.get("+15551234567").copied().unwrap_or(0);
+        assert_eq!(app.store.conversations["+15551234567"].messages.len(), 1);
+        let read_idx = app.store.last_read_index.get("+15551234567").copied().unwrap_or(0);
         assert_eq!(read_idx, 0);
 
         // Now make it the active conversation
@@ -9084,8 +8654,8 @@ mod tests {
         app.handle_signal_event(SignalEvent::MessageReceived(msg2));
 
         // last_read_index should now equal messages.len() → no unread bar
-        let total = app.conversations["+15551234567"].messages.len();
-        let read_idx = app.last_read_index["+15551234567"];
+        let total = app.store.conversations["+15551234567"].messages.len();
+        let read_idx = app.store.last_read_index["+15551234567"];
         assert_eq!(total, 2);
         assert_eq!(read_idx, total);
     }
@@ -9115,8 +8685,8 @@ mod tests {
         app.handle_signal_event(SignalEvent::MessageReceived(msg("two", 2000)));
         app.handle_signal_event(SignalEvent::MessageReceived(msg("three", 3000)));
 
-        assert_eq!(app.conversations["+15551234567"].unread, 3);
-        assert_eq!(app.last_read_index.get("+15551234567").copied().unwrap_or(0), 0);
+        assert_eq!(app.store.conversations["+15551234567"].unread, 3);
+        assert_eq!(app.store.last_read_index.get("+15551234567").copied().unwrap_or(0), 0);
 
         // Simulate reading through timestamp 2000 on another device
         app.handle_signal_event(SignalEvent::ReadSyncReceived {
@@ -9124,9 +8694,9 @@ mod tests {
         });
 
         // Read marker should advance to index 2 (after msg "one" and "two")
-        assert_eq!(app.last_read_index["+15551234567"], 2);
+        assert_eq!(app.store.last_read_index["+15551234567"], 2);
         // Only "three" should remain unread
-        assert_eq!(app.conversations["+15551234567"].unread, 1);
+        assert_eq!(app.store.conversations["+15551234567"].unread, 1);
     }
 
     #[rstest]
@@ -9157,15 +8727,15 @@ mod tests {
         app.handle_signal_event(SignalEvent::ReadSyncReceived {
             read_messages: vec![("+15551234567".to_string(), 3000)],
         });
-        assert_eq!(app.last_read_index["+15551234567"], 3);
-        assert_eq!(app.conversations["+15551234567"].unread, 0);
+        assert_eq!(app.store.last_read_index["+15551234567"], 3);
+        assert_eq!(app.store.conversations["+15551234567"].unread, 0);
 
         // A stale sync for ts 1000 should NOT retreat the read marker
         app.handle_signal_event(SignalEvent::ReadSyncReceived {
             read_messages: vec![("+15551234567".to_string(), 1000)],
         });
-        assert_eq!(app.last_read_index["+15551234567"], 3);
-        assert_eq!(app.conversations["+15551234567"].unread, 0);
+        assert_eq!(app.store.last_read_index["+15551234567"], 3);
+        assert_eq!(app.store.conversations["+15551234567"].unread, 0);
     }
 
     // --- Text style resolution tests ---
@@ -9180,7 +8750,7 @@ mod tests {
             TextStyle { start: 6, length: 4, style: StyleType::Bold },
             TextStyle { start: 11, length: 5, style: StyleType::Italic },
         ];
-        let resolved = app.resolve_text_styles(body, &styles, &[]);
+        let resolved = app.store.resolve_text_styles(body, &styles, &[]);
 
         // In pure ASCII, UTF-16 offsets == byte offsets
         assert_eq!(resolved.len(), 2);
@@ -9198,7 +8768,7 @@ mod tests {
         let styles = vec![
             TextStyle { start: 6, length: 4, style: StyleType::Bold },
         ];
-        let resolved = app.resolve_text_styles(body, &styles, &[]);
+        let resolved = app.store.resolve_text_styles(body, &styles, &[]);
 
         // "Hi " = 3 bytes, emoji = 4 bytes, " " = 1 byte => "bold" starts at byte 8
         assert_eq!(resolved.len(), 1);
@@ -9210,7 +8780,7 @@ mod tests {
     #[rstest]
     fn text_style_ranges_with_mentions(mut app: App) {
 
-        app.uuid_to_name.insert("uuid-bob".to_string(), "Bob".to_string());
+        app.store.uuid_to_name.insert("uuid-bob".to_string(), "Bob".to_string());
 
         // Original body: "\u{FFFC} is bold"
         // After mention resolution: "@Bob is bold"
@@ -9222,7 +8792,7 @@ mod tests {
         let styles = vec![
             TextStyle { start: 5, length: 4, style: StyleType::Strikethrough },
         ];
-        let resolved = app.resolve_text_styles(resolved_body, &styles, &mentions);
+        let resolved = app.store.resolve_text_styles(resolved_body, &styles, &mentions);
 
         assert_eq!(resolved.len(), 1);
         // "bold" in "@Bob is bold" starts at byte 8
@@ -9234,7 +8804,7 @@ mod tests {
     #[rstest]
     fn text_style_ranges_empty_styles(app: App) {
 
-        let resolved = app.resolve_text_styles("hello world", &[], &[]);
+        let resolved = app.store.resolve_text_styles("hello world", &[], &[]);
         assert!(resolved.is_empty());
     }
 
@@ -9248,7 +8818,7 @@ mod tests {
 
     #[rstest]
     fn group_menu_items_in_group(mut app: App) {
-        app.get_or_create_conversation("g1", "Family", true);
+        app.store.get_or_create_conversation("g1", "Family", true, &app.db);
         app.active_conversation = Some("g1".to_string());
         let items = app.group_menu_items();
         assert_eq!(items.len(), 5);
@@ -9258,7 +8828,7 @@ mod tests {
 
     #[rstest]
     fn group_menu_items_not_in_group(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         let items = app.group_menu_items();
         assert_eq!(items.len(), 1);
@@ -9275,17 +8845,17 @@ mod tests {
     #[rstest]
     fn group_add_filter_excludes_existing_members(mut app: App) {
 
-        app.get_or_create_conversation("g1", "Family", true);
+        app.store.get_or_create_conversation("g1", "Family", true, &app.db);
         app.active_conversation = Some("g1".to_string());
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Family".to_string(),
             members: vec!["+1".to_string(), "+2".to_string()],
             member_uuids: vec![],
         });
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
-        app.contact_names.insert("+2".to_string(), "Bob".to_string());
-        app.contact_names.insert("+3".to_string(), "Charlie".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+2".to_string(), "Bob".to_string());
+        app.store.contact_names.insert("+3".to_string(), "Charlie".to_string());
 
         app.refresh_group_add_filter();
 
@@ -9297,16 +8867,16 @@ mod tests {
     #[rstest]
     fn group_remove_filter_excludes_self(mut app: App) {
 
-        app.get_or_create_conversation("g1", "Family", true);
+        app.store.get_or_create_conversation("g1", "Family", true, &app.db);
         app.active_conversation = Some("g1".to_string());
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Family".to_string(),
             members: vec!["+10000000000".to_string(), "+1".to_string(), "+2".to_string()],
             member_uuids: vec![],
         });
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
-        app.contact_names.insert("+2".to_string(), "Bob".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+2".to_string(), "Bob".to_string());
 
         app.refresh_group_remove_filter();
 
@@ -9321,9 +8891,9 @@ mod tests {
     #[rstest]
     fn group_menu_state_transitions(mut app: App) {
 
-        app.get_or_create_conversation("g1", "Family", true);
+        app.store.get_or_create_conversation("g1", "Family", true, &app.db);
         app.active_conversation = Some("g1".to_string());
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Family".to_string(),
             members: vec!["+1".to_string()],
@@ -9360,9 +8930,9 @@ mod tests {
     #[rstest]
     fn group_leave_produces_send_request(mut app: App) {
 
-        app.get_or_create_conversation("g1", "Family", true);
+        app.store.get_or_create_conversation("g1", "Family", true, &app.db);
         app.active_conversation = Some("g1".to_string());
-        app.groups.insert("g1".to_string(), Group {
+        app.store.groups.insert("g1".to_string(), Group {
             id: "g1".to_string(),
             name: "Family".to_string(),
             members: vec![],
@@ -9390,7 +8960,7 @@ mod tests {
     #[rstest]
     fn group_rename_produces_send_request(mut app: App) {
 
-        app.get_or_create_conversation("g1", "Old Name", true);
+        app.store.get_or_create_conversation("g1", "Old Name", true, &app.db);
         app.active_conversation = Some("g1".to_string());
         app.group_menu.state = Some(GroupMenuState::Rename);
         app.group_menu.input = "New Name".to_string();
@@ -9425,14 +8995,14 @@ mod tests {
     #[rstest]
     fn unknown_sender_creates_unaccepted_conversation(mut app: App) {
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(!app.conversations["+1"].accepted);
+        assert!(!app.store.conversations["+1"].accepted);
     }
 
     #[rstest]
     fn known_contact_creates_accepted_conversation(mut app: App) {
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(app.conversations["+1"].accepted);
+        assert!(app.store.conversations["+1"].accepted);
     }
 
     #[rstest]
@@ -9455,7 +9025,7 @@ mod tests {
             previews: Vec::new(),
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(app.conversations["+1"].accepted);
+        assert!(app.store.conversations["+1"].accepted);
     }
 
     #[rstest]
@@ -9463,13 +9033,13 @@ mod tests {
 
         // Message from unknown creates unaccepted
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(!app.conversations["+1"].accepted);
+        assert!(!app.store.conversations["+1"].accepted);
 
         // Contact list arrives with +1 → auto-accept
         app.handle_signal_event(SignalEvent::ContactList(vec![
             Contact { number: "+1".to_string(), name: Some("Alice".to_string()), uuid: None },
         ]));
-        assert!(app.conversations["+1"].accepted);
+        assert!(app.store.conversations["+1"].accepted);
     }
 
     #[rstest]
@@ -9480,7 +9050,7 @@ mod tests {
         app.show_message_request = true;
 
         let req = app.handle_message_request_key(KeyCode::Char('a'));
-        assert!(app.conversations["+1"].accepted);
+        assert!(app.store.conversations["+1"].accepted);
         assert!(!app.show_message_request);
         assert!(matches!(
             req,
@@ -9497,8 +9067,8 @@ mod tests {
         app.show_message_request = true;
 
         let req = app.handle_message_request_key(KeyCode::Char('d'));
-        assert!(!app.conversations.contains_key("+1"));
-        assert!(!app.conversation_order.contains(&"+1".to_string()));
+        assert!(!app.store.conversations.contains_key("+1"));
+        assert!(!app.store.conversation_order.contains(&"+1".to_string()));
         assert!(app.active_conversation.is_none());
         assert!(!app.show_message_request);
         assert!(matches!(
@@ -9529,8 +9099,8 @@ mod tests {
 
     #[rstest]
     fn bell_skipped_for_blocked_conversation(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
-        if let Some(conv) = app.conversations.get_mut("+1") {
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        if let Some(conv) = app.store.conversations.get_mut("+1") {
             conv.accepted = true;
         }
         app.blocked_conversations.insert("+1".to_string());
@@ -9549,8 +9119,8 @@ mod tests {
     #[rstest]
     fn read_receipts_not_sent_for_blocked(mut app: App) {
         app.send_read_receipts = true;
-        app.get_or_create_conversation("+1", "Alice", false);
-        if let Some(conv) = app.conversations.get_mut("+1") {
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        if let Some(conv) = app.store.conversations.get_mut("+1") {
             conv.accepted = true;
         }
         app.blocked_conversations.insert("+1".to_string());
@@ -9564,7 +9134,7 @@ mod tests {
     #[rstest]
     fn block_adds_to_set_and_returns_send_request(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.input_buffer = "/block".to_string();
         let req = app.handle_input();
@@ -9576,7 +9146,7 @@ mod tests {
     #[rstest]
     fn unblock_removes_from_set_and_returns_send_request(mut app: App) {
 
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.blocked_conversations.insert("+1".to_string());
         app.input_buffer = "/unblock".to_string();
@@ -9595,7 +9165,7 @@ mod tests {
         #[case] pre_blocked: bool,
         #[case] expected_msg: &str,
     ) {
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         if pre_blocked {
             app.blocked_conversations.insert("+1".to_string());
@@ -9693,8 +9263,8 @@ mod tests {
     fn mouse_sidebar_click_switches_conversation(mut app: App) {
 
         // Create two conversations
-        app.get_or_create_conversation("+1", "Alice", false);
-        app.get_or_create_conversation("+2", "Bob", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store.get_or_create_conversation("+2", "Bob", false, &app.db);
         app.active_conversation = Some("+1".to_string());
 
         // Sidebar inner starts at row 0, so clicking row 1 selects the second conv
@@ -9967,7 +9537,7 @@ mod tests {
             group_id: None,
         });
         assert!(app.typing.indicators.contains_key("+1"));
-        assert_eq!(app.contact_names.get("+1").unwrap(), "Alice");
+        assert_eq!(app.store.contact_names.get("+1").unwrap(), "Alice");
 
         app.handle_signal_event(SignalEvent::TypingIndicator {
             sender: "+1".to_string(),
@@ -9998,7 +9568,7 @@ mod tests {
             local_path: None,
         }];
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.conversations["+1"];
+        let conv = &app.store.conversations["+1"];
         assert!(conv.messages.iter().any(|m| m.body.contains("[image: photo.jpg]")));
     }
 
@@ -10012,7 +9582,7 @@ mod tests {
             local_path: None,
         }];
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.conversations["+1"];
+        let conv = &app.store.conversations["+1"];
         assert!(conv.messages.iter().any(|m| m.body.contains("[attachment: doc.pdf]")));
     }
 
@@ -10026,7 +9596,7 @@ mod tests {
             local_path: None,
         }];
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.conversations["+1"];
+        let conv = &app.store.conversations["+1"];
         // Should have 2 display messages: text body + attachment
         assert_eq!(conv.messages.len(), 2);
         assert!(conv.messages[0].body.contains("look at this"));
@@ -10043,7 +9613,7 @@ mod tests {
             local_path: None,
         }];
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.conversations["+1"];
+        let conv = &app.store.conversations["+1"];
         assert!(conv.messages.iter().any(|m| m.body.contains("[attachment: audio/ogg]")));
     }
 
@@ -10052,8 +9622,8 @@ mod tests {
     #[rstest]
     fn bell_rings_for_background_dm(mut app: App) {
         // "+1" must be a known contact so conversation is accepted
-        app.contact_names.insert("+1".to_string(), "Alice".to_string());
-        app.get_or_create_conversation("+other", "Other", false);
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.get_or_create_conversation("+other", "Other", false, &app.db);
         app.active_conversation = Some("+other".to_string());
         app.notifications.notify_direct = true;
 
@@ -10064,7 +9634,7 @@ mod tests {
 
     #[rstest]
     fn bell_not_set_for_active_conversation(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.notifications.notify_direct = true;
 
@@ -10075,7 +9645,7 @@ mod tests {
 
     #[rstest]
     fn bell_skipped_when_notify_disabled(mut app: App) {
-        app.get_or_create_conversation("+other", "Other", false);
+        app.store.get_or_create_conversation("+other", "Other", false, &app.db);
         app.active_conversation = Some("+other".to_string());
         app.notifications.notify_direct = false;
 
@@ -10089,7 +9659,7 @@ mod tests {
         app.handle_signal_event(SignalEvent::GroupList(vec![
             Group { id: "g1".to_string(), name: "Team".to_string(), members: vec![], member_uuids: vec![] },
         ]));
-        app.get_or_create_conversation("+other", "Other", false);
+        app.store.get_or_create_conversation("+other", "Other", false, &app.db);
         app.active_conversation = Some("+other".to_string());
 
         // group notifications enabled
@@ -10114,23 +9684,23 @@ mod tests {
         app.active_conversation = None;
         let msg = make_msg("+1", Some("hey"), None, false);
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.conversations["+1"].unread, 1);
+        assert_eq!(app.store.conversations["+1"].unread, 1);
     }
 
     #[rstest]
     fn unread_no_increment_for_active(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         let msg = make_msg("+1", Some("hey"), None, false);
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.conversations["+1"].unread, 0);
+        assert_eq!(app.store.conversations["+1"].unread, 0);
     }
 
     // --- Read receipt tests ---
 
     #[rstest]
     fn active_conv_queues_read_receipt(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.send_read_receipts = true;
 
@@ -10145,13 +9715,13 @@ mod tests {
 
     #[rstest]
     fn handle_message_syncs_expiration_timer(mut app: App) {
-        app.get_or_create_conversation("+1", "Alice", false);
-        assert_eq!(app.conversations["+1"].expiration_timer, 0);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        assert_eq!(app.store.conversations["+1"].expiration_timer, 0);
 
         let mut msg = make_msg("+1", Some("secret"), None, false);
         msg.expires_in_seconds = 3600;
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.conversations["+1"].expiration_timer, 3600);
+        assert_eq!(app.store.conversations["+1"].expiration_timer, 3600);
     }
 
     // --- Paste command tests ---
@@ -10242,8 +9812,8 @@ mod tests {
     #[rstest]
     fn group_typing_does_not_bleed_into_other_group(mut app: App) {
         // Alice types in group-a. Viewing group-b must show no typing indicator.
-        app.get_or_create_conversation("group-a", "Group A", true);
-        app.get_or_create_conversation("group-b", "Group B", true);
+        app.store.get_or_create_conversation("group-a", "Group A", true, &app.db);
+        app.store.get_or_create_conversation("group-b", "Group B", true, &app.db);
 
         app.handle_signal_event(SignalEvent::TypingIndicator {
             sender: "+1".to_string(),

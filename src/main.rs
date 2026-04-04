@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod conversation_store;
 mod db;
 mod debug_log;
 mod image_render;
@@ -748,7 +749,7 @@ async fn dispatch_send(
                 app.status_message = format!("add member error: {e}");
             } else {
                 let names: Vec<String> = members.iter()
-                    .map(|m| app.contact_names.get(m).cloned().unwrap_or_else(|| m.clone()))
+                    .map(|m| app.store.contact_names.get(m).cloned().unwrap_or_else(|| m.clone()))
                     .collect();
                 app.status_message = format!("Added {}", names.join(", "));
                 let _ = signal_client.list_groups().await;
@@ -759,7 +760,7 @@ async fn dispatch_send(
                 app.status_message = format!("remove member error: {e}");
             } else {
                 let names: Vec<String> = members.iter()
-                    .map(|m| app.contact_names.get(m).cloned().unwrap_or_else(|| m.clone()))
+                    .map(|m| app.store.contact_names.get(m).cloned().unwrap_or_else(|| m.clone()))
                     .collect();
                 app.status_message = format!("Removed {}", names.join(", "));
                 let _ = signal_client.list_groups().await;
@@ -770,10 +771,10 @@ async fn dispatch_send(
                 app.status_message = format!("rename group error: {e}");
             } else {
                 // Update locally for instant visual feedback
-                if let Some(conv) = app.conversations.get_mut(&group_id) {
+                if let Some(conv) = app.store.conversations.get_mut(&group_id) {
                     conv.name = name.clone();
                 }
-                app.contact_names.insert(group_id.clone(), name.clone());
+                app.store.contact_names.insert(group_id.clone(), name.clone());
                 app.status_message = format!("Renamed group to \"{}\"", name);
                 let _ = signal_client.list_groups().await;
             }
@@ -782,12 +783,12 @@ async fn dispatch_send(
             if let Err(e) = signal_client.quit_group(&group_id).await {
                 app.status_message = format!("leave group error: {e}");
             } else {
-                let name = app.conversations.get(&group_id)
+                let name = app.store.conversations.get(&group_id)
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| group_id.clone());
-                app.conversations.remove(&group_id);
-                app.conversation_order.retain(|id| id != &group_id);
-                app.groups.remove(&group_id);
+                app.store.conversations.remove(&group_id);
+                app.store.conversation_order.retain(|id| id != &group_id);
+                app.store.groups.remove(&group_id);
                 if app.active_conversation.as_ref() == Some(&group_id) {
                     app.active_conversation = None;
                 }
@@ -852,7 +853,7 @@ async fn dispatch_send(
             if let Err(e) = signal_client.trust_identity(&recipient, &safety_number).await {
                 app.status_message = format!("trust error: {e}");
             } else {
-                app.status_message = format!("Verified {}", app.contact_names.get(&recipient).unwrap_or(&recipient));
+                app.status_message = format!("Verified {}", app.store.contact_names.get(&recipient).unwrap_or(&recipient));
                 // Re-fetch identities to update trust levels
                 let _ = signal_client.list_identities().await;
             }
@@ -955,7 +956,7 @@ async fn run_app(
     app.settings_profiles.name = config.settings_profile.clone();
     app.settings_profiles.available = settings_profile::all_settings_profiles();
     app.load_from_db()?;
-    app.expiring_msg_count = app.conversations.values()
+    app.expiring_msg_count = app.store.conversations.values()
         .flat_map(|c| &c.messages)
         .filter(|m| m.expires_in_seconds > 0)
         .count();
@@ -1170,7 +1171,7 @@ async fn run_app(
         }
 
         // Update terminal title with unread count
-        let unread = app.total_unread();
+        let unread = app.store.total_unread();
         let title = if unread > 0 {
             format!("siggy ({unread})")
         } else {

@@ -661,16 +661,16 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     // In normal view, hide stale conversations (empty groups, unresolvable contacts).
     let display_order: Vec<String> = if app.sidebar_filter_active {
         if app.sidebar_filter.is_empty() {
-            app.conversation_order.clone()
+            app.store.conversation_order.clone()
         } else {
             app.sidebar_filtered.clone()
         }
     } else {
-        app.conversation_order
+        app.store.conversation_order
             .iter()
             .filter(|id| {
                 app.active_conversation.as_ref() == Some(id)
-                    || app.conversations
+                    || app.store.conversations
                         .get(*id)
                         .is_some_and(|c| !c.is_stale())
             })
@@ -681,7 +681,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = display_order
         .iter()
         .map(|id| {
-            let conv = &app.conversations[id];
+            let conv = &app.store.conversations[id];
             let is_active = app
                 .active_conversation
                 .as_ref()
@@ -803,7 +803,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     let (title_spans, title_right) = match &app.active_conversation {
         Some(id) => {
-            let conv = &app.conversations[id];
+            let conv = &app.store.conversations[id];
             let prefix = if conv.is_group { " #" } else { " " };
             let mut spans = vec![
                 Span::styled(
@@ -872,7 +872,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
 
     let messages_ref = match &app.active_conversation {
-        Some(id) => app.conversations.get(id).map(|c| &c.messages),
+        Some(id) => app.store.conversations.get(id).map(|c| &c.messages),
         None => None,
     };
 
@@ -914,7 +914,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let messages = match &app.active_conversation {
         Some(id) => {
-            if let Some(conv) = app.conversations.get(id) {
+            if let Some(conv) = app.store.conversations.get(id) {
                 &conv.messages
             } else {
                 app.focused_message_time = None;
@@ -942,7 +942,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Get last_read_index for unread marker
     let conv_id = app.active_conversation.as_ref().unwrap();
-    let last_read = app.last_read_index.get(conv_id).copied().unwrap_or(0);
+    let last_read = app.store.last_read_index.get(conv_id).copied().unwrap_or(0);
 
     let inner_width = inner.width as usize;
 
@@ -1192,9 +1192,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .get(conv_id)
             .map(|senders| {
                 senders.keys().map(|sender| {
-                    if let Some(name) = app.contact_names.get(sender) {
+                    if let Some(name) = app.store.contact_names.get(sender) {
                         name.clone()
-                    } else if let Some(conv) = app.conversations.get(sender) {
+                    } else if let Some(conv) = app.store.conversations.get(sender) {
                         conv.name.clone()
                     } else {
                         sender.clone()
@@ -1234,7 +1234,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     app.at_scroll_top = app.scroll_offset >= base_scroll
         && base_scroll > 0
         && app.active_conversation.as_ref()
-            .is_some_and(|id| app.has_more_messages.contains(id));
+            .is_some_and(|id| app.store.has_more_messages.contains(id));
 
     // Determine the focused message for highlight and full-timestamp display in Normal mode.
     // Check focused_msg_index too so J/K navigation works even when content fits the viewport
@@ -1475,7 +1475,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             }
             let popup_height = items.len() as u16 + 4;
             let title = app.active_conversation.as_ref()
-                .and_then(|id| app.conversations.get(id))
+                .and_then(|id| app.store.conversations.get(id))
                 .filter(|c| c.is_group)
                 .map(|c| format!(" #{} ", c.name))
                 .unwrap_or_else(|| " Group ".to_string());
@@ -1672,7 +1672,7 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
         }
         GroupMenuState::LeaveConfirm => {
             let group_name = app.active_conversation.as_ref()
-                .and_then(|id| app.conversations.get(id))
+                .and_then(|id| app.store.conversations.get(id))
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| "this group".to_string());
             let prompt = format!("Leave #{}?", group_name);
@@ -1703,7 +1703,7 @@ fn draw_message_request(frame: &mut Frame, app: &App, area: Rect) {
         Some(id) => id,
         None => return,
     };
-    let conv = match app.conversations.get(conv_id) {
+    let conv = match app.store.conversations.get(conv_id) {
         Some(c) => c,
         None => return,
     };
@@ -1985,7 +1985,7 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
             format!("  {spinner_char} {}", app.startup_status),
             Style::default().fg(theme.fg_muted),
         )));
-    } else if app.conversation_order.is_empty() {
+    } else if app.store.conversation_order.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Welcome to siggy",
             Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
@@ -2262,7 +2262,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
 
     // Current conversation
     if let Some(ref id) = app.active_conversation {
-        if let Some(conv) = app.conversations.get(id) {
+        if let Some(conv) = app.store.conversations.get(id) {
             let prefix = if conv.is_group { "#" } else { "" };
             segments.push(Span::styled(
                 format!("{}{}", prefix, conv.name),
@@ -2277,10 +2277,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
     }
 
     // Pipe separator + conversation count
-    if !app.conversation_order.is_empty() {
+    if !app.store.conversation_order.is_empty() {
         segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
         segments.push(Span::styled(
-            format!("{} chats", app.conversation_order.len()),
+            format!("{} chats", app.store.conversation_order.len()),
             Style::default().fg(theme.fg_secondary),
         ));
     }
@@ -2727,7 +2727,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
         for (i, (number, name)) in app.contacts_overlay.filtered[scroll_offset..end].iter().enumerate() {
             let actual_index = scroll_offset + i;
             let is_selected = actual_index == app.contacts_overlay.index;
-            let has_conversation = app.conversation_order.contains(number);
+            let has_conversation = app.store.conversation_order.contains(number);
 
             // Checkmark for contacts that already have a conversation
             let marker = if has_conversation { " \u{2713}" } else { "  " };
@@ -2777,7 +2777,7 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let is_group = app.active_conversation.as_ref()
-        .and_then(|id| app.conversations.get(id))
+        .and_then(|id| app.store.conversations.get(id))
         .map(|c| c.is_group)
         .unwrap_or(false);
 
@@ -2813,7 +2813,7 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
             let actual_idx = scroll_offset + i;
             let is_selected = actual_idx == app.verify.index;
             let number = identity.number.as_deref().unwrap_or("unknown");
-            let name = app.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
+            let name = app.store.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
             let (badge, badge_color) = match identity.trust_level {
                 TrustLevel::TrustedVerified => ("\u{2713}", theme.accent),
                 TrustLevel::Untrusted => ("\u{26A0}", theme.warning),
@@ -2869,7 +2869,7 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         // 1:1 view: single identity with full details
         let identity = &app.verify.identities[0];
         let number = identity.number.as_deref().unwrap_or("unknown");
-        let name = app.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
+        let name = app.store.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
 
         lines.push(Line::from(Span::styled(
             format!("  {} ({})", name, number),
@@ -4379,7 +4379,7 @@ mod snapshot_tests {
         use crate::app::Conversation;
         let mut app = demo_app();
         let empty_id = "+15550009999".to_string();
-        app.conversations.insert(empty_id.clone(), Conversation {
+        app.store.conversations.insert(empty_id.clone(), Conversation {
             name: "Empty".to_string(),
             id: empty_id.clone(),
             messages: Vec::new(),
@@ -4388,7 +4388,7 @@ mod snapshot_tests {
             expiration_timer: 0,
             accepted: true,
         });
-        app.conversation_order.push(empty_id.clone());
+        app.store.conversation_order.push(empty_id.clone());
         app.active_conversation = Some(empty_id);
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
