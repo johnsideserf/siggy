@@ -523,7 +523,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Autocomplete popup (overlays everything)
     if app.autocomplete.visible {
-        let has_items = app.autocomplete.len() > 0;
+        let has_items = !app.autocomplete.is_empty();
         if has_items {
             draw_autocomplete(frame, app, input_area);
         }

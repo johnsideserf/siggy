@@ -1233,7 +1233,7 @@ send_message = "enter"
     #[test]
     fn tab_global_binding_not_conflicted_with_autocomplete() {
         // Tab is a global binding for NextConversation but handle_global_key
-        // has a guard `if !self.autocomplete_visible`. The keybinding system
+        // has a guard `if !self.autocomplete.visible`. The keybinding system
         // must let the caller handle this guard — resolve() just returns the action.
         let kb = default_profile();
         assert_eq!(

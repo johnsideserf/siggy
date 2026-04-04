@@ -1,6 +1,7 @@
 /// Which autocomplete mode is active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutocompleteMode {
+    #[default]
     Command,
     Mention,
     Join,
@@ -26,6 +27,12 @@ pub struct AutocompleteState {
     pub pending_mentions: Vec<(String, Option<String>)>,
 }
 
+impl Default for AutocompleteState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AutocompleteState {
     pub fn new() -> Self {
         Self {
@@ -38,6 +45,11 @@ impl AutocompleteState {
             mention_trigger_pos: 0,
             pending_mentions: Vec::new(),
         }
+    }
+
+    /// Whether there are no candidates in the current mode.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Number of candidates in the current mode.
