@@ -5,7 +5,7 @@ use ratatui::text::Line;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::db::Database;
 use crate::domain::{
@@ -390,7 +390,7 @@ pub struct App {
     /// Notification preferences and clipboard auto-clear state
     pub notifications: NotificationState,
     /// Conversations muted from notifications
-    pub muted_conversations: HashSet<String>,
+    pub muted_conversations: HashMap<String, i64>,
     /// Conversations blocked via signal-cli
     pub blocked_conversations: HashSet<String>,
     /// Autocomplete popup visible
@@ -2863,7 +2863,7 @@ impl App {
             connection_error: None,
             contact_names: HashMap::new(),
             notifications: NotificationState::new(),
-            muted_conversations: HashSet::new(),
+            muted_conversations: HashMap::new(),
             blocked_conversations: HashSet::new(),
             autocomplete_visible: false,
             autocomplete_candidates: Vec::new(),
@@ -3012,7 +3012,7 @@ impl App {
         }
 
         self.conversation_order = order;
-        self.muted_conversations = HashSet::new(); // TODO(mute_until): replace with load_mute_until
+        self.muted_conversations = self.db.load_mute_until()?;
         self.blocked_conversations = self.db.load_blocked()?;
 
         // Fix 1:1 conversations still named as phone numbers: scan message senders
@@ -4522,7 +4522,7 @@ impl App {
                 .map(|c| c.accepted)
                 .unwrap_or(true);
             let not_muted_or_blocked = conv_accepted
-                && !self.muted_conversations.contains(&conv_id)
+                && !self.is_muted_now(&conv_id)
                 && !self.blocked_conversations.contains(&conv_id);
             let type_enabled = if is_group {
                 self.notifications.notify_group
@@ -6177,14 +6177,16 @@ impl App {
             InputAction::Mute(opt_secs) => {
                 if let Some(ref conv_id) = self.active_conversation {
                     let conv_id = conv_id.clone();
-                    if self.muted_conversations.remove(&conv_id) {
+                    if opt_secs.is_none() && self.is_muted_now(&conv_id) {
+                        // Toggle off: unmute
+                        self.muted_conversations.remove(&conv_id);
                         let name = self
                             .conversations
                             .get(&conv_id)
                             .map(|c| c.name.as_str())
                             .unwrap_or(&conv_id);
                         self.status_message = format!("unmuted {name}");
-                        db_warn(self.db.set_mute_until(&conv_id, None), "set_mute_until"); // TODO(mute_until)
+                        db_warn(self.db.set_mute_until(&conv_id, None), "set_mute_until");
                     } else {
                         let name = self
                             .conversations
@@ -6192,8 +6194,18 @@ impl App {
                             .map(|c| c.name.as_str())
                             .unwrap_or(&conv_id);
                         self.status_message = format!("muted {name}");
-                        self.muted_conversations.insert(conv_id.clone());
-                        db_warn(self.db.set_mute_until(&conv_id, Some(opt_secs.unwrap_or(0) as i64)), "set_mute_until"); // TODO(mute_until)
+                        let expiry: i64 = match opt_secs {
+                            None => 0, // permanent
+                            Some(secs) => {
+                                let now = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64;
+                                now + secs as i64
+                            }
+                        };
+                        self.muted_conversations.insert(conv_id.clone(), expiry);
+                        db_warn(self.db.set_mute_until(&conv_id, Some(expiry)), "set_mute_until");
                     }
                 } else {
                     self.status_message = "no active conversation to mute".to_string();
@@ -7179,6 +7191,20 @@ impl App {
     pub fn set_connected(&mut self) {
         self.connected = true;
         self.status_message = "connected | no conversation selected".to_string();
+    }
+
+    pub fn is_muted_now(&self, conv_id: &str) -> bool {
+        match self.muted_conversations.get(conv_id) {
+            None => false,
+            Some(&0) => true,
+            Some(&ts) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                now < ts
+            }
+        }
     }
 
     /// Total unread count across all conversations
@@ -8193,6 +8219,35 @@ mod tests {
     };
     use crossterm::event::{KeyCode, KeyModifiers};
     use rstest::{fixture, rstest};
+
+    #[test]
+    fn is_muted_now_logic() {
+        use std::collections::HashMap;
+
+        fn check(map: &HashMap<String, i64>, conv_id: &str, now: i64) -> bool {
+            match map.get(conv_id) {
+                None => false,
+                Some(&0) => true,
+                Some(&ts) => now < ts,
+            }
+        }
+
+        let mut map = HashMap::new();
+
+        // Not in map → not muted
+        assert!(!check(&map, "a", 1000));
+
+        // Permanent mute (0)
+        map.insert("a".to_string(), 0);
+        assert!(check(&map, "a", 1000));
+
+        // Timed mute — not yet expired
+        map.insert("b".to_string(), 2000);
+        assert!(check(&map, "b", 1000));
+
+        // Timed mute — expired
+        assert!(!check(&map, "b", 3000));
+    }
 
     #[fixture]
     fn app() -> App {
