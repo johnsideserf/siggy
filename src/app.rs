@@ -3012,7 +3012,7 @@ impl App {
         }
 
         self.conversation_order = order;
-        self.muted_conversations = self.db.load_muted()?;
+        self.muted_conversations = HashSet::new(); // TODO(mute_until): replace with load_mute_until
         self.blocked_conversations = self.db.load_blocked()?;
 
         // Fix 1:1 conversations still named as phone numbers: scan message senders
@@ -6184,7 +6184,7 @@ impl App {
                             .map(|c| c.name.as_str())
                             .unwrap_or(&conv_id);
                         self.status_message = format!("unmuted {name}");
-                        db_warn(self.db.set_muted(&conv_id, false), "set_muted");
+                        db_warn(self.db.set_mute_until(&conv_id, None), "set_mute_until"); // TODO(mute_until)
                     } else {
                         let name = self
                             .conversations
@@ -6193,7 +6193,7 @@ impl App {
                             .unwrap_or(&conv_id);
                         self.status_message = format!("muted {name}");
                         self.muted_conversations.insert(conv_id.clone());
-                        db_warn(self.db.set_muted(&conv_id, true), "set_muted");
+                        db_warn(self.db.set_mute_until(&conv_id, Some(0)), "set_mute_until"); // TODO(mute_until)
                     }
                 } else {
                     self.status_message = "no active conversation to mute".to_string();
