@@ -729,6 +729,10 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             .collect()
     };
 
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     let items: Vec<ListItem> = display_order
         .iter()
         .map(|id| {
@@ -771,10 +775,6 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             // Conversation name
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
             let mute_until = app.muted_conversations.get(id).copied();
             let is_muted = match mute_until {
                 None => false,
