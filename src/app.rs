@@ -167,6 +167,49 @@ pub struct PollVotePending {
     pub options: Vec<PollOption>,
 }
 
+/// Tracks the initial sync burst when the app starts.
+/// During sync, notifications and viewport jumps are suppressed.
+pub struct SyncState {
+    /// Whether the sync burst is still considered active.
+    pub active: bool,
+    /// Number of messages received since sync started.
+    pub message_count: usize,
+    /// Time the most recent message arrived (None if no messages yet).
+    pub last_message_time: Option<Instant>,
+    /// Time when sync started (used to enforce a minimum quiet period).
+    pub started_at: Instant,
+    /// Notifications suppressed per conversation during sync (conv_id → count).
+    pub suppressed_notifications: HashMap<String, usize>,
+    /// True if the user manually scrolled the viewport during sync.
+    pub user_scrolled: bool,
+}
+
+impl SyncState {
+    pub fn new() -> Self {
+        Self {
+            active: true,
+            message_count: 0,
+            last_message_time: None,
+            started_at: Instant::now(),
+            suppressed_notifications: HashMap::new(),
+            user_scrolled: false,
+        }
+    }
+
+    /// Returns true when sync should end: at least 10 s have elapsed since start,
+    /// and either no messages have been received or the last one arrived >= 3 s ago.
+    pub fn should_end(&self) -> bool {
+        let elapsed = self.started_at.elapsed();
+        if elapsed.as_secs() < 10 {
+            return false;
+        }
+        match self.last_message_time {
+            None => true,
+            Some(last) => last.elapsed().as_secs() >= 3,
+        }
+    }
+}
+
 /// Application state
 pub struct App {
     /// Conversation data: conversations, ordering, contact names, groups, read markers.
@@ -354,6 +397,8 @@ pub struct App {
     pub settings_profiles: SettingsProfileOverlayState,
     /// Mouse enabled state when settings overlay opened (for deferred toggle)
     pub settings_mouse_snapshot: bool,
+    /// Sync state: tracks the initial message burst on startup.
+    pub sync: SyncState,
 }
 
 pub const QUICK_REACTIONS: &[&str] = &["\u{1f44d}", "\u{1f44e}", "\u{2764}\u{fe0f}", "\u{1f602}", "\u{1f62e}", "\u{1f622}", "\u{1f64f}", "\u{1f525}"];
@@ -2557,6 +2602,7 @@ impl App {
                 ..Default::default()
             },
             settings_mouse_snapshot: true,
+            sync: SyncState::new(),
         }
     }
 
@@ -2778,6 +2824,44 @@ impl App {
         }
     }
 
+    /// End the initial sync burst. Snaps viewport, fires summary notification,
+    /// marks the active conversation read, and resets sync state.
+    pub fn end_sync(&mut self) {
+        self.sync.active = false;
+
+        // Snap viewport to newest messages (unless user manually scrolled)
+        if !self.sync.user_scrolled {
+            self.scroll_offset = 0;
+        }
+
+        // Fire summary notification if any were suppressed
+        let total: usize = self.sync.suppressed_notifications.values().sum();
+        let conv_count = self.sync.suppressed_notifications.len();
+        if total > 0 {
+            self.notifications.pending_bell = true;
+            if self.notifications.desktop_notifications {
+                let conv_word = if conv_count == 1 { "conversation" } else { "conversations" };
+                let body = format!("{total} new messages in {conv_count} {conv_word}");
+                show_desktop_notification("siggy", &body, false, None, "full");
+            }
+        }
+        self.sync.suppressed_notifications.clear();
+
+        // Send read receipts for messages that arrived during sync, then mark read
+        if let Some(conv_id) = self.active_conversation.clone() {
+            let read_from = self.store.last_read_index.get(&conv_id).copied().unwrap_or(0);
+            self.queue_read_receipts_for_conv(&conv_id, read_from);
+        }
+        self.mark_read();
+
+        // Update status
+        self.status_message = if self.connected {
+            "connected".to_string()
+        } else {
+            "disconnected".to_string()
+        };
+    }
+
     /// Queue read receipts for unread incoming messages in a conversation.
     /// Messages from `start_index` onward are considered unread.
     /// Groups timestamps by sender and appends to `pending_read_receipts`.
@@ -2920,11 +3004,13 @@ impl App {
                 true
             }
             Some(KeyAction::PageScrollUp) => {
+                self.sync.user_scrolled = true;
                 self.scroll_offset = self.scroll_offset.saturating_add(5);
                 self.focused_msg_index = None;
                 true
             }
             Some(KeyAction::PageScrollDown) => {
+                self.sync.user_scrolled = true;
                 self.scroll_offset = self.scroll_offset.saturating_sub(5);
                 self.focused_msg_index = None;
                 true
@@ -3100,13 +3186,13 @@ impl App {
 
         match self.keybindings.resolve(modifiers, code, BindingMode::Normal) {
             // Scroll
-            Some(KeyAction::ScrollDown) => { self.scroll_offset = self.scroll_offset.saturating_sub(1); self.focused_msg_index = None; None }
-            Some(KeyAction::ScrollUp) => { self.scroll_offset = self.scroll_offset.saturating_add(1); self.focused_msg_index = None; None }
-            Some(KeyAction::FocusNextMessage) => { self.jump_to_adjacent_message(false); None }
-            Some(KeyAction::FocusPrevMessage) => { self.jump_to_adjacent_message(true); None }
-            Some(KeyAction::HalfPageDown) => { self.scroll_offset = self.scroll_offset.saturating_sub(10); self.focused_msg_index = None; None }
-            Some(KeyAction::HalfPageUp) => { self.scroll_offset = self.scroll_offset.saturating_add(10); self.focused_msg_index = None; None }
-            Some(KeyAction::ScrollToBottom) => { self.scroll_offset = 0; self.focused_msg_index = None; None }
+            Some(KeyAction::ScrollDown) => { self.sync.user_scrolled = true; self.scroll_offset = self.scroll_offset.saturating_sub(1); self.focused_msg_index = None; None }
+            Some(KeyAction::ScrollUp) => { self.sync.user_scrolled = true; self.scroll_offset = self.scroll_offset.saturating_add(1); self.focused_msg_index = None; None }
+            Some(KeyAction::FocusNextMessage) => { self.sync.user_scrolled = true; self.jump_to_adjacent_message(false); None }
+            Some(KeyAction::FocusPrevMessage) => { self.sync.user_scrolled = true; self.jump_to_adjacent_message(true); None }
+            Some(KeyAction::HalfPageDown) => { self.sync.user_scrolled = true; self.scroll_offset = self.scroll_offset.saturating_sub(10); self.focused_msg_index = None; None }
+            Some(KeyAction::HalfPageUp) => { self.sync.user_scrolled = true; self.scroll_offset = self.scroll_offset.saturating_add(10); self.focused_msg_index = None; None }
+            Some(KeyAction::ScrollToBottom) => { self.sync.user_scrolled = true; self.scroll_offset = 0; self.focused_msg_index = None; None }
             // Edit/mode-switch
             Some(KeyAction::InsertAtCursor) => { self.mode = InputMode::Insert; None }
             Some(KeyAction::InsertAfterCursor) => {
@@ -3330,8 +3416,8 @@ impl App {
                 None
             }
             // Actions that alternative profiles (Emacs/Minimal) may bind in Insert mode
-            Some(KeyAction::ScrollDown) => { self.scroll_offset = self.scroll_offset.saturating_sub(1); self.focused_msg_index = None; None }
-            Some(KeyAction::ScrollUp) => { self.scroll_offset = self.scroll_offset.saturating_add(1); self.focused_msg_index = None; None }
+            Some(KeyAction::ScrollDown) => { self.sync.user_scrolled = true; self.scroll_offset = self.scroll_offset.saturating_sub(1); self.focused_msg_index = None; None }
+            Some(KeyAction::ScrollUp) => { self.sync.user_scrolled = true; self.scroll_offset = self.scroll_offset.saturating_add(1); self.focused_msg_index = None; None }
             Some(KeyAction::CursorLeft) => { self.input_cursor = prev_char_pos(&self.input_buffer, self.input_cursor); None }
             Some(KeyAction::CursorRight) => {
                 self.input_cursor = next_char_pos(&self.input_buffer, self.input_cursor);
@@ -3587,6 +3673,13 @@ impl App {
 
         }
 
+        // Track sync burst progress
+        if self.sync.active {
+            self.sync.message_count += 1;
+            self.sync.last_message_time = Some(Instant::now());
+            self.status_message = format!("Syncing... ({} messages received)", self.sync.message_count);
+        }
+
         // Store source_name in contact lookup for future resolution (typing indicators, etc.)
         if !msg.is_outgoing {
             if let Some(ref name) = msg.source_name {
@@ -3815,34 +3908,50 @@ impl App {
                 && !self.muted_conversations.contains(&conv_id)
                 && !self.blocked_conversations.contains(&conv_id);
             let type_enabled = if is_group { self.notifications.notify_group } else { self.notifications.notify_direct };
-            if type_enabled && not_muted_or_blocked {
-                self.notifications.pending_bell = true;
+            if self.sync.active {
+                if type_enabled && not_muted_or_blocked {
+                    *self.sync.suppressed_notifications.entry(conv_id.clone()).or_insert(0) += 1;
+                }
+            } else {
+                if type_enabled && not_muted_or_blocked {
+                    self.notifications.pending_bell = true;
+                }
+                if self.notifications.desktop_notifications && not_muted_or_blocked {
+                    let notif_body = msg.body.as_deref().unwrap_or("");
+                    let notif_group = if is_group {
+                        self.store.conversations.get(&conv_id).map(|c| c.name.clone())
+                    } else {
+                        None
+                    };
+                    show_desktop_notification(
+                        &sender_display,
+                        notif_body,
+                        is_group,
+                        notif_group.as_deref(),
+                        &self.notifications.notification_preview,
+                    );
+                }
             }
-            if self.notifications.desktop_notifications && not_muted_or_blocked {
-                let notif_body = msg.body.as_deref().unwrap_or("");
-                let notif_group = if is_group {
-                    self.store.conversations.get(&conv_id).map(|c| c.name.clone())
-                } else {
-                    None
-                };
-                show_desktop_notification(
-                    &sender_display,
-                    notif_body,
-                    is_group,
-                    notif_group.as_deref(),
-                    &self.notifications.notification_preview,
-                );
-            }
+        }
+
+        // Viewport stabilization: keep scroll offset pinned during sync so newly
+        // arriving messages don't jump the viewport.
+        if self.sync.active && !self.sync.user_scrolled
+            && self.active_conversation.as_ref() == Some(&conv_id)
+        {
+            self.scroll_offset = self.scroll_offset.saturating_add(1);
         }
 
         // Active conversation: send read receipt and advance read marker
         let conv_accepted = self.store.conversations.get(&conv_id).map(|c| c.accepted).unwrap_or(true);
         if is_active {
-            if !msg.is_outgoing && conv_accepted && !self.blocked_conversations.contains(&conv_id) {
-                self.queue_single_read_receipt(&sender_id, msg_ts_ms);
-            }
-            if let Some(conv) = self.store.conversations.get(&conv_id) {
-                self.store.last_read_index.insert(conv_id.clone(), conv.messages.len());
+            if !self.sync.active {
+                if !msg.is_outgoing && conv_accepted && !self.blocked_conversations.contains(&conv_id) {
+                    self.queue_single_read_receipt(&sender_id, msg_ts_ms);
+                }
+                if let Some(conv) = self.store.conversations.get(&conv_id) {
+                    self.store.last_read_index.insert(conv_id.clone(), conv.messages.len());
+                }
             }
             if let Ok(Some(rowid)) = self.db.last_message_rowid(&conv_id) {
                 db_warn(self.db.save_read_marker(&conv_id, rowid), "save_read_marker");
@@ -6093,12 +6202,14 @@ impl App {
             }
             MouseEventKind::ScrollUp => {
                 if is_in_rect(event.column, event.row, self.mouse_messages_area) {
+                    self.sync.user_scrolled = true;
                     self.scroll_offset = self.scroll_offset.saturating_add(3);
                     self.focused_msg_index = None;
                 }
             }
             MouseEventKind::ScrollDown => {
                 if is_in_rect(event.column, event.row, self.mouse_messages_area) {
+                    self.sync.user_scrolled = true;
                     self.scroll_offset = self.scroll_offset.saturating_sub(3);
                     self.focused_msg_index = None;
                 }
@@ -8563,6 +8674,7 @@ mod tests {
 
     #[rstest]
     fn unread_bar_clears_on_active_incoming_message(mut app: App) {
+        app.sync.active = false;
 
         // Deliver a message while conversation is NOT active → creates unread
         let msg1 = SignalMessage {
@@ -9579,6 +9691,7 @@ mod tests {
 
     #[rstest]
     fn bell_rings_for_background_dm(mut app: App) {
+        app.sync.active = false;
         // "+1" must be a known contact so conversation is accepted
         app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
         app.store.get_or_create_conversation("+other", "Other", false, &app.db);
@@ -9614,6 +9727,7 @@ mod tests {
 
     #[rstest]
     fn bell_for_group_respects_setting(mut app: App) {
+        app.sync.active = false;
         app.handle_signal_event(SignalEvent::GroupList(vec![
             Group { id: "g1".to_string(), name: "Team".to_string(), members: vec![], member_uuids: vec![] },
         ]));
@@ -9658,6 +9772,7 @@ mod tests {
 
     #[rstest]
     fn active_conv_queues_read_receipt(mut app: App) {
+        app.sync.active = false;
         app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
         app.send_read_receipts = true;
@@ -10024,5 +10139,119 @@ mod tests {
         app.focused_msg_index = Some(0);
         let items = app.action_menu_items();
         assert!(items.iter().any(|a| a.label == "Open link"), "focused msg has URL, should show Open link");
+    }
+
+    // --- SyncState tests ---
+
+    #[rstest]
+    fn sync_starts_active(app: App) {
+        assert!(app.sync.active);
+        assert_eq!(app.sync.message_count, 0);
+        assert!(!app.sync.user_scrolled);
+    }
+
+    #[rstest]
+    fn sync_should_end_requires_quiet_and_min_elapsed(mut app: App) {
+        assert!(!app.sync.should_end());
+        app.sync.started_at = Instant::now() - std::time::Duration::from_secs(15);
+        assert!(app.sync.should_end());
+        app.sync.last_message_time = Some(Instant::now());
+        assert!(!app.sync.should_end());
+        app.sync.last_message_time = Some(Instant::now() - std::time::Duration::from_secs(5));
+        assert!(app.sync.should_end());
+    }
+
+    #[rstest]
+    fn sync_suppresses_notifications(mut app: App) {
+        assert!(app.sync.active);
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.get_or_create_conversation("+other", "Other", false, &app.db);
+        app.active_conversation = Some("+other".to_string());
+        app.notifications.notify_direct = true;
+        let msg = make_msg("+1", Some("hello"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(!app.notifications.pending_bell);
+        assert_eq!(app.sync.suppressed_notifications.get("+1").copied().unwrap_or(0), 1);
+        assert!(app.sync.message_count > 0);
+    }
+
+    #[rstest]
+    fn notifications_fire_after_sync_ends(mut app: App) {
+        app.sync.active = false;
+        app.store.contact_names.insert("+1".to_string(), "Alice".to_string());
+        app.store.get_or_create_conversation("+other", "Other", false, &app.db);
+        app.active_conversation = Some("+other".to_string());
+        app.notifications.notify_direct = true;
+        let msg = make_msg("+1", Some("hello"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(app.notifications.pending_bell);
+    }
+
+    #[rstest]
+    fn sync_stabilizes_scroll_offset(mut app: App) {
+        assert!(app.sync.active);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.scroll_offset = 0;
+        let msg = make_msg("+1", Some("hello from sync"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(app.scroll_offset > 0, "scroll_offset should increase during sync");
+    }
+
+    #[rstest]
+    fn sync_does_not_stabilize_after_user_scroll(mut app: App) {
+        assert!(app.sync.active);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.scroll_offset = 0;
+        app.sync.user_scrolled = true;
+        let msg = make_msg("+1", Some("hello"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert_eq!(app.scroll_offset, 0);
+    }
+
+    #[rstest]
+    fn sync_does_not_advance_read_index_for_active_conv(mut app: App) {
+        assert!(app.sync.active);
+        app.store.get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        let initial_read = app.store.last_read_index.get("+1").copied().unwrap_or(0);
+        let msg = make_msg("+1", Some("hello"), None, false);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        let after_read = app.store.last_read_index.get("+1").copied().unwrap_or(0);
+        assert_eq!(initial_read, after_read, "read index should not advance during sync");
+    }
+
+    #[rstest]
+    fn end_sync_snaps_to_bottom_and_fires_bell(mut app: App) {
+        app.sync.active = true;
+        app.sync.message_count = 50;
+        app.scroll_offset = 30;
+        app.sync.suppressed_notifications.insert("+1".to_string(), 10);
+        app.sync.suppressed_notifications.insert("+2".to_string(), 5);
+        app.end_sync();
+        assert!(!app.sync.active);
+        assert_eq!(app.scroll_offset, 0);
+        assert!(app.notifications.pending_bell);
+        assert!(app.sync.suppressed_notifications.is_empty());
+    }
+
+    #[rstest]
+    fn end_sync_respects_user_scroll(mut app: App) {
+        app.sync.active = true;
+        app.scroll_offset = 15;
+        app.sync.user_scrolled = true;
+        app.end_sync();
+        assert!(!app.sync.active);
+        assert_eq!(app.scroll_offset, 15);
+    }
+
+    #[rstest]
+    fn end_sync_no_bell_when_no_suppressed(mut app: App) {
+        app.sync.active = true;
+        app.sync.message_count = 5;
+        app.end_sync();
+        assert!(!app.sync.active);
+        assert!(!app.notifications.pending_bell);
     }
 }

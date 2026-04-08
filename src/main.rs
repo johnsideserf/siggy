@@ -985,6 +985,7 @@ async fn run_app(
     }
 
     let mut last_expiry_sweep = Instant::now();
+    let mut last_sync_redraw = Instant::now();
     let mut needs_redraw = true;
 
     // Re-enable terminal modes — on Windows, spawning cmd.exe subprocesses
@@ -1121,6 +1122,20 @@ async fn run_app(
 
         // Drain signal events (non-blocking), detect disconnect
         if backend.drain_events(&mut app) {
+            if app.sync.active {
+                // During sync: throttle redraws to 500ms to keep UI responsive
+                if last_sync_redraw.elapsed() >= std::time::Duration::from_millis(500) {
+                    needs_redraw = true;
+                    last_sync_redraw = Instant::now();
+                }
+            } else {
+                needs_redraw = true;
+            }
+        }
+
+        // Check if initial sync burst has ended
+        if app.sync.active && app.sync.should_end() {
+            app.end_sync();
             needs_redraw = true;
         }
 

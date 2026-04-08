@@ -2206,6 +2206,22 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
         return;
     }
 
+    // Sync progress indicator (overrides normal status bar)
+    if app.sync.active && app.sync.message_count > 0 {
+        let bar = Line::from(vec![
+            Span::styled(" Syncing... ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("({} messages received)", app.sync.message_count),
+                Style::default().fg(theme.statusbar_fg),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(bar).style(Style::default().bg(theme.statusbar_bg)),
+            area,
+        );
+        return;
+    }
+
     let mut segments: Vec<Span> = Vec::new();
 
     // Mode indicator
