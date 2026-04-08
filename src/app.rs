@@ -2840,13 +2840,18 @@ impl App {
         if total > 0 {
             self.notifications.pending_bell = true;
             if self.notifications.desktop_notifications {
-                let body = format!("{total} new messages in {conv_count} conversations");
+                let conv_word = if conv_count == 1 { "conversation" } else { "conversations" };
+                let body = format!("{total} new messages in {conv_count} {conv_word}");
                 show_desktop_notification("siggy", &body, false, None, "full");
             }
         }
         self.sync.suppressed_notifications.clear();
 
-        // Mark current conversation as read now that viewport is at bottom
+        // Send read receipts for messages that arrived during sync, then mark read
+        if let Some(conv_id) = self.active_conversation.clone() {
+            let read_from = self.store.last_read_index.get(&conv_id).copied().unwrap_or(0);
+            self.queue_read_receipts_for_conv(&conv_id, read_from);
+        }
         self.mark_read();
 
         // Update status
