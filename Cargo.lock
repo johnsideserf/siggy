@@ -1473,9 +1473,9 @@ dependencies = [
 
 [[package]]
 name = "notify-rust"
-version = "4.13.0"
+version = "4.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9612133a804b4bc753f9f806de73fc9730b7694eb1bada2dc252cce022638be8"
+checksum = "1b2c9bc1689653cfbc04400b8719f2562638ff9c545bbd48cc58c657a14526df"
 dependencies = [
  "futures-lite",
  "log",
