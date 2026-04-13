@@ -211,7 +211,8 @@ impl Config {
                         if let Some(parent) = new_path.parent() {
                             let _ = std::fs::create_dir_all(parent);
                         }
-                        let _ = std::fs::rename(old_path.parent().unwrap(), new_path.parent().unwrap());
+                        let _ =
+                            std::fs::rename(old_path.parent().unwrap(), new_path.parent().unwrap());
                     }
                 }
                 new_path
@@ -221,8 +222,9 @@ impl Config {
         if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path)
                 .with_context(|| format!("Failed to read config from {}", config_path.display()))?;
-            let mut config: Config = toml::from_str(&contents)
-                .with_context(|| format!("Failed to parse config from {}", config_path.display()))?;
+            let mut config: Config = toml::from_str(&contents).with_context(|| {
+                format!("Failed to parse config from {}", config_path.display())
+            })?;
             // Migrate legacy inline_images/native_images to image_mode
             if config.image_mode.is_empty() {
                 config.image_mode = if config.native_images {
@@ -243,12 +245,12 @@ impl Config {
     pub fn save(&self) -> Result<()> {
         let config_path = Self::default_config_path();
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory {}", parent.display())
+            })?;
             Self::set_dir_permissions(parent);
         }
-        let contents = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
         std::fs::write(&config_path, contents)
             .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
         Self::set_file_permissions(&config_path);

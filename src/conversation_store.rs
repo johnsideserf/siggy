@@ -180,7 +180,10 @@ impl ConversationStore {
     ) -> &mut Conversation {
         if !self.conversations.contains_key(id) {
             // New conversation — always persist
-            db_warn(db.upsert_conversation(id, name, is_group), "upsert_conversation");
+            db_warn(
+                db.upsert_conversation(id, name, is_group),
+                "upsert_conversation",
+            );
             self.conversations.insert(
                 id.to_string(),
                 Conversation {
@@ -199,7 +202,10 @@ impl ConversationStore {
             let conv = self.conversations.get_mut(id).unwrap();
             if conv.name != name {
                 conv.name = name.to_string();
-                db_warn(db.upsert_conversation(id, name, is_group), "upsert_conversation");
+                db_warn(
+                    db.upsert_conversation(id, name, is_group),
+                    "upsert_conversation",
+                );
             }
         }
         self.conversations.get_mut(id).unwrap()
@@ -226,7 +232,11 @@ impl ConversationStore {
     /// Resolve U+FFFC placeholders in a message body using bodyRanges mentions.
     /// Returns (resolved_body, mention_byte_ranges) where mention_byte_ranges are
     /// (start, end) byte offsets of each `@Name` in the resolved body.
-    pub fn resolve_mentions(&self, body: &str, mentions: &[Mention]) -> (String, Vec<(usize, usize)>) {
+    pub fn resolve_mentions(
+        &self,
+        body: &str,
+        mentions: &[Mention],
+    ) -> (String, Vec<(usize, usize)>) {
         if mentions.is_empty() {
             return (body.to_string(), Vec::new());
         }
@@ -302,7 +312,10 @@ impl ConversationStore {
                     short.to_string()
                 });
             let replacement_utf16_len = format!("@{name}").encode_utf16().count();
-            let byte_start = utf16_to_byte.get(adjusted_start).copied().unwrap_or(resolved_bytes.len());
+            let byte_start = utf16_to_byte
+                .get(adjusted_start)
+                .copied()
+                .unwrap_or(resolved_bytes.len());
             let byte_end = utf16_to_byte
                 .get(adjusted_start + replacement_utf16_len)
                 .copied()
@@ -335,14 +348,14 @@ impl ConversationStore {
             sorted_mentions.sort_by_key(|m| m.start);
             let mut cumulative: i64 = 0;
             for m in &sorted_mentions {
-                let name = self
-                    .uuid_to_name
-                    .get(&m.uuid)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        let short = if m.uuid.len() > 8 { &m.uuid[..8] } else { &m.uuid };
-                        short.to_string()
-                    });
+                let name = self.uuid_to_name.get(&m.uuid).cloned().unwrap_or_else(|| {
+                    let short = if m.uuid.len() > 8 {
+                        &m.uuid[..8]
+                    } else {
+                        &m.uuid
+                    };
+                    short.to_string()
+                });
                 let replacement_utf16_len = format!("@{name}").encode_utf16().count() as i64;
                 let original_len = m.length as i64;
                 cumulative += replacement_utf16_len - original_len;
@@ -381,8 +394,14 @@ impl ConversationStore {
             .filter_map(|ts| {
                 let shifted_start = shift_offset(ts.start);
                 let shifted_end = shift_offset(ts.start + ts.length);
-                let byte_start = utf16_to_byte.get(shifted_start).copied().unwrap_or(body_byte_len);
-                let byte_end = utf16_to_byte.get(shifted_end).copied().unwrap_or(body_byte_len);
+                let byte_start = utf16_to_byte
+                    .get(shifted_start)
+                    .copied()
+                    .unwrap_or(body_byte_len);
+                let byte_end = utf16_to_byte
+                    .get(shifted_end)
+                    .copied()
+                    .unwrap_or(body_byte_len);
                 if byte_start < byte_end && byte_end <= body_byte_len {
                     Some((byte_start, byte_end, ts.style))
                 } else {

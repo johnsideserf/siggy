@@ -167,18 +167,16 @@ pub async fn run_setup(
                                 phone_cursor = 0;
                                 phone_error = None;
                             }
-                            (_, KeyCode::Enter) => {
-                                match validate_phone(&phone_input) {
-                                    Ok(()) => {
-                                        working_config.account = phone_input.clone();
-                                        phone_error = None;
-                                        step = Step::Linking;
-                                    }
-                                    Err(msg) => {
-                                        phone_error = Some(msg);
-                                    }
+                            (_, KeyCode::Enter) => match validate_phone(&phone_input) {
+                                Ok(()) => {
+                                    working_config.account = phone_input.clone();
+                                    phone_error = None;
+                                    step = Step::Linking;
                                 }
-                            }
+                                Err(msg) => {
+                                    phone_error = Some(msg);
+                                }
+                            },
                             (_, KeyCode::Backspace) => {
                                 if phone_cursor > 0 {
                                     phone_cursor -= 1;
@@ -207,7 +205,9 @@ pub async fn run_setup(
 
             Step::Linking => {
                 // Check if already registered
-                let registered = link::check_account_registered(&working_config).await.unwrap_or(false);
+                let registered = link::check_account_registered(&working_config)
+                    .await
+                    .unwrap_or(false);
                 if registered {
                     // Already registered, skip linking
                     terminal.draw(|frame| {
@@ -409,7 +409,11 @@ fn draw_signal_cli_step(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(" Setup ")
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
     let inner = block.inner(content);
     frame.render_widget(block, content);
 
@@ -417,7 +421,9 @@ fn draw_signal_cli_step(
         Line::from(""),
         Line::from(Span::styled(
             "  Welcome to siggy!",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -427,7 +433,9 @@ fn draw_signal_cli_step(
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}: Signal-CLI", step_label(Step::SignalCli)),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )),
     ];
 
@@ -436,7 +444,12 @@ fn draw_signal_cli_step(
     if found {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("V ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "V ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 format!("Found signal-cli at {location}"),
                 Style::default().fg(Color::Green),
@@ -461,11 +474,11 @@ fn draw_signal_cli_step(
     } else {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled("X ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
             Span::styled(
-                "signal-cli not found",
-                Style::default().fg(Color::Red),
+                "X ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
+            Span::styled("signal-cli not found", Style::default().fg(Color::Red)),
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -514,7 +527,11 @@ fn draw_account_step(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(" Setup ")
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
     let inner = block.inner(content);
     frame.render_widget(block, content);
 
@@ -522,7 +539,9 @@ fn draw_account_step(
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}: Phone Number", step_label(Step::Account)),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -590,7 +609,12 @@ fn draw_registered_screen(frame: &mut ratatui::Frame, account: &str) {
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  V ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  V ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 format!("Account {account} is already registered"),
                 Style::default().fg(Color::Green),
@@ -669,21 +693,35 @@ fn draw_preferences_step(frame: &mut ratatui::Frame, config: &Config) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .title(" Setup ")
-        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .title_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
     let inner = block.inner(content);
     frame.render_widget(block, content);
 
     let on = Style::default().fg(Color::Green);
     let off = Style::default().fg(Color::Red);
 
-    let direct_state = if config.notify_direct { ("on", on) } else { ("off", off) };
-    let group_state = if config.notify_group { ("on", on) } else { ("off", off) };
+    let direct_state = if config.notify_direct {
+        ("on", on)
+    } else {
+        ("off", off)
+    };
+    let group_state = if config.notify_group {
+        ("on", on)
+    } else {
+        ("off", off)
+    };
 
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}: Notifications", step_label(Step::Preferences)),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -696,12 +734,22 @@ fn draw_preferences_step(frame: &mut ratatui::Frame, config: &Config) {
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  1 ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  1 ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Direct messages  ", Style::default().fg(Color::White)),
             Span::styled(direct_state.0, direct_state.1),
         ]),
         Line::from(vec![
-            Span::styled("  2 ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  2 ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Group messages   ", Style::default().fg(Color::White)),
             Span::styled(group_state.0, group_state.1),
         ]),
@@ -742,7 +790,9 @@ fn draw_done_screen(frame: &mut ratatui::Frame) {
         Line::from(""),
         Line::from(Span::styled(
             "  All set! Starting siggy...",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(

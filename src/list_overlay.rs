@@ -107,10 +107,7 @@ mod tests {
 
     #[test]
     fn arrow_keys_navigate() {
-        assert_eq!(
-            classify_list_key(KeyCode::Down, false),
-            ListKeyAction::Down
-        );
+        assert_eq!(classify_list_key(KeyCode::Down, false), ListKeyAction::Down);
         assert_eq!(classify_list_key(KeyCode::Up, false), ListKeyAction::Up);
     }
 
@@ -124,10 +121,7 @@ mod tests {
 
     #[test]
     fn esc_closes() {
-        assert_eq!(
-            classify_list_key(KeyCode::Esc, false),
-            ListKeyAction::Close
-        );
+        assert_eq!(classify_list_key(KeyCode::Esc, false), ListKeyAction::Close);
     }
 
     #[test]

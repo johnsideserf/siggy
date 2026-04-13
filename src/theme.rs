@@ -126,17 +126,17 @@ pub fn default_theme() -> Theme {
 fn catppuccin_mocha() -> Theme {
     Theme {
         name: "Catppuccin Mocha".into(),
-        bg: Color::Rgb(30, 30, 46),          // base
-        bg_selected: Color::Rgb(69, 71, 90), // surface1
-        fg: Color::Rgb(205, 214, 244),        // text
-        fg_secondary: Color::Rgb(166, 173, 200), // subtext0
-        fg_muted: Color::Rgb(108, 112, 134),  // overlay0
-        accent: Color::Rgb(203, 166, 247),     // mauve
+        bg: Color::Rgb(30, 30, 46),                  // base
+        bg_selected: Color::Rgb(69, 71, 90),         // surface1
+        fg: Color::Rgb(205, 214, 244),               // text
+        fg_secondary: Color::Rgb(166, 173, 200),     // subtext0
+        fg_muted: Color::Rgb(108, 112, 134),         // overlay0
+        accent: Color::Rgb(203, 166, 247),           // mauve
         accent_secondary: Color::Rgb(249, 226, 175), // yellow
-        success: Color::Rgb(166, 227, 161),    // green
-        error: Color::Rgb(243, 139, 168),      // red
-        warning: Color::Rgb(249, 226, 175),    // yellow
-        sender_self: Color::Rgb(166, 227, 161), // green
+        success: Color::Rgb(166, 227, 161),          // green
+        error: Color::Rgb(243, 139, 168),            // red
+        warning: Color::Rgb(249, 226, 175),          // yellow
+        sender_self: Color::Rgb(166, 227, 161),      // green
         sender_palette: [
             Color::Rgb(137, 180, 250), // blue
             Color::Rgb(245, 194, 231), // pink
@@ -147,14 +147,14 @@ fn catppuccin_mocha() -> Theme {
             Color::Rgb(148, 226, 213), // teal
             Color::Rgb(203, 166, 247), // mauve
         ],
-        link: Color::Rgb(137, 180, 250),       // blue
-        mention: Color::Rgb(203, 166, 247),    // mauve
-        quote: Color::Rgb(108, 112, 134),      // overlay0
-        system_msg: Color::Rgb(108, 112, 134), // overlay0
+        link: Color::Rgb(137, 180, 250),         // blue
+        mention: Color::Rgb(203, 166, 247),      // mauve
+        quote: Color::Rgb(108, 112, 134),        // overlay0
+        system_msg: Color::Rgb(108, 112, 134),   // overlay0
         msg_selected_bg: Color::Rgb(49, 50, 68), // surface0
         input_insert: Color::Rgb(203, 166, 247), // mauve
         input_normal: Color::Rgb(249, 226, 175), // yellow
-        statusbar_bg: Color::Rgb(24, 24, 37),  // mantle
+        statusbar_bg: Color::Rgb(24, 24, 37),    // mantle
         statusbar_fg: Color::Rgb(205, 214, 244), // text
         receipt_failed: Color::Rgb(243, 139, 168),
         receipt_sending: Color::Rgb(108, 112, 134),
@@ -168,17 +168,17 @@ fn catppuccin_mocha() -> Theme {
 fn catppuccin_latte() -> Theme {
     Theme {
         name: "Catppuccin Latte".into(),
-        bg: Color::Rgb(239, 241, 245),        // base
-        bg_selected: Color::Rgb(188, 192, 204), // surface1
-        fg: Color::Rgb(76, 79, 105),           // text
-        fg_secondary: Color::Rgb(108, 111, 133), // subtext0
-        fg_muted: Color::Rgb(140, 143, 161),   // overlay0
-        accent: Color::Rgb(136, 57, 239),      // mauve
+        bg: Color::Rgb(239, 241, 245),              // base
+        bg_selected: Color::Rgb(188, 192, 204),     // surface1
+        fg: Color::Rgb(76, 79, 105),                // text
+        fg_secondary: Color::Rgb(108, 111, 133),    // subtext0
+        fg_muted: Color::Rgb(140, 143, 161),        // overlay0
+        accent: Color::Rgb(136, 57, 239),           // mauve
         accent_secondary: Color::Rgb(223, 142, 29), // yellow
-        success: Color::Rgb(64, 160, 43),       // green
-        error: Color::Rgb(210, 15, 57),         // red
-        warning: Color::Rgb(223, 142, 29),      // yellow
-        sender_self: Color::Rgb(64, 160, 43),   // green
+        success: Color::Rgb(64, 160, 43),           // green
+        error: Color::Rgb(210, 15, 57),             // red
+        warning: Color::Rgb(223, 142, 29),          // yellow
+        sender_self: Color::Rgb(64, 160, 43),       // green
         sender_palette: [
             Color::Rgb(30, 102, 245),  // blue
             Color::Rgb(234, 118, 203), // pink
@@ -189,15 +189,15 @@ fn catppuccin_latte() -> Theme {
             Color::Rgb(23, 146, 153),  // teal
             Color::Rgb(136, 57, 239),  // mauve
         ],
-        link: Color::Rgb(30, 102, 245),         // blue
-        mention: Color::Rgb(136, 57, 239),      // mauve
-        quote: Color::Rgb(140, 143, 161),       // overlay0
-        system_msg: Color::Rgb(140, 143, 161),  // overlay0
+        link: Color::Rgb(30, 102, 245),             // blue
+        mention: Color::Rgb(136, 57, 239),          // mauve
+        quote: Color::Rgb(140, 143, 161),           // overlay0
+        system_msg: Color::Rgb(140, 143, 161),      // overlay0
         msg_selected_bg: Color::Rgb(204, 208, 218), // surface0
-        input_insert: Color::Rgb(136, 57, 239), // mauve
-        input_normal: Color::Rgb(223, 142, 29), // yellow
-        statusbar_bg: Color::Rgb(230, 233, 239), // mantle
-        statusbar_fg: Color::Rgb(76, 79, 105),  // text
+        input_insert: Color::Rgb(136, 57, 239),     // mauve
+        input_normal: Color::Rgb(223, 142, 29),     // yellow
+        statusbar_bg: Color::Rgb(230, 233, 239),    // mantle
+        statusbar_fg: Color::Rgb(76, 79, 105),      // text
         receipt_failed: Color::Rgb(210, 15, 57),
         receipt_sending: Color::Rgb(140, 143, 161),
         receipt_sent: Color::Rgb(140, 143, 161),
@@ -210,17 +210,17 @@ fn catppuccin_latte() -> Theme {
 fn dracula() -> Theme {
     Theme {
         name: "Dracula".into(),
-        bg: Color::Rgb(40, 42, 54),           // background
-        bg_selected: Color::Rgb(68, 71, 90),  // current line
-        fg: Color::Rgb(248, 248, 242),         // foreground
-        fg_secondary: Color::Rgb(189, 147, 249), // purple (secondary info)
-        fg_muted: Color::Rgb(98, 114, 164),   // comment
-        accent: Color::Rgb(189, 147, 249),     // purple
+        bg: Color::Rgb(40, 42, 54),                  // background
+        bg_selected: Color::Rgb(68, 71, 90),         // current line
+        fg: Color::Rgb(248, 248, 242),               // foreground
+        fg_secondary: Color::Rgb(189, 147, 249),     // purple (secondary info)
+        fg_muted: Color::Rgb(98, 114, 164),          // comment
+        accent: Color::Rgb(189, 147, 249),           // purple
         accent_secondary: Color::Rgb(241, 250, 140), // yellow
-        success: Color::Rgb(80, 250, 123),     // green
-        error: Color::Rgb(255, 85, 85),        // red
-        warning: Color::Rgb(241, 250, 140),    // yellow
-        sender_self: Color::Rgb(80, 250, 123), // green
+        success: Color::Rgb(80, 250, 123),           // green
+        error: Color::Rgb(255, 85, 85),              // red
+        warning: Color::Rgb(241, 250, 140),          // yellow
+        sender_self: Color::Rgb(80, 250, 123),       // green
         sender_palette: [
             Color::Rgb(139, 233, 253), // cyan
             Color::Rgb(255, 121, 198), // pink
@@ -231,10 +231,10 @@ fn dracula() -> Theme {
             Color::Rgb(255, 184, 108), // orange
             Color::Rgb(139, 233, 253), // cyan (alt)
         ],
-        link: Color::Rgb(139, 233, 253),       // cyan
-        mention: Color::Rgb(255, 121, 198),    // pink
-        quote: Color::Rgb(98, 114, 164),       // comment
-        system_msg: Color::Rgb(98, 114, 164),  // comment
+        link: Color::Rgb(139, 233, 253),      // cyan
+        mention: Color::Rgb(255, 121, 198),   // pink
+        quote: Color::Rgb(98, 114, 164),      // comment
+        system_msg: Color::Rgb(98, 114, 164), // comment
         msg_selected_bg: Color::Rgb(55, 57, 69),
         input_insert: Color::Rgb(189, 147, 249), // purple
         input_normal: Color::Rgb(241, 250, 140), // yellow
@@ -252,17 +252,17 @@ fn dracula() -> Theme {
 fn nord() -> Theme {
     Theme {
         name: "Nord".into(),
-        bg: Color::Rgb(46, 52, 64),           // nord0 polar night
-        bg_selected: Color::Rgb(67, 76, 94),  // nord2
-        fg: Color::Rgb(236, 239, 244),         // nord6 snow storm
-        fg_secondary: Color::Rgb(216, 222, 233), // nord4
-        fg_muted: Color::Rgb(76, 86, 106),    // nord3
-        accent: Color::Rgb(136, 192, 208),     // nord8 frost
+        bg: Color::Rgb(46, 52, 64),                  // nord0 polar night
+        bg_selected: Color::Rgb(67, 76, 94),         // nord2
+        fg: Color::Rgb(236, 239, 244),               // nord6 snow storm
+        fg_secondary: Color::Rgb(216, 222, 233),     // nord4
+        fg_muted: Color::Rgb(76, 86, 106),           // nord3
+        accent: Color::Rgb(136, 192, 208),           // nord8 frost
         accent_secondary: Color::Rgb(235, 203, 139), // nord13 aurora yellow
-        success: Color::Rgb(163, 190, 140),    // nord14 aurora green
-        error: Color::Rgb(191, 97, 106),       // nord11 aurora red
-        warning: Color::Rgb(235, 203, 139),    // nord13 aurora yellow
-        sender_self: Color::Rgb(163, 190, 140), // nord14
+        success: Color::Rgb(163, 190, 140),          // nord14 aurora green
+        error: Color::Rgb(191, 97, 106),             // nord11 aurora red
+        warning: Color::Rgb(235, 203, 139),          // nord13 aurora yellow
+        sender_self: Color::Rgb(163, 190, 140),      // nord14
         sender_palette: [
             Color::Rgb(136, 192, 208), // nord8
             Color::Rgb(180, 142, 173), // nord15 purple
@@ -273,14 +273,14 @@ fn nord() -> Theme {
             Color::Rgb(143, 188, 187), // nord7
             Color::Rgb(208, 135, 112), // nord12 orange
         ],
-        link: Color::Rgb(129, 161, 193),       // nord9
-        mention: Color::Rgb(180, 142, 173),    // nord15
-        quote: Color::Rgb(76, 86, 106),        // nord3
-        system_msg: Color::Rgb(76, 86, 106),   // nord3
+        link: Color::Rgb(129, 161, 193),         // nord9
+        mention: Color::Rgb(180, 142, 173),      // nord15
+        quote: Color::Rgb(76, 86, 106),          // nord3
+        system_msg: Color::Rgb(76, 86, 106),     // nord3
         msg_selected_bg: Color::Rgb(59, 66, 82), // nord1
         input_insert: Color::Rgb(136, 192, 208), // nord8
         input_normal: Color::Rgb(235, 203, 139), // nord13
-        statusbar_bg: Color::Rgb(59, 66, 82),  // nord1
+        statusbar_bg: Color::Rgb(59, 66, 82),    // nord1
         statusbar_fg: Color::Rgb(236, 239, 244), // nord6
         receipt_failed: Color::Rgb(191, 97, 106),
         receipt_sending: Color::Rgb(76, 86, 106),
@@ -294,17 +294,17 @@ fn nord() -> Theme {
 fn gruvbox_dark() -> Theme {
     Theme {
         name: "Gruvbox Dark".into(),
-        bg: Color::Rgb(40, 40, 40),           // bg
-        bg_selected: Color::Rgb(80, 73, 69),  // bg2
-        fg: Color::Rgb(235, 219, 178),         // fg
-        fg_secondary: Color::Rgb(189, 174, 147), // fg3
-        fg_muted: Color::Rgb(124, 111, 100),  // bg4
-        accent: Color::Rgb(254, 128, 25),      // orange
+        bg: Color::Rgb(40, 40, 40),                 // bg
+        bg_selected: Color::Rgb(80, 73, 69),        // bg2
+        fg: Color::Rgb(235, 219, 178),              // fg
+        fg_secondary: Color::Rgb(189, 174, 147),    // fg3
+        fg_muted: Color::Rgb(124, 111, 100),        // bg4
+        accent: Color::Rgb(254, 128, 25),           // orange
         accent_secondary: Color::Rgb(250, 189, 47), // yellow
-        success: Color::Rgb(184, 187, 38),     // green
-        error: Color::Rgb(251, 73, 52),        // red
-        warning: Color::Rgb(250, 189, 47),     // yellow
-        sender_self: Color::Rgb(184, 187, 38), // green
+        success: Color::Rgb(184, 187, 38),          // green
+        error: Color::Rgb(251, 73, 52),             // red
+        warning: Color::Rgb(250, 189, 47),          // yellow
+        sender_self: Color::Rgb(184, 187, 38),      // green
         sender_palette: [
             Color::Rgb(131, 165, 152), // aqua
             Color::Rgb(211, 134, 155), // purple
@@ -315,14 +315,14 @@ fn gruvbox_dark() -> Theme {
             Color::Rgb(254, 128, 25),  // orange
             Color::Rgb(142, 192, 124), // bright green
         ],
-        link: Color::Rgb(131, 165, 152),       // aqua
-        mention: Color::Rgb(211, 134, 155),    // purple
-        quote: Color::Rgb(124, 111, 100),      // bg4
-        system_msg: Color::Rgb(124, 111, 100), // bg4
+        link: Color::Rgb(131, 165, 152),         // aqua
+        mention: Color::Rgb(211, 134, 155),      // purple
+        quote: Color::Rgb(124, 111, 100),        // bg4
+        system_msg: Color::Rgb(124, 111, 100),   // bg4
         msg_selected_bg: Color::Rgb(60, 56, 54), // bg1
-        input_insert: Color::Rgb(254, 128, 25), // orange
-        input_normal: Color::Rgb(250, 189, 47), // yellow
-        statusbar_bg: Color::Rgb(50, 48, 47),  // bg0_h
+        input_insert: Color::Rgb(254, 128, 25),  // orange
+        input_normal: Color::Rgb(250, 189, 47),  // yellow
+        statusbar_bg: Color::Rgb(50, 48, 47),    // bg0_h
         statusbar_fg: Color::Rgb(235, 219, 178), // fg
         receipt_failed: Color::Rgb(251, 73, 52),
         receipt_sending: Color::Rgb(124, 111, 100),
@@ -580,12 +580,10 @@ fn string_to_color(s: &str) -> Result<Color, String> {
     // Hex: #rrggbb
     if let Some(hex) = s.strip_prefix('#') {
         if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16)
-                .map_err(|e| format!("bad hex red: {e}"))?;
-            let g = u8::from_str_radix(&hex[2..4], 16)
-                .map_err(|e| format!("bad hex green: {e}"))?;
-            let b = u8::from_str_radix(&hex[4..6], 16)
-                .map_err(|e| format!("bad hex blue: {e}"))?;
+            let r = u8::from_str_radix(&hex[0..2], 16).map_err(|e| format!("bad hex red: {e}"))?;
+            let g =
+                u8::from_str_radix(&hex[2..4], 16).map_err(|e| format!("bad hex green: {e}"))?;
+            let b = u8::from_str_radix(&hex[4..6], 16).map_err(|e| format!("bad hex blue: {e}"))?;
             return Ok(Color::Rgb(r, g, b));
         }
         return Err(format!("hex color must be 6 digits: {s}"));

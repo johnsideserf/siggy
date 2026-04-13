@@ -85,7 +85,9 @@ impl SignalClient {
 
                         let event = if let Some(method) = pending_method {
                             if let Some(ref err) = resp.error {
-                                crate::debug_log::logf(format_args!("rpc error: method={method} error={err:?}"));
+                                crate::debug_log::logf(format_args!(
+                                    "rpc error: method={method} error={err:?}"
+                                ));
                                 // RPC error — emit SendFailed for send requests,
                                 // surface other errors to the status bar
                                 if method == "send" {
@@ -94,9 +96,9 @@ impl SignalClient {
                                     Some(SignalEvent::Error(format!("{method}: {}", err.message)))
                                 }
                             } else {
-                                resp.result
-                                    .as_ref()
-                                    .and_then(|result| parse_rpc_result(&method, result, rpc_id.as_deref()))
+                                resp.result.as_ref().and_then(|result| {
+                                    parse_rpc_result(&method, result, rpc_id.as_deref())
+                                })
                             }
                         } else {
                             parse_signal_event(&resp, &download_dir)
@@ -104,7 +106,10 @@ impl SignalClient {
 
                         if let Some(ref event) = event {
                             if crate::debug_log::redact() {
-                                crate::debug_log::logf(format_args!("event: {}", event.redacted_summary()));
+                                crate::debug_log::logf(format_args!(
+                                    "event: {}",
+                                    event.redacted_summary()
+                                ));
                             } else {
                                 crate::debug_log::logf(format_args!("event: {event:?}"));
                             }
@@ -207,9 +212,7 @@ impl SignalClient {
             // signal-cli expects mentions as colon-separated strings: "start:length:uuid"
             let mention_arr: Vec<serde_json::Value> = mentions
                 .iter()
-                .map(|(start, uuid)| {
-                    serde_json::Value::String(format!("{start}:1:{uuid}"))
-                })
+                .map(|(start, uuid)| serde_json::Value::String(format!("{start}:1:{uuid}")))
                 .collect();
             params["mention"] = serde_json::Value::Array(mention_arr);
         }
@@ -570,16 +573,14 @@ impl SignalClient {
         Ok(())
     }
 
-    pub async fn send_typing(
-        &self,
-        recipient: &str,
-        is_group: bool,
-        stop: bool,
-    ) -> Result<()> {
+    pub async fn send_typing(&self, recipient: &str, is_group: bool, stop: bool) -> Result<()> {
         let id = Uuid::new_v4().to_string();
 
         if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendTypingIndicator".to_string(), Instant::now()));
+            map.insert(
+                id.clone(),
+                ("sendTypingIndicator".to_string(), Instant::now()),
+            );
         }
 
         let mut params = if is_group {
@@ -615,11 +616,7 @@ impl SignalClient {
 
     /// Send a read receipt to a single recipient for one or more message timestamps.
     /// Fire-and-forget — no useful result is expected from signal-cli.
-    pub async fn send_read_receipt(
-        &self,
-        recipient: &str,
-        timestamps: &[i64],
-    ) -> Result<()> {
+    pub async fn send_read_receipt(&self, recipient: &str, timestamps: &[i64]) -> Result<()> {
         let id = Uuid::new_v4().to_string();
 
         if let Ok(mut map) = self.pending_requests.lock() {
@@ -657,7 +654,10 @@ impl SignalClient {
     ) -> Result<()> {
         let id = Uuid::new_v4().to_string();
         if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendMessageRequestResponse".to_string(), Instant::now()));
+            map.insert(
+                id.clone(),
+                ("sendMessageRequestResponse".to_string(), Instant::now()),
+            );
         }
         let mut params = serde_json::json!({
             "type": response_type,
@@ -731,7 +731,10 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send createGroup to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send createGroup to signal-cli stdin")?;
         Ok(())
     }
 
@@ -753,7 +756,10 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send addGroupMembers to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send addGroupMembers to signal-cli stdin")?;
         Ok(())
     }
 
@@ -775,7 +781,10 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send removeGroupMembers to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send removeGroupMembers to signal-cli stdin")?;
         Ok(())
     }
 
@@ -797,7 +806,10 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send renameGroup to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send renameGroup to signal-cli stdin")?;
         Ok(())
     }
 
@@ -827,7 +839,10 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send updateProfile to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send updateProfile to signal-cli stdin")?;
         Ok(())
     }
 
@@ -855,7 +870,10 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send block to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send block to signal-cli stdin")?;
         Ok(())
     }
 
@@ -883,7 +901,10 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send unblock to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send unblock to signal-cli stdin")?;
         Ok(())
     }
 
@@ -904,16 +925,15 @@ impl SignalClient {
             params: Some(params),
         };
         let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send quitGroup to signal-cli stdin")?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send quitGroup to signal-cli stdin")?;
         Ok(())
     }
 
     /// Set the disappearing message timer for a group.
-    pub async fn send_update_group_expiration(
-        &self,
-        group_id: &str,
-        seconds: i64,
-    ) -> Result<()> {
+    pub async fn send_update_group_expiration(&self, group_id: &str, seconds: i64) -> Result<()> {
         let id = Uuid::new_v4().to_string();
         if let Ok(mut map) = self.pending_requests.lock() {
             map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
@@ -1006,10 +1026,8 @@ impl SignalClient {
             map.insert(id.clone(), ("sendPollVote".to_string(), Instant::now()));
         }
 
-        let option_arr: Vec<serde_json::Value> = options
-            .iter()
-            .map(|&o| serde_json::json!(o))
-            .collect();
+        let option_arr: Vec<serde_json::Value> =
+            options.iter().map(|&o| serde_json::json!(o)).collect();
 
         let mut params = if is_group {
             serde_json::json!({
@@ -1057,7 +1075,10 @@ impl SignalClient {
         let id = Uuid::new_v4().to_string();
 
         if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendPollTerminate".to_string(), Instant::now()));
+            map.insert(
+                id.clone(),
+                ("sendPollTerminate".to_string(), Instant::now()),
+            );
         }
 
         let params = if is_group {
@@ -1091,7 +1112,10 @@ impl SignalClient {
 
     /// Returns accumulated stderr output from the signal-cli process.
     pub fn stderr_output(&self) -> String {
-        self.stderr_buffer.lock().map(|buf| buf.clone()).unwrap_or_default()
+        self.stderr_buffer
+            .lock()
+            .map(|buf| buf.clone())
+            .unwrap_or_default()
     }
 
     /// Non-blocking check: returns `Some(exit_code)` if the child has exited.
@@ -1122,15 +1146,24 @@ impl SignalClient {
     }
 }
 
-pub fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option<&str>) -> Option<SignalEvent> {
+pub fn parse_rpc_result(
+    method: &str,
+    result: &serde_json::Value,
+    rpc_id: Option<&str>,
+) -> Option<SignalEvent> {
     match method {
         "send" => {
             let id = rpc_id?.to_string();
             // signal-cli send response includes result.timestamp (server-assigned ms epoch)
-            let server_ts = result.get("timestamp").and_then(|v| v.as_i64())
+            let server_ts = result
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
                 .or_else(|| result.as_i64())
                 .unwrap_or(0);
-            Some(SignalEvent::SendTimestamp { rpc_id: id, server_ts })
+            Some(SignalEvent::SendTimestamp {
+                rpc_id: id,
+                server_ts,
+            })
         }
         "listContacts" => {
             let arr = result.as_array()?;
@@ -1145,7 +1178,10 @@ pub fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option
                         .or_else(|| obj.get("name").and_then(|v| v.as_str()))
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string());
-                    let uuid = obj.get("uuid").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    let uuid = obj
+                        .get("uuid")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     Some(Contact {
                         number: number.to_string(),
                         name,
@@ -1172,7 +1208,8 @@ pub fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option
                         for m in arr {
                             // signal-cli returns members as objects: {"number": "+1...", "uuid": "..."}
                             // Fall back to plain string for compatibility
-                            let phone = m.get("number")
+                            let phone = m
+                                .get("number")
                                 .and_then(|v| v.as_str())
                                 .or_else(|| m.as_str());
                             if let Some(phone) = phone {
@@ -1198,14 +1235,33 @@ pub fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option
             let identities: Vec<IdentityInfo> = arr
                 .iter()
                 .map(|obj| {
-                    let number = obj.get("number").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let uuid = obj.get("uuid").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    let fingerprint = obj.get("fingerprint").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let safety_number = obj.get("safetyNumber").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let trust_level = obj.get("trustLevel").and_then(|v| v.as_str())
+                    let number = obj
+                        .get("number")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let uuid = obj
+                        .get("uuid")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let fingerprint = obj
+                        .get("fingerprint")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let safety_number = obj
+                        .get("safetyNumber")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let trust_level = obj
+                        .get("trustLevel")
+                        .and_then(|v| v.as_str())
                         .map(TrustLevel::from_str)
                         .unwrap_or(TrustLevel::TrustedUnverified);
-                    let added_timestamp = obj.get("addedTimestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let added_timestamp = obj
+                        .get("addedTimestamp")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                     IdentityInfo {
                         number,
                         uuid,
@@ -1220,12 +1276,31 @@ pub fn parse_rpc_result(method: &str, result: &serde_json::Value, rpc_id: Option
         }
         "sendPollCreate" => {
             let id = rpc_id?.to_string();
-            let server_ts = result.get("timestamp").and_then(|v| v.as_i64())
+            let server_ts = result
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
                 .or_else(|| result.as_i64())
                 .unwrap_or(0);
-            Some(SignalEvent::SendTimestamp { rpc_id: id, server_ts })
+            Some(SignalEvent::SendTimestamp {
+                rpc_id: id,
+                server_ts,
+            })
         }
-        "sendReaction" | "remoteDelete" | "sendTypingIndicator" | "sendReceipt" | "updateContact" | "updateGroup" | "quitGroup" | "sendMessageRequestResponse" | "block" | "unblock" | "sendPinMessage" | "sendUnpinMessage" | "sendPollVote" | "sendPollTerminate" | "trust" => None, // fire-and-forget, no action needed
+        "sendReaction"
+        | "remoteDelete"
+        | "sendTypingIndicator"
+        | "sendReceipt"
+        | "updateContact"
+        | "updateGroup"
+        | "quitGroup"
+        | "sendMessageRequestResponse"
+        | "block"
+        | "unblock"
+        | "sendPinMessage"
+        | "sendUnpinMessage"
+        | "sendPollVote"
+        | "sendPollTerminate"
+        | "trust" => None, // fire-and-forget, no action needed
         _ => None,
     }
 }
@@ -1250,7 +1325,10 @@ fn parse_receive_event(
 ) -> Option<SignalEvent> {
     // signal-cli reports exceptions for messages it can't parse (e.g. 1:1 sent sync)
     if let Some(exc) = params.get("exception") {
-        let msg = exc.get("message").and_then(|v| v.as_str()).unwrap_or("unknown error");
+        let msg = exc
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error");
         if msg.contains("SyncMessage missing destination") {
             return None; // Known signal-cli bug — silently ignore
         }
@@ -1295,13 +1373,20 @@ fn parse_receive_event(
                 .and_then(|o| o.get("type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("AUDIO_CALL");
-            let kind = if call_type == "VIDEO_CALL" { "video" } else { "voice" };
+            let kind = if call_type == "VIDEO_CALL" {
+                "video"
+            } else {
+                "voice"
+            };
             let conv_id = envelope
                 .get("sourceNumber")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let timestamp_ms = envelope.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let timestamp_ms = envelope
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
             return Some(SignalEvent::SystemMessage {
                 conv_id,
@@ -1322,7 +1407,8 @@ fn parse_receive_event(
         if let Some(sent) = sync.get("sentMessage") {
             // Check for edit in sync
             if let Some(edit_msg) = sent.get("editMessage") {
-                let dest = sent.get("destinationNumber")
+                let dest = sent
+                    .get("destinationNumber")
                     .or_else(|| sent.get("destination"))
                     .and_then(|v| v.as_str());
                 return parse_edit_message(envelope, edit_msg, true, dest);
@@ -1354,7 +1440,9 @@ fn parse_read_sync(sync: &serde_json::Value) -> Option<SignalEvent> {
     if entries.is_empty() {
         return None;
     }
-    Some(SignalEvent::ReadSyncReceived { read_messages: entries })
+    Some(SignalEvent::ReadSyncReceived {
+        read_messages: entries,
+    })
 }
 
 fn parse_typing_indicator(envelope: &serde_json::Value) -> Option<SignalEvent> {
@@ -1378,7 +1466,12 @@ fn parse_typing_indicator(envelope: &serde_json::Value) -> Option<SignalEvent> {
         .get("groupId")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    Some(SignalEvent::TypingIndicator { sender, sender_name, is_typing, group_id })
+    Some(SignalEvent::TypingIndicator {
+        sender,
+        sender_name,
+        is_typing,
+        group_id,
+    })
 }
 
 fn parse_receipt_message(envelope: &serde_json::Value) -> Option<SignalEvent> {
@@ -1389,22 +1482,42 @@ fn parse_receipt_message(envelope: &serde_json::Value) -> Option<SignalEvent> {
         .unwrap_or("unknown")
         .to_string();
     // signal-cli uses boolean fields: isDelivery, isRead, isViewed
-    let receipt_type = if receipt.get("isRead").and_then(|v| v.as_bool()).unwrap_or(false) {
+    let receipt_type = if receipt
+        .get("isRead")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         "READ"
-    } else if receipt.get("isViewed").and_then(|v| v.as_bool()).unwrap_or(false) {
+    } else if receipt
+        .get("isViewed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         "VIEWED"
-    } else if receipt.get("isDelivery").and_then(|v| v.as_bool()).unwrap_or(false) {
+    } else if receipt
+        .get("isDelivery")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         "DELIVERY"
     } else {
         // Fallback: try "type" string field (older signal-cli versions)
-        receipt.get("type").and_then(|v| v.as_str()).unwrap_or("UNKNOWN")
-    }.to_string();
+        receipt
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN")
+    }
+    .to_string();
     let timestamps: Vec<i64> = receipt
         .get("timestamps")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
         .unwrap_or_default();
-    Some(SignalEvent::ReceiptReceived { sender, receipt_type, timestamps })
+    Some(SignalEvent::ReceiptReceived {
+        sender,
+        receipt_type,
+        timestamps,
+    })
 }
 
 fn parse_data_message(
@@ -1419,20 +1532,32 @@ fn parse_data_message(
                 .as_object()
                 .map(|obj| obj.keys().map(|k| k.as_str()).collect())
                 .unwrap_or_default();
-            let interesting: Vec<&&str> = keys.iter()
-                .filter(|k| !matches!(**k,
-                    "source" | "sourceNumber" | "sourceName" | "sourceUuid"
-                    | "sourceDevice" | "timestamp" | "serverReceivedTimestamp"
-                    | "serverDeliveredTimestamp" | "relay"
-                ))
+            let interesting: Vec<&&str> = keys
+                .iter()
+                .filter(|k| {
+                    !matches!(
+                        **k,
+                        "source"
+                            | "sourceNumber"
+                            | "sourceName"
+                            | "sourceUuid"
+                            | "sourceDevice"
+                            | "timestamp"
+                            | "serverReceivedTimestamp"
+                            | "serverDeliveredTimestamp"
+                            | "relay"
+                    )
+                })
                 .collect();
             if !interesting.is_empty() {
-                return Some(SignalEvent::Error(
-                    format!("unhandled envelope type: {}", interesting.iter()
+                return Some(SignalEvent::Error(format!(
+                    "unhandled envelope type: {}",
+                    interesting
+                        .iter()
                         .map(|k| **k)
                         .collect::<Vec<_>>()
-                        .join(", "))
-                ));
+                        .join(", ")
+                )));
             }
             return None;
         }
@@ -1449,8 +1574,15 @@ fn parse_data_message(
 
     // Check for pin message
     if let Some(pin) = data.get("pinMessage") {
-        let target_author = pin.get("targetAuthor").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-        let target_timestamp = pin.get("targetSentTimestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let target_author = pin
+            .get("targetAuthor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let target_timestamp = pin
+            .get("targetSentTimestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let sender = envelope
             .get("sourceNumber")
             .and_then(|v| v.as_str())
@@ -1479,8 +1611,15 @@ fn parse_data_message(
 
     // Check for unpin message
     if let Some(unpin) = data.get("unpinMessage") {
-        let target_author = unpin.get("targetAuthor").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-        let target_timestamp = unpin.get("targetSentTimestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let target_author = unpin
+            .get("targetAuthor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let target_timestamp = unpin
+            .get("targetSentTimestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let sender = envelope
             .get("sourceNumber")
             .and_then(|v| v.as_str())
@@ -1541,14 +1680,26 @@ fn parse_data_message(
     }
 
     // Expiration timer update → ExpirationTimerChanged event
-    if data.get("isExpirationUpdate").and_then(|v| v.as_bool()).unwrap_or(false) {
-        let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .unwrap_or_else(|| {
-                envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown").to_string()
-            });
-        let seconds = data.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+    if data
+        .get("isExpirationUpdate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let group_id = data
+            .get("groupInfo")
+            .and_then(|g| g.get("groupId"))
+            .and_then(|v| v.as_str());
+        let conv_id = group_id.map(|g| g.to_string()).unwrap_or_else(|| {
+            envelope
+                .get("sourceNumber")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string()
+        });
+        let seconds = data
+            .get("expiresInSeconds")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
         let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
         return Some(SignalEvent::ExpirationTimerChanged {
@@ -1562,14 +1713,20 @@ fn parse_data_message(
 
     // Group update with no body/reaction/remoteDelete → system message
     if let Some(group_info) = data.get("groupInfo") {
-        let group_type = group_info.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let group_type = group_info
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if group_type == "UPDATE"
             && data.get("message").and_then(|v| v.as_str()).is_none()
             && data.get("reaction").is_none()
             && data.get("remoteDelete").is_none()
         {
-            let conv_id = group_info.get("groupId").and_then(|v| v.as_str())
-                .unwrap_or("unknown").to_string();
+            let conv_id = group_info
+                .get("groupId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
             let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
             let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
             return Some(SignalEvent::SystemMessage {
@@ -1597,21 +1754,18 @@ fn parse_data_message(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let timestamp_ms = data
-        .get("timestamp")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
 
-    let timestamp = DateTime::from_timestamp_millis(timestamp_ms)
-        .unwrap_or_default();
+    let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
 
     // Synthesize body for sticker messages
-    let sticker_body = data.get("sticker").map(|sticker| {
-        match sticker.get("emoji").and_then(|v| v.as_str()) {
-            Some(emoji) => format!("[Sticker: {}]", emoji),
-            None => "[Sticker]".to_string(),
-        }
-    });
+    let sticker_body =
+        data.get("sticker").map(
+            |sticker| match sticker.get("emoji").and_then(|v| v.as_str()) {
+                Some(emoji) => format!("[Sticker: {}]", emoji),
+                None => "[Sticker]".to_string(),
+            },
+        );
 
     let mut body = data
         .get("message")
@@ -1644,7 +1798,11 @@ fn parse_data_message(
     let mut previews = parse_link_previews(data, download_dir);
 
     // View-once messages: replace content with placeholder
-    if data.get("viewOnce").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if data
+        .get("viewOnce")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         body = Some("[View-once message]".to_string());
         attachments = Vec::new();
         previews = Vec::new();
@@ -1658,12 +1816,19 @@ fn parse_data_message(
     let quote = data.get("quote").and_then(|q| {
         let q_ts = q.get("id").and_then(|v| v.as_i64())?;
         let q_author = q.get("authorNumber").and_then(|v| v.as_str())?.to_string();
-        let q_body = q.get("text").and_then(|v| v.as_str()).unwrap_or("")
-            .replace('\u{FFFC}', "").to_string();
+        let q_body = q
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .replace('\u{FFFC}', "")
+            .to_string();
         Some((q_ts, q_author, q_body))
     });
 
-    let expires_in_seconds = data.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+    let expires_in_seconds = data
+        .get("expiresInSeconds")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
 
     Some(SignalEvent::MessageReceived(SignalMessage {
         source,
@@ -1689,8 +1854,14 @@ fn parse_poll_create(
     data: &serde_json::Value,
     poll_create: &serde_json::Value,
 ) -> Option<SignalEvent> {
-    let question = poll_create.get("question").and_then(|v| v.as_str())?.to_string();
-    let allow_multiple = poll_create.get("allowMultiple").and_then(|v| v.as_bool()).unwrap_or(false);
+    let question = poll_create
+        .get("question")
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let allow_multiple = poll_create
+        .get("allowMultiple")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let options: Vec<crate::signal::types::PollOption> = poll_create
         .get("options")
         .and_then(|v| v.as_array())
@@ -1706,8 +1877,14 @@ fn parse_poll_create(
         })
         .unwrap_or_default();
 
-    let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
-    let sender = envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let group_id = data
+        .get("groupInfo")
+        .and_then(|g| g.get("groupId"))
+        .and_then(|v| v.as_str());
+    let sender = envelope
+        .get("sourceNumber")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let conv_id = group_id.unwrap_or(sender).to_string();
     let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -1731,7 +1908,9 @@ fn parse_poll_vote(
     data: &serde_json::Value,
     poll_vote: &serde_json::Value,
 ) -> Option<SignalEvent> {
-    let target_timestamp = poll_vote.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
+    let target_timestamp = poll_vote
+        .get("targetSentTimestamp")
+        .and_then(|v| v.as_i64())?;
     let voter = poll_vote
         .get("authorNumber")
         .and_then(|v| v.as_str())
@@ -1748,10 +1927,19 @@ fn parse_poll_vote(
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
         .unwrap_or_default();
-    let vote_count = poll_vote.get("voteCount").and_then(|v| v.as_i64()).unwrap_or(1);
+    let vote_count = poll_vote
+        .get("voteCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1);
 
-    let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
-    let sender = envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let group_id = data
+        .get("groupInfo")
+        .and_then(|g| g.get("groupId"))
+        .and_then(|v| v.as_str());
+    let sender = envelope
+        .get("sourceNumber")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let conv_id = group_id.unwrap_or(sender).to_string();
 
     Some(SignalEvent::PollVoteReceived {
@@ -1769,9 +1957,17 @@ fn parse_poll_terminate(
     data: &serde_json::Value,
     poll_terminate: &serde_json::Value,
 ) -> Option<SignalEvent> {
-    let target_timestamp = poll_terminate.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
-    let group_id = data.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
-    let sender = envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let target_timestamp = poll_terminate
+        .get("targetSentTimestamp")
+        .and_then(|v| v.as_i64())?;
+    let group_id = data
+        .get("groupInfo")
+        .and_then(|g| g.get("groupId"))
+        .and_then(|v| v.as_str());
+    let sender = envelope
+        .get("sourceNumber")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let conv_id = group_id.unwrap_or(sender).to_string();
 
     Some(SignalEvent::PollTerminated {
@@ -1803,8 +1999,15 @@ fn parse_sent_sync(
 
     // Check for synced pin message
     if let Some(pin) = sent.get("pinMessage") {
-        let target_author = pin.get("targetAuthor").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-        let target_timestamp = pin.get("targetSentTimestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let target_author = pin
+            .get("targetAuthor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let target_timestamp = pin
+            .get("targetSentTimestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let sender = envelope
             .get("sourceNumber")
             .and_then(|v| v.as_str())
@@ -1839,8 +2042,15 @@ fn parse_sent_sync(
 
     // Check for synced unpin message
     if let Some(unpin) = sent.get("unpinMessage") {
-        let target_author = unpin.get("targetAuthor").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-        let target_timestamp = unpin.get("targetSentTimestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let target_author = unpin
+            .get("targetAuthor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let target_timestamp = unpin
+            .get("targetSentTimestamp")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let sender = envelope
             .get("sourceNumber")
             .and_then(|v| v.as_str())
@@ -1902,8 +2112,15 @@ fn parse_sent_sync(
     }
 
     // Expiration timer update (synced) → ExpirationTimerChanged event
-    if sent.get("isExpirationUpdate").and_then(|v| v.as_bool()).unwrap_or(false) {
-        let group_id = sent.get("groupInfo").and_then(|g| g.get("groupId")).and_then(|v| v.as_str());
+    if sent
+        .get("isExpirationUpdate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let group_id = sent
+            .get("groupInfo")
+            .and_then(|g| g.get("groupId"))
+            .and_then(|v| v.as_str());
         let conv_id = group_id
             .map(|g| g.to_string())
             .or_else(|| {
@@ -1913,9 +2130,16 @@ fn parse_sent_sync(
                     .map(|s| s.to_string())
             })
             .unwrap_or_else(|| {
-                envelope.get("sourceNumber").and_then(|v| v.as_str()).unwrap_or("unknown").to_string()
+                envelope
+                    .get("sourceNumber")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string()
             });
-        let seconds = sent.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+        let seconds = sent
+            .get("expiresInSeconds")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         let timestamp_ms = sent.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
         let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
         return Some(SignalEvent::ExpirationTimerChanged {
@@ -1929,14 +2153,20 @@ fn parse_sent_sync(
 
     // Group update (synced) with no body/reaction/remoteDelete → system message
     if let Some(group_info) = sent.get("groupInfo") {
-        let group_type = group_info.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let group_type = group_info
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if group_type == "UPDATE"
             && sent.get("message").and_then(|v| v.as_str()).is_none()
             && sent.get("reaction").is_none()
             && sent.get("remoteDelete").is_none()
         {
-            let conv_id = group_info.get("groupId").and_then(|v| v.as_str())
-                .unwrap_or("unknown").to_string();
+            let conv_id = group_info
+                .get("groupId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
             let timestamp_ms = sent.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
             let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
             return Some(SignalEvent::SystemMessage {
@@ -1960,20 +2190,18 @@ fn parse_sent_sync(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let timestamp_ms = sent
-        .get("timestamp")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let timestamp_ms = sent.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
 
     let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
 
     // Synthesize body for sticker messages
-    let sticker_body = sent.get("sticker").map(|sticker| {
-        match sticker.get("emoji").and_then(|v| v.as_str()) {
-            Some(emoji) => format!("[Sticker: {}]", emoji),
-            None => "[Sticker]".to_string(),
-        }
-    });
+    let sticker_body =
+        sent.get("sticker").map(
+            |sticker| match sticker.get("emoji").and_then(|v| v.as_str()) {
+                Some(emoji) => format!("[Sticker: {}]", emoji),
+                None => "[Sticker]".to_string(),
+            },
+        );
 
     let mut body = sent
         .get("message")
@@ -2006,7 +2234,11 @@ fn parse_sent_sync(
     let mut previews = parse_link_previews(sent, download_dir);
 
     // View-once messages: replace content with placeholder
-    if sent.get("viewOnce").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if sent
+        .get("viewOnce")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         body = Some("[View-once message]".to_string());
         attachments = Vec::new();
         previews = Vec::new();
@@ -2020,12 +2252,19 @@ fn parse_sent_sync(
     let quote = sent.get("quote").and_then(|q| {
         let q_ts = q.get("id").and_then(|v| v.as_i64())?;
         let q_author = q.get("authorNumber").and_then(|v| v.as_str())?.to_string();
-        let q_body = q.get("text").and_then(|v| v.as_str()).unwrap_or("")
-            .replace('\u{FFFC}', "").to_string();
+        let q_body = q
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .replace('\u{FFFC}', "")
+            .to_string();
         Some((q_ts, q_author, q_body))
     });
 
-    let expires_in_seconds = sent.get("expiresInSeconds").and_then(|v| v.as_i64()).unwrap_or(0);
+    let expires_in_seconds = sent
+        .get("expiresInSeconds")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
 
     Some(SignalEvent::MessageReceived(SignalMessage {
         source,
@@ -2052,9 +2291,17 @@ fn parse_reaction(
     group_id: Option<&str>,
 ) -> Option<SignalEvent> {
     let emoji = reaction.get("emoji").and_then(|v| v.as_str())?.to_string();
-    let target_author = reaction.get("targetAuthor").and_then(|v| v.as_str())?.to_string();
-    let target_timestamp = reaction.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
-    let is_remove = reaction.get("isRemove").and_then(|v| v.as_bool()).unwrap_or(false);
+    let target_author = reaction
+        .get("targetAuthor")
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let target_timestamp = reaction
+        .get("targetSentTimestamp")
+        .and_then(|v| v.as_i64())?;
+    let is_remove = reaction
+        .get("isRemove")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let sender = envelope
         .get("sourceNumber")
@@ -2088,9 +2335,17 @@ fn parse_reaction_sync(
     reaction: &serde_json::Value,
 ) -> Option<SignalEvent> {
     let emoji = reaction.get("emoji").and_then(|v| v.as_str())?.to_string();
-    let target_author = reaction.get("targetAuthor").and_then(|v| v.as_str())?.to_string();
-    let target_timestamp = reaction.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
-    let is_remove = reaction.get("isRemove").and_then(|v| v.as_bool()).unwrap_or(false);
+    let target_author = reaction
+        .get("targetAuthor")
+        .and_then(|v| v.as_str())?
+        .to_string();
+    let target_timestamp = reaction
+        .get("targetSentTimestamp")
+        .and_then(|v| v.as_i64())?;
+    let is_remove = reaction
+        .get("isRemove")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let sender = envelope
         .get("sourceNumber")
@@ -2130,7 +2385,9 @@ fn parse_edit_message(
     is_outgoing: bool,
     destination: Option<&str>,
 ) -> Option<SignalEvent> {
-    let target_timestamp = edit_msg.get("targetSentTimestamp").and_then(|v| v.as_i64())?;
+    let target_timestamp = edit_msg
+        .get("targetSentTimestamp")
+        .and_then(|v| v.as_i64())?;
     let data = edit_msg.get("dataMessage")?;
     let new_body = data.get("message").and_then(|v| v.as_str())?.to_string();
     let new_timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -2151,16 +2408,14 @@ fn parse_edit_message(
         .and_then(|g| g.get("groupId"))
         .and_then(|v| v.as_str());
 
-    let conv_id = group_id
-        .map(|g| g.to_string())
-        .or_else(|| {
-            if is_outgoing {
-                // For outgoing sync edits, use destination (recipient) as conv_id
-                destination.map(|d| d.to_string())
-            } else {
-                Some(sender.clone())
-            }
-        })?;
+    let conv_id = group_id.map(|g| g.to_string()).or_else(|| {
+        if is_outgoing {
+            // For outgoing sync edits, use destination (recipient) as conv_id
+            destination.map(|d| d.to_string())
+        } else {
+            Some(sender.clone())
+        }
+    })?;
 
     Some(SignalEvent::EditReceived {
         conv_id,
@@ -2192,7 +2447,11 @@ fn parse_attachment(
     let mut effective_name = filename.clone().unwrap_or_else(|| {
         let ext = mime_to_ext(&content_type);
         // Use last 8 chars of attachment ID for uniqueness
-        let short_id = if id.len() > 8 { &id[id.len() - 8..] } else { &id };
+        let short_id = if id.len() > 8 {
+            &id[id.len() - 8..]
+        } else {
+            &id
+        };
         format!("{short_id}.{ext}")
     });
 
@@ -2207,19 +2466,25 @@ fn parse_attachment(
 
     // Sanitize filename: strip path separators and traversal sequences
     // to prevent writes outside the download directory.
-    effective_name = effective_name
-        .replace(['/', '\\'], "_")
-        .replace("..", "_");
+    effective_name = effective_name.replace(['/', '\\'], "_").replace("..", "_");
     if effective_name.is_empty() {
-        let short_id = if id.len() > 8 { &id[id.len() - 8..] } else { &id };
+        let short_id = if id.len() > 8 {
+            &id[id.len() - 8..]
+        } else {
+            &id
+        };
         effective_name = format!("{short_id}.bin");
     }
 
     let dest = download_dir.join(&effective_name);
 
     // Defense-in-depth: verify resolved path stays within download directory.
-    let canon_dir = download_dir.canonicalize().unwrap_or_else(|_| download_dir.to_path_buf());
-    let canon_dest = dest.canonicalize().unwrap_or_else(|_| canon_dir.join(&effective_name));
+    let canon_dir = download_dir
+        .canonicalize()
+        .unwrap_or_else(|_| download_dir.to_path_buf());
+    let canon_dest = dest
+        .canonicalize()
+        .unwrap_or_else(|_| canon_dir.join(&effective_name));
     if !canon_dest.starts_with(&canon_dir) {
         return None;
     }
@@ -2241,7 +2506,8 @@ fn parse_attachment(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(download_dir, std::fs::Permissions::from_mode(0o700));
+                let _ =
+                    std::fs::set_permissions(download_dir, std::fs::Permissions::from_mode(0o700));
             }
             match std::fs::copy(&src, &dest) {
                 Ok(_) => Some(dest.to_string_lossy().to_string()),
@@ -2274,12 +2540,26 @@ fn parse_link_previews(
     arr.iter()
         .filter_map(|p| {
             let url = p.get("url").and_then(|v| v.as_str())?.to_string();
-            let title = p.get("title").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-            let description = p.get("description").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-            let image_path = p.get("image")
+            let title = p
+                .get("title")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let description = p
+                .get("description")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let image_path = p
+                .get("image")
                 .and_then(|img| parse_attachment(img, download_dir))
                 .and_then(|att| att.local_path);
-            Some(LinkPreview { url, title, description, image_path })
+            Some(LinkPreview {
+                url,
+                title,
+                description,
+                image_path,
+            })
         })
         .collect()
 }
@@ -2296,7 +2576,12 @@ fn find_signal_cli_attachment(id: &str, content_type: &str) -> Option<std::path:
     }
     // Also check ~/.local/share (POSIX-style, common on MSYS/WSL)
     if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join(".local").join("share").join("signal-cli").join("attachments"));
+        candidates.push(
+            home.join(".local")
+                .join("share")
+                .join("signal-cli")
+                .join("attachments"),
+        );
     }
 
     let ext = mime_to_ext(content_type);
@@ -2380,7 +2665,11 @@ fn parse_mentions(data: &serde_json::Value) -> Vec<Mention> {
                     .or_else(|| r.get("mentionUuid"))
                     .and_then(|v| v.as_str())?
                     .to_string();
-                Some(Mention { start, length, uuid })
+                Some(Mention {
+                    start,
+                    length,
+                    uuid,
+                })
             })
             .collect()
     })
@@ -2410,7 +2699,11 @@ fn parse_text_styles(data: &serde_json::Value) -> Vec<TextStyle> {
                     "SPOILER" => StyleType::Spoiler,
                     _ => return None,
                 };
-                Some(TextStyle { start, length, style })
+                Some(TextStyle {
+                    start,
+                    length,
+                    style,
+                })
             })
             .collect()
     })
@@ -2527,10 +2820,13 @@ mod tests {
                 assert_eq!(groups[0].id, "group1");
                 assert_eq!(groups[0].name, "Family");
                 assert_eq!(groups[0].members, vec!["+1", "+2"]);
-                assert_eq!(groups[0].member_uuids, vec![
-                    ("+1".to_string(), "uuid-1".to_string()),
-                    ("+2".to_string(), "uuid-2".to_string()),
-                ]);
+                assert_eq!(
+                    groups[0].member_uuids,
+                    vec![
+                        ("+1".to_string(), "uuid-1".to_string()),
+                        ("+2".to_string(), "uuid-2".to_string()),
+                    ]
+                );
                 assert_eq!(groups[1].id, "group2");
                 assert_eq!(groups[1].name, "Work");
                 assert!(groups[1].members.is_empty());
@@ -2637,7 +2933,11 @@ mod tests {
         }));
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::ReceiptReceived { sender, receipt_type, timestamps } => {
+            SignalEvent::ReceiptReceived {
+                sender,
+                receipt_type,
+                timestamps,
+            } => {
                 assert_eq!(sender, "+15551234567");
                 assert_eq!(receipt_type, expected_type);
                 assert_eq!(timestamps.len(), expected_count);
@@ -2678,7 +2978,13 @@ mod tests {
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
             SignalEvent::ReactionReceived {
-                conv_id, emoji, sender, sender_name, target_author, target_timestamp, is_remove,
+                conv_id,
+                emoji,
+                sender,
+                sender_name,
+                target_author,
+                target_timestamp,
+                is_remove,
             } => {
                 assert_eq!(conv_id, "+15551234567");
                 assert_eq!(emoji, "👍");
@@ -2793,7 +3099,11 @@ mod tests {
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
             SignalEvent::ReactionReceived {
-                conv_id, emoji, sender, target_author, ..
+                conv_id,
+                emoji,
+                sender,
+                target_author,
+                ..
             } => {
                 assert_eq!(conv_id, "+15559876543");
                 assert_eq!(emoji, "😂");
@@ -3053,7 +3363,12 @@ mod tests {
         }));
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::ExpirationTimerChanged { conv_id, seconds, body, .. } => {
+            SignalEvent::ExpirationTimerChanged {
+                conv_id,
+                seconds,
+                body,
+                ..
+            } => {
                 assert_eq!(conv_id, "+15551234567");
                 assert_eq!(seconds, expire_seconds);
                 assert_eq!(body, expected_body);
@@ -3087,8 +3402,14 @@ mod tests {
         match event {
             SignalEvent::ReadSyncReceived { read_messages } => {
                 assert_eq!(read_messages.len(), 2);
-                assert_eq!(read_messages[0], ("+15551234567".to_string(), 1700000000001));
-                assert_eq!(read_messages[1], ("+15559876543".to_string(), 1700000000002));
+                assert_eq!(
+                    read_messages[0],
+                    ("+15551234567".to_string(), 1700000000001)
+                );
+                assert_eq!(
+                    read_messages[1],
+                    ("+15559876543".to_string(), 1700000000002)
+                );
             }
             _ => panic!("Expected ReadSyncReceived, got {:?}", event),
         }
@@ -3369,7 +3690,11 @@ mod tests {
         }));
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::PollCreated { conv_id, timestamp, poll_data } => {
+            SignalEvent::PollCreated {
+                conv_id,
+                timestamp,
+                poll_data,
+            } => {
                 assert_eq!(conv_id, "+15551234567");
                 assert_eq!(timestamp, 1700000000000);
                 assert_eq!(poll_data.question, "What for lunch?");
@@ -3403,7 +3728,14 @@ mod tests {
         }));
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::PollVoteReceived { conv_id, target_timestamp, voter, option_indexes, vote_count, .. } => {
+            SignalEvent::PollVoteReceived {
+                conv_id,
+                target_timestamp,
+                voter,
+                option_indexes,
+                vote_count,
+                ..
+            } => {
                 assert_eq!(conv_id, "+15559876543");
                 assert_eq!(target_timestamp, 1700000000000);
                 assert_eq!(voter, "+15559876543");
@@ -3431,7 +3763,10 @@ mod tests {
         }));
         let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::PollTerminated { conv_id, target_timestamp } => {
+            SignalEvent::PollTerminated {
+                conv_id,
+                target_timestamp,
+            } => {
                 assert_eq!(conv_id, "+15551234567");
                 assert_eq!(target_timestamp, 1700000000000);
             }
@@ -3458,7 +3793,10 @@ mod tests {
         assert_eq!(previews.len(), 1);
         assert_eq!(previews[0].url, "https://example.com/article");
         assert_eq!(previews[0].title.as_deref(), Some("Example Article"));
-        assert_eq!(previews[0].description.as_deref(), Some("An interesting article"));
+        assert_eq!(
+            previews[0].description.as_deref(),
+            Some("An interesting article")
+        );
     }
 
     #[test]
@@ -3544,7 +3882,12 @@ mod tests {
         });
         let event = parse_signal_event(&make_resp(params), std::path::Path::new("/tmp")).unwrap();
         match event {
-            SignalEvent::TypingIndicator { sender, group_id, is_typing, .. } => {
+            SignalEvent::TypingIndicator {
+                sender,
+                group_id,
+                is_typing,
+                ..
+            } => {
                 assert_eq!(sender, "+15551234567");
                 assert_eq!(group_id, Some("group-abc".to_string()));
                 assert!(is_typing);

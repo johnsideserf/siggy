@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
 use crate::app::{Conversation, DisplayMessage};
@@ -39,13 +40,11 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);",
         )?;
 
-        let version: i32 = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                [],
-                |row| row.get(0),
-            )?;
+        let version: i32 = self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )?;
 
         if version < 1 {
             self.conn.execute_batch(
@@ -228,6 +227,17 @@ impl Database {
             )?;
         }
 
+        if version < 13 {
+            self.conn.execute_batch(
+                "
+                BEGIN;
+                ALTER TABLE conversations ADD COLUMN mute_expires_at TEXT;
+                UPDATE schema_version SET version = 13;
+                COMMIT;
+                ",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -252,16 +262,31 @@ impl Database {
     }
 
     pub fn delete_conversation(&self, id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM reactions WHERE conversation_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM messages WHERE conversation_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM read_markers WHERE conversation_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        self.conn.execute(
+            "DELETE FROM reactions WHERE conversation_id = ?1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM read_markers WHERE conversation_id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     /// Load a page of messages for a conversation, ordered chronologically (oldest first).
     /// `offset` skips the N most recent messages (for pagination).
-    pub fn load_messages_page(&self, conv_id: &str, limit: usize, offset: usize) -> Result<Vec<DisplayMessage>> {
+    pub fn load_messages_page(
+        &self,
+        conv_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<DisplayMessage>> {
         let mut msg_stmt = self.conn.prepare(
             "SELECT sender, timestamp, body, is_system, status, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, pinned, poll_data, link_preview FROM messages
              WHERE conversation_id = ?1
@@ -287,50 +312,90 @@ impl Database {
                 let is_pinned: bool = row.get::<_, i32>(14)? != 0;
                 let poll_data_json: Option<String> = row.get(15)?;
                 let link_preview_json: Option<String> = row.get(16)?;
-                Ok((sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json, link_preview_json))
-            })?
-            .filter_map(|r| r.ok())
-            .filter_map(|(sender, ts_str, body, is_system, status_i32, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, is_pinned, poll_data_json, link_preview_json)| {
-                let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
-                    .ok()?
-                    .with_timezone(&chrono::Utc);
-                let quote = match (quote_author, quote_body, quote_ts_ms) {
-                    (Some(author), Some(body), Some(ts)) => Some(crate::app::Quote {
-                        author_id: author.clone(),
-                        author,
-                        body: body.replace('\u{FFFC}', ""),
-                        timestamp_ms: ts,
-                    }),
-                    _ => None,
-                };
-                let poll_data = poll_data_json.and_then(|j| serde_json::from_str::<PollData>(&j).ok());
-                let preview = link_preview_json.and_then(|j| serde_json::from_str::<LinkPreview>(&j).ok());
-                Some(DisplayMessage {
+                Ok((
                     sender,
-                    timestamp,
+                    ts_str,
                     body,
                     is_system,
-                    image_lines: None,
-                    image_path: None,
-                    status: MessageStatus::from_i32(status_i32),
+                    status_i32,
                     timestamp_ms,
-                    reactions: Vec::new(),
-                    mention_ranges: Vec::new(),
-                    style_ranges: Vec::new(),
-                    quote,
                     is_edited,
                     is_deleted,
-                    is_pinned,
+                    quote_author,
+                    quote_body,
+                    quote_ts_ms,
                     sender_id,
                     expires_in_seconds,
                     expiration_start_ms,
-                    poll_data,
-                    poll_votes: Vec::new(),
-                    preview,
-                    preview_image_lines: None,
-                    preview_image_path: None,
-                })
-            })
+                    is_pinned,
+                    poll_data_json,
+                    link_preview_json,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(
+                |(
+                    sender,
+                    ts_str,
+                    body,
+                    is_system,
+                    status_i32,
+                    timestamp_ms,
+                    is_edited,
+                    is_deleted,
+                    quote_author,
+                    quote_body,
+                    quote_ts_ms,
+                    sender_id,
+                    expires_in_seconds,
+                    expiration_start_ms,
+                    is_pinned,
+                    poll_data_json,
+                    link_preview_json,
+                )| {
+                    let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
+                        .ok()?
+                        .with_timezone(&chrono::Utc);
+                    let quote = match (quote_author, quote_body, quote_ts_ms) {
+                        (Some(author), Some(body), Some(ts)) => Some(crate::app::Quote {
+                            author_id: author.clone(),
+                            author,
+                            body: body.replace('\u{FFFC}', ""),
+                            timestamp_ms: ts,
+                        }),
+                        _ => None,
+                    };
+                    let poll_data =
+                        poll_data_json.and_then(|j| serde_json::from_str::<PollData>(&j).ok());
+                    let preview = link_preview_json
+                        .and_then(|j| serde_json::from_str::<LinkPreview>(&j).ok());
+                    Some(DisplayMessage {
+                        sender,
+                        timestamp,
+                        body,
+                        is_system,
+                        image_lines: None,
+                        image_path: None,
+                        status: MessageStatus::from_i32(status_i32),
+                        timestamp_ms,
+                        reactions: Vec::new(),
+                        mention_ranges: Vec::new(),
+                        style_ranges: Vec::new(),
+                        quote,
+                        is_edited,
+                        is_deleted,
+                        is_pinned,
+                        sender_id,
+                        expires_in_seconds,
+                        expiration_start_ms,
+                        poll_data,
+                        poll_votes: Vec::new(),
+                        preview,
+                        preview_image_lines: None,
+                        preview_image_path: None,
+                    })
+                },
+            )
             .collect();
 
         // Reverse so oldest first
@@ -344,9 +409,12 @@ impl Database {
         if let Ok(reactions) = self.load_reactions(conv_id) {
             for (target_ts, target_author, emoji, sender) in reactions {
                 let idx = ts_to_idx.get(&target_ts).and_then(|idxs| {
-                    idxs.iter().find(|&&i| {
-                        messages[i].sender == target_author || messages[i].sender == "you"
-                    }).or_else(|| idxs.first()).copied()
+                    idxs.iter()
+                        .find(|&&i| {
+                            messages[i].sender == target_author || messages[i].sender == "you"
+                        })
+                        .or_else(|| idxs.first())
+                        .copied()
                 });
                 if let Some(msg) = idx.and_then(|i| messages.get_mut(i)) {
                     if let Some(existing) = msg.reactions.iter_mut().find(|r| r.sender == sender) {
@@ -437,7 +505,21 @@ impl Database {
         status: Option<MessageStatus>,
         timestamp_ms: i64,
     ) -> Result<i64> {
-        self.insert_message_full(conv_id, sender, timestamp, body, is_system, status, timestamp_ms, "", None, None, None, 0, 0)
+        self.insert_message_full(
+            conv_id,
+            sender,
+            timestamp,
+            body,
+            is_system,
+            status,
+            timestamp_ms,
+            "",
+            None,
+            None,
+            None,
+            0,
+            0,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -467,7 +549,12 @@ impl Database {
     }
 
     /// Update delivery status for an outgoing message by its ms epoch timestamp.
-    pub fn update_message_status(&self, conv_id: &str, timestamp_ms: i64, status: i32) -> Result<()> {
+    pub fn update_message_status(
+        &self,
+        conv_id: &str,
+        timestamp_ms: i64,
+        status: i32,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE messages SET status = ?3
              WHERE conversation_id = ?1 AND timestamp_ms = ?2 AND sender = 'you' AND status < ?3",
@@ -515,16 +602,14 @@ impl Database {
     }
 
     pub fn unread_count(&self, conv_id: &str) -> Result<usize> {
-        let last_read: i64 = self
-            .conn
-            .query_row(
-                "SELECT COALESCE(
+        let last_read: i64 = self.conn.query_row(
+            "SELECT COALESCE(
                     (SELECT last_read_rowid FROM read_markers WHERE conversation_id = ?1),
                     0
                  )",
-                params![conv_id],
-                |row| row.get(0),
-            )?;
+            params![conv_id],
+            |row| row.get(0),
+        )?;
 
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM messages
@@ -581,12 +666,7 @@ impl Database {
         )?;
         let rows: Vec<(i64, String, String, String)> = stmt
             .query_map(params![conv_id], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                ))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -633,7 +713,10 @@ impl Database {
         query: &str,
         limit: usize,
     ) -> Result<Vec<SearchRow>> {
-        let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let escaped = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT m.sender, m.body, m.timestamp_ms, c.id, c.name
@@ -663,12 +746,11 @@ impl Database {
     /// Search messages across all conversations using case-insensitive LIKE.
     /// Returns (sender, body, timestamp_ms, conversation_id, conversation_name) tuples,
     /// most recent first, limited to `limit` results.
-    pub fn search_all_messages(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<SearchRow>> {
-        let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    pub fn search_all_messages(&self, query: &str, limit: usize) -> Result<Vec<SearchRow>> {
+        let escaped = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
         let pattern = format!("%{escaped}%");
         let mut stmt = self.conn.prepare(
             "SELECT m.sender, m.body, m.timestamp_ms, c.id, c.name
@@ -696,7 +778,11 @@ impl Database {
 
     /// Find the max rowid for messages up to (and including) a given timestamp.
     /// Uses the idx_messages_conv_ts_ms index for efficient lookup.
-    pub fn max_rowid_up_to_timestamp(&self, conv_id: &str, timestamp_ms: i64) -> Result<Option<i64>> {
+    pub fn max_rowid_up_to_timestamp(
+        &self,
+        conv_id: &str,
+        timestamp_ms: i64,
+    ) -> Result<Option<i64>> {
         let result = self.conn.query_row(
             "SELECT MAX(rowid) FROM messages WHERE conversation_id = ?1 AND timestamp_ms <= ?2",
             params![conv_id, timestamp_ms],
@@ -707,22 +793,57 @@ impl Database {
 
     // --- Muted conversations ---
 
-    pub fn set_muted(&self, conv_id: &str, muted: bool) -> Result<()> {
+    pub fn set_muted(
+        &self,
+        conv_id: &str,
+        muted: bool,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let expires_str = if muted {
+            expires_at.map(|t| t.to_rfc3339())
+        } else {
+            None
+        };
         self.conn.execute(
-            "UPDATE conversations SET muted = ?2 WHERE id = ?1",
-            params![conv_id, muted as i32],
+            "UPDATE conversations SET muted = ?2, mute_expires_at = ?3 WHERE id = ?1",
+            params![conv_id, muted as i32, expires_str],
         )?;
         Ok(())
     }
 
-    pub fn load_muted(&self) -> Result<std::collections::HashSet<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM conversations WHERE muted = 1",
-        )?;
-        let ids: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
+    pub fn load_muted(&self) -> Result<HashMap<String, Option<DateTime<Utc>>>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, mute_expires_at FROM conversations WHERE muted = 1")?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let expires: Option<String> = row.get(1)?;
+                Ok((id, expires))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(ids.into_iter().collect())
+        let mut map = HashMap::new();
+        for (id, expires_str) in rows {
+            let expires = expires_str
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            map.insert(id, expires);
+        }
+        Ok(map)
+    }
+
+    /// Clear mutes whose expiry has passed. Returns the conversation IDs that were unmuted.
+    pub fn clear_expired_mutes(&self, now: DateTime<Utc>) -> Result<Vec<String>> {
+        let now_str = now.to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "UPDATE conversations SET muted = 0, mute_expires_at = NULL
+             WHERE muted = 1 AND mute_expires_at IS NOT NULL AND mute_expires_at <= ?1
+             RETURNING id",
+        )?;
+        let ids = stmt
+            .query_map(params![now_str], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(ids)
     }
 
     // --- Blocked conversations ---
@@ -736,9 +857,9 @@ impl Database {
     }
 
     pub fn load_blocked(&self) -> Result<std::collections::HashSet<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id FROM conversations WHERE blocked = 1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM conversations WHERE blocked = 1")?;
         let ids: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -767,7 +888,12 @@ impl Database {
 
     // --- Polls ---
 
-    pub fn upsert_poll_data(&self, conv_id: &str, timestamp_ms: i64, poll_data: &PollData) -> Result<()> {
+    pub fn upsert_poll_data(
+        &self,
+        conv_id: &str,
+        timestamp_ms: i64,
+        poll_data: &PollData,
+    ) -> Result<()> {
         let json = serde_json::to_string(poll_data)?;
         self.conn.execute(
             "UPDATE messages SET poll_data = ?3
@@ -777,7 +903,12 @@ impl Database {
         Ok(())
     }
 
-    pub fn upsert_link_preview(&self, conv_id: &str, timestamp_ms: i64, preview: &LinkPreview) -> Result<()> {
+    pub fn upsert_link_preview(
+        &self,
+        conv_id: &str,
+        timestamp_ms: i64,
+        preview: &LinkPreview,
+    ) -> Result<()> {
         let json = serde_json::to_string(preview)?;
         self.conn.execute(
             "UPDATE messages SET link_preview = ?3
@@ -818,19 +949,29 @@ impl Database {
                 let voter_name: Option<String> = row.get(1)?;
                 let indexes_json: String = row.get(2)?;
                 let vote_count: i64 = row.get(3)?;
-                let option_indexes: Vec<i64> = serde_json::from_str(&indexes_json).unwrap_or_default();
-                Ok(PollVote { voter, voter_name, option_indexes, vote_count })
+                let option_indexes: Vec<i64> =
+                    serde_json::from_str(&indexes_json).unwrap_or_default();
+                Ok(PollVote {
+                    voter,
+                    voter_name,
+                    option_indexes,
+                    vote_count,
+                })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
     pub fn close_poll(&self, conv_id: &str, poll_timestamp: i64) -> Result<()> {
-        let poll_json: Option<String> = self.conn.query_row(
-            "SELECT poll_data FROM messages WHERE conversation_id = ?1 AND timestamp_ms = ?2",
-            params![conv_id, poll_timestamp],
-            |row| row.get(0),
-        ).ok().flatten();
+        let poll_json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT poll_data FROM messages WHERE conversation_id = ?1 AND timestamp_ms = ?2",
+                params![conv_id, poll_timestamp],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
         if let Some(json_str) = poll_json {
             if let Ok(mut poll_data) = serde_json::from_str::<PollData>(&json_str) {
                 poll_data.closed = true;
@@ -844,7 +985,6 @@ impl Database {
         }
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -860,9 +1000,10 @@ mod tests {
     #[rstest]
     fn migration_creates_tables(db: Database) {
         // Should be able to query conversations table
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM conversations", [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -888,8 +1029,18 @@ mod tests {
     #[rstest]
     fn insert_and_load_messages(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 0).unwrap();
-        db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi!", false, None, 0).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "hello",
+            false,
+            None,
+            0,
+        )
+        .unwrap();
+        db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi!", false, None, 0)
+            .unwrap();
 
         let convs = db.load_conversations(100).unwrap();
         assert_eq!(convs[0].messages.len(), 2);
@@ -900,9 +1051,37 @@ mod tests {
     #[rstest]
     fn unread_count_with_read_markers(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        let r1 = db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "msg1", false, None, 0).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "msg2", false, None, 0).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:02:00Z", "msg3", false, None, 0).unwrap();
+        let r1 = db
+            .insert_message(
+                "+1",
+                "Alice",
+                "2025-01-01T00:00:00Z",
+                "msg1",
+                false,
+                None,
+                0,
+            )
+            .unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:01:00Z",
+            "msg2",
+            false,
+            None,
+            0,
+        )
+        .unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:02:00Z",
+            "msg3",
+            false,
+            None,
+            0,
+        )
+        .unwrap();
 
         // Mark first message as read
         db.save_read_marker("+1", r1).unwrap();
@@ -912,8 +1091,26 @@ mod tests {
     #[rstest]
     fn system_messages_excluded_from_unread(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.insert_message("+1", "", "2025-01-01T00:00:00Z", "system msg", true, None, 0).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "real msg", false, None, 0).unwrap();
+        db.insert_message(
+            "+1",
+            "",
+            "2025-01-01T00:00:00Z",
+            "system msg",
+            true,
+            None,
+            0,
+        )
+        .unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:01:00Z",
+            "real msg",
+            false,
+            None,
+            0,
+        )
+        .unwrap();
 
         // No read marker → only non-system messages count as unread
         assert_eq!(db.unread_count("+1").unwrap(), 1);
@@ -924,8 +1121,10 @@ mod tests {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.upsert_conversation("+2", "Bob", false).unwrap();
         // Alice gets an older message, Bob gets a newer one
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "old", false, None, 0).unwrap();
-        db.insert_message("+2", "Bob", "2025-01-02T00:00:00Z", "new", false, None, 0).unwrap();
+        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "old", false, None, 0)
+            .unwrap();
+        db.insert_message("+2", "Bob", "2025-01-02T00:00:00Z", "new", false, None, 0)
+            .unwrap();
 
         let order = db.load_conversation_order().unwrap();
         // Most recent message first
@@ -933,34 +1132,88 @@ mod tests {
         assert_eq!(order[1], "+1");
     }
 
-    // --- Boolean flag round-trips: muted + blocked share identical structure ---
+    // --- Boolean flag round-trip: blocked ---
 
     #[rstest]
-    #[case("muted",
-        Database::set_muted as fn(&Database, &str, bool) -> anyhow::Result<()>,
-        Database::load_muted as fn(&Database) -> anyhow::Result<std::collections::HashSet<String>>
-    )]
-    #[case("blocked",
-        Database::set_blocked as fn(&Database, &str, bool) -> anyhow::Result<()>,
-        Database::load_blocked as fn(&Database) -> anyhow::Result<std::collections::HashSet<String>>
-    )]
-    fn boolean_flag_round_trip(
-        db: Database,
-        #[case] _label: &str,
-        #[case] setter: fn(&Database, &str, bool) -> anyhow::Result<()>,
-        #[case] loader: fn(&Database) -> anyhow::Result<std::collections::HashSet<String>>,
-    ) {
+    fn blocked_flag_round_trip(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.upsert_conversation("+2", "Bob", false).unwrap();
 
-        setter(&db, "+1", true).unwrap();
-        let set = loader(&db).unwrap();
+        db.set_blocked("+1", true).unwrap();
+        let set = db.load_blocked().unwrap();
         assert!(set.contains("+1"));
         assert!(!set.contains("+2"));
 
-        setter(&db, "+1", false).unwrap();
-        let set = loader(&db).unwrap();
+        db.set_blocked("+1", false).unwrap();
+        let set = db.load_blocked().unwrap();
         assert!(!set.contains("+1"));
+    }
+
+    // --- Muted flag round-trips ---
+
+    #[rstest]
+    fn permanent_mute_round_trip(db: Database) {
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.upsert_conversation("+2", "Bob", false).unwrap();
+
+        db.set_muted("+1", true, None).unwrap();
+        let map = db.load_muted().unwrap();
+        assert!(map.contains_key("+1"));
+        assert_eq!(map["+1"], None); // permanent mute
+        assert!(!map.contains_key("+2"));
+
+        db.set_muted("+1", false, None).unwrap();
+        let map = db.load_muted().unwrap();
+        assert!(!map.contains_key("+1"));
+    }
+
+    #[rstest]
+    fn timed_mute_round_trip(db: Database) {
+        use chrono::TimeZone;
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+
+        let expiry = Utc.with_ymd_and_hms(2026, 6, 15, 12, 0, 0).unwrap();
+        db.set_muted("+1", true, Some(expiry)).unwrap();
+        let map = db.load_muted().unwrap();
+        assert_eq!(map["+1"], Some(expiry));
+    }
+
+    #[rstest]
+    fn clear_expired_mutes_clears_past(db: Database) {
+        use chrono::TimeZone;
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.upsert_conversation("+2", "Bob", false).unwrap();
+
+        let past = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        let future = Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap();
+
+        // +1 has expired timed mute, +2 has future timed mute
+        db.set_muted("+1", true, Some(past)).unwrap();
+        db.set_muted("+2", true, Some(future)).unwrap();
+
+        let cleared = db.clear_expired_mutes(now).unwrap();
+        assert_eq!(cleared, vec!["+1"]);
+
+        let map = db.load_muted().unwrap();
+        assert!(!map.contains_key("+1")); // cleared
+        assert!(map.contains_key("+2")); // still muted
+    }
+
+    #[rstest]
+    fn clear_expired_mutes_skips_permanent(db: Database) {
+        use chrono::TimeZone;
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+
+        // permanent mute (no expiry)
+        db.set_muted("+1", true, None).unwrap();
+
+        let now = Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap();
+        let cleared = db.clear_expired_mutes(now).unwrap();
+        assert!(cleared.is_empty());
+
+        let map = db.load_muted().unwrap();
+        assert!(map.contains_key("+1")); // still muted
     }
 
     #[rstest]
@@ -969,8 +1222,27 @@ mod tests {
 
         assert_eq!(db.last_message_rowid("+1").unwrap(), None);
 
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "msg1", false, None, 0).unwrap();
-        let r2 = db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "msg2", false, None, 0).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "msg1",
+            false,
+            None,
+            0,
+        )
+        .unwrap();
+        let r2 = db
+            .insert_message(
+                "+1",
+                "Alice",
+                "2025-01-01T00:01:00Z",
+                "msg2",
+                false,
+                None,
+                0,
+            )
+            .unwrap();
 
         assert_eq!(db.last_message_rowid("+1").unwrap(), Some(r2));
     }
@@ -982,9 +1254,39 @@ mod tests {
         // No messages → None
         assert_eq!(db.max_rowid_up_to_timestamp("+1", 5000).unwrap(), None);
 
-        let r1 = db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "msg1", false, None, 1000).unwrap();
-        let r2 = db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "msg2", false, None, 2000).unwrap();
-        let _r3 = db.insert_message("+1", "Alice", "2025-01-01T00:02:00Z", "msg3", false, None, 3000).unwrap();
+        let r1 = db
+            .insert_message(
+                "+1",
+                "Alice",
+                "2025-01-01T00:00:00Z",
+                "msg1",
+                false,
+                None,
+                1000,
+            )
+            .unwrap();
+        let r2 = db
+            .insert_message(
+                "+1",
+                "Alice",
+                "2025-01-01T00:01:00Z",
+                "msg2",
+                false,
+                None,
+                2000,
+            )
+            .unwrap();
+        let _r3 = db
+            .insert_message(
+                "+1",
+                "Alice",
+                "2025-01-01T00:02:00Z",
+                "msg3",
+                false,
+                None,
+                3000,
+            )
+            .unwrap();
 
         // Timestamp before all messages → None
         assert_eq!(db.max_rowid_up_to_timestamp("+1", 500).unwrap(), None);
@@ -1004,11 +1306,15 @@ mod tests {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         for i in 0..5 {
             db.insert_message(
-                "+1", "Alice",
+                "+1",
+                "Alice",
                 &format!("2025-01-01T00:0{i}:00Z"),
                 &format!("msg{i}"),
-                false, None, i * 1000,
-            ).unwrap();
+                false,
+                None,
+                i * 1000,
+            )
+            .unwrap();
         }
 
         // Load first page (most recent 3)
@@ -1031,25 +1337,45 @@ mod tests {
     #[rstest]
     fn migration_v4_creates_reactions_table(db: Database) {
         // Should be able to query reactions table
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM reactions", [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM reactions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 
     #[rstest]
     fn upsert_reaction_insert_and_replace(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "hello",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
 
         // Insert a reaction
-        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍")
+            .unwrap();
         let reactions = db.load_reactions("+1").unwrap();
         assert_eq!(reactions.len(), 1);
-        assert_eq!(reactions[0], (1000, "Alice".to_string(), "👍".to_string(), "Bob".to_string()));
+        assert_eq!(
+            reactions[0],
+            (
+                1000,
+                "Alice".to_string(),
+                "👍".to_string(),
+                "Bob".to_string()
+            )
+        );
 
         // Replace: same sender reacts with different emoji
-        db.upsert_reaction("+1", 1000, "Alice", "Bob", "❤️").unwrap();
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "❤️")
+            .unwrap();
         let reactions = db.load_reactions("+1").unwrap();
         assert_eq!(reactions.len(), 1);
         assert_eq!(reactions[0].2, "❤️");
@@ -1059,7 +1385,8 @@ mod tests {
     fn remove_reaction(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
 
-        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍")
+            .unwrap();
         assert_eq!(db.load_reactions("+1").unwrap().len(), 1);
 
         db.remove_reaction("+1", 1000, "Alice", "Bob").unwrap();
@@ -1069,11 +1396,23 @@ mod tests {
     #[rstest]
     fn load_reactions_attaches_to_messages(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
-        db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi", false, None, 2000).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "hello",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
+        db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi", false, None, 2000)
+            .unwrap();
 
-        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
-        db.upsert_reaction("+1", 2000, "you", "Alice", "❤️").unwrap();
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍")
+            .unwrap();
+        db.upsert_reaction("+1", 2000, "you", "Alice", "❤️")
+            .unwrap();
 
         let convs = db.load_conversations(100).unwrap();
         assert_eq!(convs[0].messages[0].reactions.len(), 1);
@@ -1085,9 +1424,36 @@ mod tests {
     #[rstest]
     fn search_messages_in_conversation(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello world", false, None, 1000).unwrap();
-        db.insert_message("+1", "you", "2025-01-01T00:01:00Z", "hi there", false, None, 2000).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:02:00Z", "Hello again", false, None, 3000).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "hello world",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
+        db.insert_message(
+            "+1",
+            "you",
+            "2025-01-01T00:01:00Z",
+            "hi there",
+            false,
+            None,
+            2000,
+        )
+        .unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:02:00Z",
+            "Hello again",
+            false,
+            None,
+            3000,
+        )
+        .unwrap();
 
         // Case-insensitive search for "hello"
         let results = db.search_messages("+1", "hello", 50).unwrap();
@@ -1100,8 +1466,26 @@ mod tests {
     #[rstest]
     fn search_messages_excludes_system_and_deleted(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.insert_message("+1", "", "2025-01-01T00:00:00Z", "system hello", true, None, 1000).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:01:00Z", "real hello", false, None, 2000).unwrap();
+        db.insert_message(
+            "+1",
+            "",
+            "2025-01-01T00:00:00Z",
+            "system hello",
+            true,
+            None,
+            1000,
+        )
+        .unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:01:00Z",
+            "real hello",
+            false,
+            None,
+            2000,
+        )
+        .unwrap();
 
         let results = db.search_messages("+1", "hello", 50).unwrap();
         assert_eq!(results.len(), 1);
@@ -1130,8 +1514,18 @@ mod tests {
     #[rstest]
     fn delete_conversation_removes_all_data(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello", false, None, 1000).unwrap();
-        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍").unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "hello",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
+        db.upsert_reaction("+1", 1000, "Alice", "Bob", "👍")
+            .unwrap();
         db.save_read_marker("+1", 1).unwrap();
 
         db.delete_conversation("+1").unwrap();
@@ -1152,8 +1546,26 @@ mod tests {
     fn search_all_messages_across_conversations(db: Database) {
         db.upsert_conversation("+1", "Alice", false).unwrap();
         db.upsert_conversation("+2", "Bob", false).unwrap();
-        db.insert_message("+1", "Alice", "2025-01-01T00:00:00Z", "hello from alice", false, None, 1000).unwrap();
-        db.insert_message("+2", "Bob", "2025-01-01T00:01:00Z", "hello from bob", false, None, 2000).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "hello from alice",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
+        db.insert_message(
+            "+2",
+            "Bob",
+            "2025-01-01T00:01:00Z",
+            "hello from bob",
+            false,
+            None,
+            2000,
+        )
+        .unwrap();
 
         let results = db.search_all_messages("hello", 50).unwrap();
         assert_eq!(results.len(), 2);
