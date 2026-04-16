@@ -97,7 +97,12 @@ pub struct KeyBindings {
 impl KeyBindings {
     /// Look up the action for a key press in the given mode.
     /// Global bindings are checked first, then mode-specific.
-    pub fn resolve(&self, modifiers: KeyModifiers, code: KeyCode, mode: BindingMode) -> Option<KeyAction> {
+    pub fn resolve(
+        &self,
+        modifiers: KeyModifiers,
+        code: KeyCode,
+        mode: BindingMode,
+    ) -> Option<KeyAction> {
         // For Char keys, strip SHIFT from modifiers since the case is already
         // encoded in the character itself (crossterm sends 'J' with SHIFT).
         let modifiers = if matches!(code, KeyCode::Char(_)) {
@@ -175,12 +180,22 @@ impl KeyBindings {
         for (combo, &global_action) in &self.global {
             if let Some(&normal_action) = self.normal.get(combo) {
                 if global_action != normal_action {
-                    result.push((BindingMode::Normal, combo.clone(), global_action, normal_action));
+                    result.push((
+                        BindingMode::Normal,
+                        combo.clone(),
+                        global_action,
+                        normal_action,
+                    ));
                 }
             }
             if let Some(&insert_action) = self.insert.get(combo) {
                 if global_action != insert_action {
-                    result.push((BindingMode::Insert, combo.clone(), global_action, insert_action));
+                    result.push((
+                        BindingMode::Insert,
+                        combo.clone(),
+                        global_action,
+                        insert_action,
+                    ));
                 }
             }
         }
@@ -213,7 +228,12 @@ impl KeyBindings {
     /// Rebind a single action in a specific mode to a new key combo.
     /// Removes the old binding(s) for this action and inserts the new one.
     /// Returns any action that was previously bound to the new combo (conflict).
-    pub fn rebind(&mut self, mode: BindingMode, action: KeyAction, new_combo: KeyCombo) -> Option<KeyAction> {
+    pub fn rebind(
+        &mut self,
+        mode: BindingMode,
+        action: KeyAction,
+        new_combo: KeyCombo,
+    ) -> Option<KeyAction> {
         let map = match mode {
             BindingMode::Global => &mut self.global,
             BindingMode::Normal => &mut self.normal,
@@ -252,23 +272,32 @@ impl KeyBindings {
             default: &HashMap<KeyCombo, KeyAction>,
         ) -> Vec<(KeyAction, Vec<KeyCombo>)> {
             // Collect all actions that appear in either map
-            let mut all_actions: std::collections::HashSet<KeyAction> = std::collections::HashSet::new();
-            for action in current.values() { all_actions.insert(*action); }
-            for action in default.values() { all_actions.insert(*action); }
+            let mut all_actions: std::collections::HashSet<KeyAction> =
+                std::collections::HashSet::new();
+            for action in current.values() {
+                all_actions.insert(*action);
+            }
+            for action in default.values() {
+                all_actions.insert(*action);
+            }
 
             let mut result = Vec::new();
             for action in &all_actions {
-                let current_combos: Vec<&KeyCombo> = current.iter()
+                let current_combos: Vec<&KeyCombo> = current
+                    .iter()
                     .filter(|(_, a)| *a == action)
                     .map(|(c, _)| c)
                     .collect();
-                let default_combos: Vec<&KeyCombo> = default.iter()
+                let default_combos: Vec<&KeyCombo> = default
+                    .iter()
                     .filter(|(_, a)| *a == action)
                     .map(|(c, _)| c)
                     .collect();
                 // Check if the bindings differ
-                let mut cur_sorted: Vec<_> = current_combos.iter().map(|c| format_key_combo(c)).collect();
-                let mut def_sorted: Vec<_> = default_combos.iter().map(|c| format_key_combo(c)).collect();
+                let mut cur_sorted: Vec<_> =
+                    current_combos.iter().map(|c| format_key_combo(c)).collect();
+                let mut def_sorted: Vec<_> =
+                    default_combos.iter().map(|c| format_key_combo(c)).collect();
                 cur_sorted.sort();
                 def_sorted.sort();
                 if cur_sorted != def_sorted {
@@ -329,8 +358,8 @@ pub fn format_key_combo(combo: &KeyCombo) -> String {
         parts.push("Alt".to_string());
     }
     // Only show Shift for non-character keys or special chars
-    let show_shift = combo.modifiers.contains(KeyModifiers::SHIFT)
-        && !matches!(combo.code, KeyCode::Char(_));
+    let show_shift =
+        combo.modifiers.contains(KeyModifiers::SHIFT) && !matches!(combo.code, KeyCode::Char(_));
     if show_shift {
         parts.push("Shift".to_string());
     }
@@ -542,7 +571,12 @@ pub fn action_label(action: KeyAction) -> &'static str {
 // Built-in profiles
 // ---------------------------------------------------------------------------
 
-fn bind(map: &mut HashMap<KeyCombo, KeyAction>, modifiers: KeyModifiers, code: KeyCode, action: KeyAction) {
+fn bind(
+    map: &mut HashMap<KeyCombo, KeyAction>,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+    action: KeyAction,
+) {
     map.insert(KeyCombo { modifiers, code }, action);
 }
 
@@ -553,61 +587,296 @@ pub fn default_profile() -> KeyBindings {
     let mut insert = HashMap::new();
 
     // --- Global ---
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Char('c'), KeyAction::Quit);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::Tab, KeyAction::NextConversation);
-    bind(&mut global, KeyModifiers::SHIFT, KeyCode::BackTab, KeyAction::PrevConversation);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Left, KeyAction::ResizeSidebarLeft);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Right, KeyAction::ResizeSidebarRight);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::PageUp, KeyAction::PageScrollUp);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::PageDown, KeyAction::PageScrollDown);
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('c'),
+        KeyAction::Quit,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        KeyAction::NextConversation,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        KeyAction::PrevConversation,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Left,
+        KeyAction::ResizeSidebarLeft,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Right,
+        KeyAction::ResizeSidebarRight,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::PageUp,
+        KeyAction::PageScrollUp,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::PageDown,
+        KeyAction::PageScrollDown,
+    );
 
     // --- Normal: scroll ---
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('j'), KeyAction::FocusNextMessage);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('k'), KeyAction::FocusPrevMessage);
-    bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('d'), KeyAction::HalfPageDown);
-    bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('u'), KeyAction::HalfPageUp);
-    bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('e'), KeyAction::ScrollDown);
-    bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('y'), KeyAction::ScrollUp);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('G'), KeyAction::ScrollToBottom);
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('j'),
+        KeyAction::FocusNextMessage,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('k'),
+        KeyAction::FocusPrevMessage,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('d'),
+        KeyAction::HalfPageDown,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('u'),
+        KeyAction::HalfPageUp,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('e'),
+        KeyAction::ScrollDown,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('y'),
+        KeyAction::ScrollUp,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('G'),
+        KeyAction::ScrollToBottom,
+    );
 
     // --- Normal: edit/mode-switch ---
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('i'), KeyAction::InsertAtCursor);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('a'), KeyAction::InsertAfterCursor);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('I'), KeyAction::InsertLineStart);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('A'), KeyAction::InsertLineEnd);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('o'), KeyAction::OpenLineBelow);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('h'), KeyAction::CursorLeft);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('l'), KeyAction::CursorRight);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('0'), KeyAction::LineStart);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('$'), KeyAction::LineEnd);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('w'), KeyAction::WordForward);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('b'), KeyAction::WordBack);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('x'), KeyAction::DeleteChar);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('D'), KeyAction::DeleteToEnd);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('/'), KeyAction::StartSearch);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Esc, KeyAction::ClearInput);
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('i'),
+        KeyAction::InsertAtCursor,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('a'),
+        KeyAction::InsertAfterCursor,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('I'),
+        KeyAction::InsertLineStart,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('A'),
+        KeyAction::InsertLineEnd,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('o'),
+        KeyAction::OpenLineBelow,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('h'),
+        KeyAction::CursorLeft,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('l'),
+        KeyAction::CursorRight,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('0'),
+        KeyAction::LineStart,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('$'),
+        KeyAction::LineEnd,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('w'),
+        KeyAction::WordForward,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('b'),
+        KeyAction::WordBack,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('x'),
+        KeyAction::DeleteChar,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('D'),
+        KeyAction::DeleteToEnd,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('/'),
+        KeyAction::StartSearch,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Esc,
+        KeyAction::ClearInput,
+    );
 
     // --- Normal: actions ---
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('y'), KeyAction::CopyMessage);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('Y'), KeyAction::CopyAllMessages);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('r'), KeyAction::React);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('q'), KeyAction::Quote);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('e'), KeyAction::EditMessage);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('f'), KeyAction::ForwardMessage);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('n'), KeyAction::NextSearchResult);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('N'), KeyAction::PrevSearchResult);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Enter, KeyAction::OpenActionMenu);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('p'), KeyAction::PinMessage);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('Q'), KeyAction::JumpToQuote);
-    bind(&mut normal, KeyModifiers::CONTROL, KeyCode::Char('o'), KeyAction::JumpBack);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('s'), KeyAction::SidebarSearch);
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('y'),
+        KeyAction::CopyMessage,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('Y'),
+        KeyAction::CopyAllMessages,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('r'),
+        KeyAction::React,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('q'),
+        KeyAction::Quote,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('e'),
+        KeyAction::EditMessage,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('f'),
+        KeyAction::ForwardMessage,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('n'),
+        KeyAction::NextSearchResult,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('N'),
+        KeyAction::PrevSearchResult,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Enter,
+        KeyAction::OpenActionMenu,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('p'),
+        KeyAction::PinMessage,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('Q'),
+        KeyAction::JumpToQuote,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('o'),
+        KeyAction::JumpBack,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('s'),
+        KeyAction::SidebarSearch,
+    );
 
     // --- Insert ---
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::Esc, KeyAction::ExitInsert);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::Enter, KeyAction::SendMessage);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Enter, KeyAction::InsertNewline);
-    bind(&mut insert, KeyModifiers::SHIFT, KeyCode::Enter, KeyAction::InsertNewline);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('w'), KeyAction::DeleteWordBack);
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::Esc,
+        KeyAction::ExitInsert,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::Enter,
+        KeyAction::SendMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Enter,
+        KeyAction::InsertNewline,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::SHIFT,
+        KeyCode::Enter,
+        KeyAction::InsertNewline,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('w'),
+        KeyAction::DeleteWordBack,
+    );
 
     KeyBindings {
         profile_name: "Default".into(),
@@ -624,47 +893,217 @@ pub fn emacs_profile() -> KeyBindings {
     let mut insert = HashMap::new();
 
     // --- Global ---
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Char('c'), KeyAction::Quit);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::Tab, KeyAction::NextConversation);
-    bind(&mut global, KeyModifiers::SHIFT, KeyCode::BackTab, KeyAction::PrevConversation);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Left, KeyAction::ResizeSidebarLeft);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Right, KeyAction::ResizeSidebarRight);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::PageUp, KeyAction::PageScrollUp);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::PageDown, KeyAction::PageScrollDown);
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('c'),
+        KeyAction::Quit,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        KeyAction::NextConversation,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        KeyAction::PrevConversation,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Left,
+        KeyAction::ResizeSidebarLeft,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Right,
+        KeyAction::ResizeSidebarRight,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::PageUp,
+        KeyAction::PageScrollUp,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::PageDown,
+        KeyAction::PageScrollDown,
+    );
 
     // --- Normal: essentially a stripped-down version ---
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('i'), KeyAction::InsertAtCursor);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Esc, KeyAction::ClearInput);
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('i'),
+        KeyAction::InsertAtCursor,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Esc,
+        KeyAction::ClearInput,
+    );
 
     // --- Insert (primary mode) ---
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::Esc, KeyAction::ExitInsert);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::Enter, KeyAction::SendMessage);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Enter, KeyAction::InsertNewline);
-    bind(&mut insert, KeyModifiers::SHIFT, KeyCode::Enter, KeyAction::InsertNewline);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('w'), KeyAction::DeleteWordBack);
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::Esc,
+        KeyAction::ExitInsert,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::Enter,
+        KeyAction::SendMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Enter,
+        KeyAction::InsertNewline,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::SHIFT,
+        KeyCode::Enter,
+        KeyAction::InsertNewline,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('w'),
+        KeyAction::DeleteWordBack,
+    );
     // Emacs scroll
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('p'), KeyAction::ScrollUp);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('n'), KeyAction::ScrollDown);
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('p'),
+        KeyAction::ScrollUp,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('n'),
+        KeyAction::ScrollDown,
+    );
     // Emacs cursor
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('a'), KeyAction::LineStart);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('e'), KeyAction::LineEnd);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('f'), KeyAction::CursorRight);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('b'), KeyAction::CursorLeft);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('d'), KeyAction::DeleteChar);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('k'), KeyAction::DeleteToEnd);
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('a'),
+        KeyAction::LineStart,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('e'),
+        KeyAction::LineEnd,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('f'),
+        KeyAction::CursorRight,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('b'),
+        KeyAction::CursorLeft,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('d'),
+        KeyAction::DeleteChar,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('k'),
+        KeyAction::DeleteToEnd,
+    );
     // Emacs actions via Alt
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('r'), KeyAction::React);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('q'), KeyAction::Quote);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('e'), KeyAction::EditMessage);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('f'), KeyAction::ForwardMessage);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('d'), KeyAction::DeleteMessage);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('y'), KeyAction::CopyMessage);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('n'), KeyAction::NextSearchResult);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('p'), KeyAction::PrevSearchResult);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('m'), KeyAction::OpenActionMenu);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Char('Q'), KeyAction::JumpToQuote);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('o'), KeyAction::JumpBack);
-    bind(&mut global, KeyModifiers::ALT, KeyCode::Char('s'), KeyAction::SidebarSearch);
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('r'),
+        KeyAction::React,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('q'),
+        KeyAction::Quote,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('e'),
+        KeyAction::EditMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('f'),
+        KeyAction::ForwardMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('d'),
+        KeyAction::DeleteMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('y'),
+        KeyAction::CopyMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('n'),
+        KeyAction::NextSearchResult,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('p'),
+        KeyAction::PrevSearchResult,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('m'),
+        KeyAction::OpenActionMenu,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Char('Q'),
+        KeyAction::JumpToQuote,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('o'),
+        KeyAction::JumpBack,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::ALT,
+        KeyCode::Char('s'),
+        KeyAction::SidebarSearch,
+    );
 
     KeyBindings {
         profile_name: "Emacs".into(),
@@ -681,38 +1120,173 @@ pub fn minimal_profile() -> KeyBindings {
     let mut insert = HashMap::new();
 
     // --- Global ---
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Char('q'), KeyAction::Quit);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Char('c'), KeyAction::Quit);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::Tab, KeyAction::NextConversation);
-    bind(&mut global, KeyModifiers::SHIFT, KeyCode::BackTab, KeyAction::PrevConversation);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Left, KeyAction::ResizeSidebarLeft);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Right, KeyAction::ResizeSidebarRight);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::PageUp, KeyAction::PageScrollUp);
-    bind(&mut global, KeyModifiers::NONE, KeyCode::PageDown, KeyAction::PageScrollDown);
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('q'),
+        KeyAction::Quit,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('c'),
+        KeyAction::Quit,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        KeyAction::NextConversation,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        KeyAction::PrevConversation,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Left,
+        KeyAction::ResizeSidebarLeft,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Right,
+        KeyAction::ResizeSidebarRight,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::PageUp,
+        KeyAction::PageScrollUp,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::NONE,
+        KeyCode::PageDown,
+        KeyAction::PageScrollDown,
+    );
 
     // --- Normal: arrow-key navigation ---
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Up, KeyAction::ScrollUp);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Down, KeyAction::ScrollDown);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Char('i'), KeyAction::InsertAtCursor);
-    bind(&mut normal, KeyModifiers::NONE, KeyCode::Esc, KeyAction::ClearInput);
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Up,
+        KeyAction::ScrollUp,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Down,
+        KeyAction::ScrollDown,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Char('i'),
+        KeyAction::InsertAtCursor,
+    );
+    bind(
+        &mut normal,
+        KeyModifiers::NONE,
+        KeyCode::Esc,
+        KeyAction::ClearInput,
+    );
 
     // --- Insert ---
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::Esc, KeyAction::ExitInsert);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::Enter, KeyAction::SendMessage);
-    bind(&mut insert, KeyModifiers::ALT, KeyCode::Enter, KeyAction::InsertNewline);
-    bind(&mut insert, KeyModifiers::SHIFT, KeyCode::Enter, KeyAction::InsertNewline);
-    bind(&mut insert, KeyModifiers::CONTROL, KeyCode::Char('w'), KeyAction::DeleteWordBack);
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::Esc,
+        KeyAction::ExitInsert,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::Enter,
+        KeyAction::SendMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::ALT,
+        KeyCode::Enter,
+        KeyAction::InsertNewline,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::SHIFT,
+        KeyCode::Enter,
+        KeyAction::InsertNewline,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('w'),
+        KeyAction::DeleteWordBack,
+    );
     // F-key actions
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(2), KeyAction::React);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(3), KeyAction::Quote);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(4), KeyAction::EditMessage);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(5), KeyAction::CopyMessage);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(6), KeyAction::DeleteMessage);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(7), KeyAction::ForwardMessage);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(8), KeyAction::OpenActionMenu);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(9), KeyAction::JumpToQuote);
-    bind(&mut insert, KeyModifiers::NONE, KeyCode::F(10), KeyAction::JumpBack);
-    bind(&mut global, KeyModifiers::CONTROL, KeyCode::Char('s'), KeyAction::SidebarSearch);
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(2),
+        KeyAction::React,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(3),
+        KeyAction::Quote,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(4),
+        KeyAction::EditMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(5),
+        KeyAction::CopyMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(6),
+        KeyAction::DeleteMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(7),
+        KeyAction::ForwardMessage,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(8),
+        KeyAction::OpenActionMenu,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(9),
+        KeyAction::JumpToQuote,
+    );
+    bind(
+        &mut insert,
+        KeyModifiers::NONE,
+        KeyCode::F(10),
+        KeyAction::JumpBack,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('s'),
+        KeyAction::SidebarSearch,
+    );
 
     KeyBindings {
         profile_name: "Minimal".into(),
@@ -819,7 +1393,8 @@ enum TomlKeyValue {
 
 /// Parse a custom profile from TOML.
 fn parse_profile_toml(contents: &str) -> Result<KeyBindings, String> {
-    let toml: ProfileToml = toml::from_str(contents).map_err(|e| format!("TOML parse error: {e}"))?;
+    let toml: ProfileToml =
+        toml::from_str(contents).map_err(|e| format!("TOML parse error: {e}"))?;
 
     let mut global = HashMap::new();
     let mut normal = HashMap::new();
@@ -897,9 +1472,14 @@ pub fn save_overrides(overrides: &KeyBindingOverrides) {
                 .trim_matches('"')
                 .to_string();
             if combos.len() == 1 {
-                lines.push(format!("{} = \"{}\"", action_str, format_key_combo(&combos[0]).to_lowercase()));
+                lines.push(format!(
+                    "{} = \"{}\"",
+                    action_str,
+                    format_key_combo(&combos[0]).to_lowercase()
+                ));
             } else {
-                let keys: Vec<String> = combos.iter()
+                let keys: Vec<String> = combos
+                    .iter()
                     .map(|c| format!("\"{}\"", format_key_combo(c).to_lowercase()))
                     .collect();
                 lines.push(format!("{} = [{}]", action_str, keys.join(", ")));
@@ -914,13 +1494,17 @@ pub fn save_overrides(overrides: &KeyBindingOverrides) {
         content.push('\n');
     }
     if !overrides.normal.is_empty() {
-        if !content.is_empty() { content.push('\n'); }
+        if !content.is_empty() {
+            content.push('\n');
+        }
         content.push_str("[normal]\n");
         content.push_str(&section_to_toml(&overrides.normal));
         content.push('\n');
     }
     if !overrides.insert.is_empty() {
-        if !content.is_empty() { content.push('\n'); }
+        if !content.is_empty() {
+            content.push('\n');
+        }
         content.push_str("[insert]\n");
         content.push_str(&section_to_toml(&overrides.insert));
         content.push('\n');
@@ -945,7 +1529,8 @@ struct OverridesToml {
 }
 
 fn parse_overrides_toml(contents: &str) -> Result<KeyBindingOverrides, String> {
-    let toml: OverridesToml = toml::from_str(contents).map_err(|e| format!("TOML parse error: {e}"))?;
+    let toml: OverridesToml =
+        toml::from_str(contents).map_err(|e| format!("TOML parse error: {e}"))?;
 
     let parse_section = |section: &HashMap<String, TomlKeyValue>| -> Result<Vec<(KeyAction, Vec<KeyCombo>)>, String> {
         let mut result = Vec::new();
@@ -980,7 +1565,11 @@ mod tests {
     fn default_profile_resolves_ctrl_c_as_quit() {
         let kb = default_profile();
         assert_eq!(
-            kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('c'), BindingMode::Normal),
+            kb.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('c'),
+                BindingMode::Normal
+            ),
             Some(KeyAction::Quit)
         );
     }
@@ -1075,7 +1664,10 @@ mod tests {
             ("Shift+Tab", KeyModifiers::SHIFT, KeyCode::BackTab),
         ];
         for (expected, mods, code) in cases {
-            let combo = KeyCombo { modifiers: mods, code };
+            let combo = KeyCombo {
+                modifiers: mods,
+                code,
+            };
             assert_eq!(format_key_combo(&combo), expected);
         }
     }
@@ -1101,10 +1693,18 @@ mod tests {
     fn rebind_works() {
         let mut kb = default_profile();
         let new_combo = parse_key_combo("ctrl+j").unwrap();
-        let displaced = kb.rebind(BindingMode::Normal, KeyAction::ScrollDown, new_combo.clone());
+        let displaced = kb.rebind(
+            BindingMode::Normal,
+            KeyAction::ScrollDown,
+            new_combo.clone(),
+        );
         assert!(displaced.is_none());
         assert_eq!(
-            kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('j'), BindingMode::Normal),
+            kb.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('j'),
+                BindingMode::Normal
+            ),
             Some(KeyAction::ScrollDown)
         );
         // Old ScrollDown binding (ctrl+e) should be gone, but j is now FocusNextMessage
@@ -1130,11 +1730,22 @@ mod tests {
         let new_combo = parse_key_combo("ctrl+j").unwrap();
         kb.rebind(BindingMode::Normal, KeyAction::ScrollDown, new_combo);
         // Now ctrl+e shouldn't resolve to ScrollDown
-        assert_eq!(kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('e'), BindingMode::Normal), None);
+        assert_eq!(
+            kb.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('e'),
+                BindingMode::Normal
+            ),
+            None
+        );
         // Reset
         kb.reset_action(BindingMode::Normal, KeyAction::ScrollDown);
         assert_eq!(
-            kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('e'), BindingMode::Normal),
+            kb.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('e'),
+                BindingMode::Normal
+            ),
             Some(KeyAction::ScrollDown)
         );
     }
@@ -1150,12 +1761,20 @@ mod tests {
         kb.apply_overrides(&overrides);
         // Old Ctrl+C should be gone
         assert_eq!(
-            kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('c'), BindingMode::Normal),
+            kb.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('c'),
+                BindingMode::Normal
+            ),
             None
         );
         // New Ctrl+Q should work
         assert_eq!(
-            kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('q'), BindingMode::Normal),
+            kb.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('q'),
+                BindingMode::Normal
+            ),
             Some(KeyAction::Quit)
         );
     }
@@ -1180,7 +1799,11 @@ mod tests {
     fn emacs_profile_has_ctrl_n_scroll() {
         let kb = emacs_profile();
         assert_eq!(
-            kb.resolve(KeyModifiers::CONTROL, KeyCode::Char('n'), BindingMode::Insert),
+            kb.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('n'),
+                BindingMode::Insert
+            ),
             Some(KeyAction::ScrollDown)
         );
     }
@@ -1221,7 +1844,11 @@ send_message = "enter"
         let profile = parse_profile_toml(toml).unwrap();
         assert_eq!(profile.profile_name, "Test");
         assert_eq!(
-            profile.resolve(KeyModifiers::CONTROL, KeyCode::Char('q'), BindingMode::Normal),
+            profile.resolve(
+                KeyModifiers::CONTROL,
+                KeyCode::Char('q'),
+                BindingMode::Normal
+            ),
             Some(KeyAction::Quit)
         );
         assert_eq!(

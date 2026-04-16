@@ -52,13 +52,10 @@ impl SearchState {
         db: &Database,
     ) -> SearchAction {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.results.is_empty()
-                    && self.index < self.results.len() - 1
-                {
+            KeyCode::Char('j') | KeyCode::Down
+                if !self.results.is_empty() && self.index < self.results.len() - 1 => {
                     self.index += 1;
                 }
-            }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.index = self.index.saturating_sub(1);
             }
@@ -79,12 +76,11 @@ impl SearchState {
                 self.visible = false;
                 self.query.clear();
             }
-            KeyCode::Backspace => {
-                if !self.query.is_empty() {
+            KeyCode::Backspace
+                if !self.query.is_empty() => {
                     self.query.pop();
                     self.run(active_conversation, db);
                 }
-            }
             KeyCode::Char(c) => {
                 self.query.push(c);
                 self.run(active_conversation, db);
@@ -110,13 +106,15 @@ impl SearchState {
             Ok(rows) => {
                 self.results = rows
                     .into_iter()
-                    .map(|(sender, body, timestamp_ms, conv_id, conv_name)| SearchResult {
-                        sender,
-                        body,
-                        timestamp_ms,
-                        conv_id,
-                        conv_name,
-                    })
+                    .map(
+                        |(sender, body, timestamp_ms, conv_id, conv_name)| SearchResult {
+                            sender,
+                            body,
+                            timestamp_ms,
+                            conv_id,
+                            conv_name,
+                        },
+                    )
                     .collect();
             }
             Err(e) => {
@@ -134,7 +132,11 @@ impl SearchState {
 
     /// Jump to the next/previous search result in the active conversation.
     /// `forward` = true means next (older), false means previous (newer).
-    pub fn jump_to_result(&mut self, forward: bool, active_conversation: Option<&str>) -> SearchAction {
+    pub fn jump_to_result(
+        &mut self,
+        forward: bool,
+        active_conversation: Option<&str>,
+    ) -> SearchAction {
         let conv_id = match active_conversation {
             Some(id) => id,
             None => return SearchAction::None,
@@ -173,7 +175,11 @@ impl SearchState {
         self.index = next_idx;
         if let Some(result) = self.results.get(next_idx) {
             let ts = result.timestamp_ms;
-            let pos = conv_results.iter().position(|&i| i == next_idx).unwrap_or(0) + 1;
+            let pos = conv_results
+                .iter()
+                .position(|&i| i == next_idx)
+                .unwrap_or(0)
+                + 1;
             let status = format!(
                 "match {}/{} for \"{}\"",
                 pos,

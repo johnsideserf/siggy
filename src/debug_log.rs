@@ -42,11 +42,7 @@ fn setup_file() {
             }
         }
     }
-    if let Ok(f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
+    if let Ok(f) = OpenOptions::new().create(true).append(true).open(&path) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

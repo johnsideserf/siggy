@@ -213,7 +213,7 @@ pub enum SignalEvent {
 impl SignalEvent {
     /// Format this event for debug logging with PII redacted.
     pub fn redacted_summary(&self) -> String {
-        use crate::debug_log::{mask_phone, mask_body};
+        use crate::debug_log::{mask_body, mask_phone};
         match self {
             Self::MessageReceived(msg) => format!(
                 "MessageReceived(from={}, body={}, attachments={}, group={})",
@@ -364,8 +364,8 @@ pub struct JsonRpcError {
 #[derive(Debug, Clone)]
 pub struct Mention {
     pub start: usize,  // UTF-16 offset in body
-    pub length: usize,  // Always 1 (U+FFFC)
-    pub uuid: String,   // ACI UUID of mentioned user
+    pub length: usize, // Always 1 (U+FFFC)
+    pub uuid: String,  // ACI UUID of mentioned user
 }
 
 /// A text style range from signal-cli's textStyles/bodyRanges array.

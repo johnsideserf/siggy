@@ -146,7 +146,7 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 | `/search <query>` | `/s` | Search messages in current (or all) conversations |
 | `/sidebar` | `/sb` | Toggle sidebar visibility |
 | `/bell [type]` | `/notify` | Toggle notifications (`direct`, `group`, or both) |
-| `/mute` | | Mute/unmute current conversation |
+| `/mute [duration]` | | Mute/unmute current conversation (e.g. `1h`, `8h`, `1d`, `1w`) |
 | `/block` | | Block current contact or group |
 | `/unblock` | | Unblock current contact or group |
 | `/disappearing <dur>` | `/dm` | Set disappearing message timer (`off`, `30s`, `5m`, `1h`, `1d`, `1w`) |

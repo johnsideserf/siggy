@@ -10,13 +10,16 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, SettingDef, VisibleImage, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS};
+use crate::app::{
+    App, AutocompleteMode, GroupMenuState, InputMode, SettingDef, VisibleImage, PIN_DURATIONS,
+    QUICK_REACTIONS, SETTINGS,
+};
 use crate::domain::CATEGORIES;
+use crate::image_render::{self, ImageProtocol};
+use crate::input::{format_compact_duration, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction};
 use crate::list_overlay;
 use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction, StyleType, TrustLevel};
-use crate::image_render::{self, ImageProtocol};
-use crate::input::{COMMANDS, format_compact_duration};
 use crate::theme::Theme;
 
 // Layout constants
@@ -52,7 +55,9 @@ fn emoji_to_text(input: &str) -> String {
         candidate.push(c);
         // Consume variation selectors and ZWJ sequences
         while let Some(&next) = chars.peek() {
-            if next == '\u{fe0f}' || next == '\u{200d}' || next == '\u{20e3}'
+            if next == '\u{fe0f}'
+                || next == '\u{200d}'
+                || next == '\u{20e3}'
                 || ('\u{1f3fb}'..='\u{1f3ff}').contains(&next)
             {
                 candidate.push(chars.next().unwrap());
@@ -80,7 +85,8 @@ fn emoji_to_text(input: &str) -> String {
                 "\u{1f60d}" => "<3_<3",
                 "\u{2764}\u{fe0f}" | "\u{2764}" => "<3",
                 "\u{1f495}" | "\u{1f496}" | "\u{1f497}" | "\u{1f498}" => "<3",
-                "\u{1f44d}" | "\u{1f44d}\u{1f3fb}" | "\u{1f44d}\u{1f3fc}" | "\u{1f44d}\u{1f3fd}" | "\u{1f44d}\u{1f3fe}" | "\u{1f44d}\u{1f3ff}" => "+1",
+                "\u{1f44d}" | "\u{1f44d}\u{1f3fb}" | "\u{1f44d}\u{1f3fc}"
+                | "\u{1f44d}\u{1f3fd}" | "\u{1f44d}\u{1f3fe}" | "\u{1f44d}\u{1f3ff}" => "+1",
                 "\u{1f44e}" => "-1",
                 "\u{1f61b}" | "\u{1f61c}" | "\u{1f61d}" => ":P",
                 "\u{1f610}" | "\u{1f611}" => ":|",
@@ -108,14 +114,19 @@ fn emoji_to_text(input: &str) -> String {
 }
 
 /// Map a MessageStatus to its display symbol and color.
-pub(crate) fn status_symbol(status: MessageStatus, nerd_fonts: bool, color: bool, theme: &Theme) -> (&'static str, Color) {
+pub(crate) fn status_symbol(
+    status: MessageStatus,
+    nerd_fonts: bool,
+    color: bool,
+    theme: &Theme,
+) -> (&'static str, Color) {
     let (unicode_sym, nerd_sym, colored) = match status {
-        MessageStatus::Failed   => ("\u{2717}", "\u{f055c}", theme.receipt_failed),
-        MessageStatus::Sending  => ("\u{25cc}", "\u{f0996}", theme.receipt_sending),
-        MessageStatus::Sent     => ("\u{25cb}", "\u{f0954}", theme.receipt_sent),
-        MessageStatus::Delivered=> ("\u{2713}", "\u{f012c}", theme.receipt_delivered),
-        MessageStatus::Read     => ("\u{25cf}", "\u{f012d}", theme.receipt_read),
-        MessageStatus::Viewed   => ("\u{25c9}", "\u{f0208}", theme.receipt_viewed),
+        MessageStatus::Failed => ("\u{2717}", "\u{f055c}", theme.receipt_failed),
+        MessageStatus::Sending => ("\u{25cc}", "\u{f0996}", theme.receipt_sending),
+        MessageStatus::Sent => ("\u{25cb}", "\u{f0954}", theme.receipt_sent),
+        MessageStatus::Delivered => ("\u{2713}", "\u{f012c}", theme.receipt_delivered),
+        MessageStatus::Read => ("\u{25cf}", "\u{f012d}", theme.receipt_read),
+        MessageStatus::Viewed => ("\u{25c9}", "\u{f0208}", theme.receipt_viewed),
     };
     let sym = if nerd_fonts { nerd_sym } else { unicode_sym };
     let fg = if color { colored } else { theme.fg_muted };
@@ -127,7 +138,9 @@ pub(crate) fn sender_color(name: &str, theme: &Theme) -> Color {
     if name == "you" {
         return theme.sender_self;
     }
-    let hash: u32 = name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    let hash: u32 = name
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
     theme.sender_palette[(hash as usize) % theme.sender_palette.len()]
 }
 
@@ -158,7 +171,11 @@ pub(crate) fn build_separator(label: &str, width: usize, style: Style) -> Line<'
 /// Create a centered popup overlay: clears the area, returns the Rect and a styled Block.
 /// Preferred width/height are clamped to fit within the terminal.
 fn centered_popup(
-    frame: &mut Frame, area: Rect, pref_width: u16, pref_height: u16, title: &str,
+    frame: &mut Frame,
+    area: Rect,
+    pref_width: u16,
+    pref_height: u16,
+    title: &str,
     theme: &Theme,
 ) -> (Rect, Block<'static>) {
     let w = pref_width.min(area.width.saturating_sub(4));
@@ -172,7 +189,11 @@ fn centered_popup(
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.accent))
         .title(title.to_string())
-        .title_style(Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))
+        .title_style(
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )
         .style(Style::default().bg(theme.bg));
     (popup_area, block)
 }
@@ -272,7 +293,8 @@ fn collect_link_regions(buf: &Buffer, area: Rect, link_color: Color) -> Vec<Link
 
             // Capture background color from the first cell of the link run so
             // emit_osc8_links can preserve it (e.g. highlight bg on selection).
-            let bg = buf.cell(Position::new(start_x, y))
+            let bg = buf
+                .cell(Position::new(start_x, y))
                 .and_then(|c| c.style().bg);
             regions.push(LinkRegion {
                 x: start_x,
@@ -370,7 +392,9 @@ fn styled_uri_spans(
                     .unwrap_or(uri_slice.len());
                 let abs_end = abs_start + uri_len;
                 // Only add if not overlapping a mention region
-                let overlaps = regions.iter().any(|(ms, me, _)| abs_start < *me && abs_end > *ms);
+                let overlaps = regions
+                    .iter()
+                    .any(|(ms, me, _)| abs_start < *me && abs_end > *ms);
                 if !overlaps {
                     regions.push((abs_start, abs_end, link_style));
                 }
@@ -461,7 +485,9 @@ fn styled_uri_spans(
                     match st {
                         StyleType::Bold => style = style.add_modifier(Modifier::BOLD),
                         StyleType::Italic => style = style.add_modifier(Modifier::ITALIC),
-                        StyleType::Strikethrough => style = style.add_modifier(Modifier::CROSSED_OUT),
+                        StyleType::Strikethrough => {
+                            style = style.add_modifier(Modifier::CROSSED_OUT)
+                        }
                         StyleType::Monospace => style = style.fg(theme.fg_muted),
                         StyleType::Spoiler => {} // handled above
                     }
@@ -503,9 +529,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let input_area = if show_sidebar {
         let (sidebar_idx, chat_idx, constraints) = if app.sidebar_on_right {
-            (1, 0, [Constraint::Min(MIN_CHAT_WIDTH), Constraint::Length(app.sidebar_width)])
+            (
+                1,
+                0,
+                [
+                    Constraint::Min(MIN_CHAT_WIDTH),
+                    Constraint::Length(app.sidebar_width),
+                ],
+            )
         } else {
-            (0, 1, [Constraint::Length(app.sidebar_width), Constraint::Min(MIN_CHAT_WIDTH)])
+            (
+                0,
+                1,
+                [
+                    Constraint::Length(app.sidebar_width),
+                    Constraint::Min(MIN_CHAT_WIDTH),
+                ],
+            )
         };
         let horizontal = Layout::default()
             .direction(Direction::Horizontal)
@@ -662,11 +702,14 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             app.sidebar_filtered.clone()
         }
     } else {
-        app.store.conversation_order
+        app.store
+            .conversation_order
             .iter()
             .filter(|id| {
                 app.active_conversation.as_ref() == Some(id)
-                    || app.store.conversations
+                    || app
+                        .store
+                        .conversations
                         .get(*id)
                         .is_some_and(|c| !c.is_stale())
             })
@@ -674,6 +717,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             .collect()
     };
 
+    let now = chrono::Utc::now();
     let items: Vec<ListItem> = display_order
         .iter()
         .map(|id| {
@@ -693,7 +737,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if is_active {
                 spans.push(Span::styled(
                     "▸ ",
-                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::raw("  "));
@@ -710,21 +756,16 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Group prefix (dimmed #)
             if conv.is_group {
-                spans.push(Span::styled(
-                    "#",
-                    Style::default().fg(theme.fg_muted),
-                ));
+                spans.push(Span::styled("#", Style::default().fg(theme.fg_muted)));
             }
 
             // Conversation name
-            let is_muted = app.muted_conversations.contains(id);
+            let mute_state = app.active_mute(id, now);
             let name_style = if is_active {
-                Style::default()
-                    .fg(theme.fg)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD)
             } else if has_unread {
                 Style::default().fg(theme.warning)
-            } else if is_muted {
+            } else if mute_state.is_some() {
                 Style::default().fg(theme.fg_muted)
             } else {
                 Style::default().fg(theme.fg_secondary)
@@ -738,8 +779,8 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 ));
             }
 
-            if is_muted {
-                spans.push(Span::styled(" ~", Style::default().fg(theme.fg_muted)));
+            if let Some(indicator) = mute_state.and_then(|m| m.sidebar_indicator(now)) {
+                spans.push(Span::styled(indicator, Style::default().fg(theme.fg_muted)));
             }
             if app.blocked_conversations.contains(id) {
                 spans.push(Span::styled(" x", Style::default().fg(theme.error)));
@@ -749,7 +790,11 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let border_side = if app.sidebar_on_right { Borders::LEFT } else { Borders::RIGHT };
+    let border_side = if app.sidebar_on_right {
+        Borders::LEFT
+    } else {
+        Borders::RIGHT
+    };
     let title = if app.sidebar_filter_active {
         if app.sidebar_filter.is_empty() {
             " /_ ".to_string()
@@ -760,9 +805,13 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         " Chats ".to_string()
     };
     let title_style = if app.sidebar_filter_active {
-        Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.warning)
+            .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     };
     let block = Block::default()
         .borders(border_side)
@@ -781,7 +830,7 @@ fn draw_chat_area(frame: &mut Frame, app: &mut App, area: Rect) -> Rect {
     let chat_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),   // messages (typing indicator rendered inside)
+            Constraint::Min(1),               // messages (typing indicator rendered inside)
             Constraint::Length(input_height), // input
         ])
         .split(area);
@@ -801,17 +850,21 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         Some(id) => {
             let conv = &app.store.conversations[id];
             let prefix = if conv.is_group { " #" } else { " " };
-            let mut spans = vec![
-                Span::styled(
-                    format!("{prefix}{} ", conv.name),
-                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-                ),
-            ];
+            let mut spans = vec![Span::styled(
+                format!("{prefix}{} ", conv.name),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )];
 
             // Timer indicator when disappearing messages are enabled
             if conv.expiration_timer > 0 {
                 let timer_label = format_compact_duration(conv.expiration_timer);
-                let icon = if app.nerd_fonts { "\u{F0150}" } else { "\u{23F1}" };
+                let icon = if app.nerd_fonts {
+                    "\u{F0150}"
+                } else {
+                    "\u{23F1}"
+                };
                 spans.push(Span::styled(
                     format!("{icon} {timer_label} "),
                     Style::default().fg(theme.fg_muted),
@@ -839,6 +892,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
 
+            // Mute indicator
+            let now = chrono::Utc::now();
+            if let Some(indicator) = app
+                .active_mute(id, now)
+                .and_then(|m| m.sidebar_indicator(now))
+            {
+                spans.push(Span::styled(
+                    format!("{} ", indicator.trim_start()),
+                    Style::default().fg(theme.fg_muted),
+                ));
+            }
+
             // Scroll indicator in title
             let right = if app.scroll_offset > 0 {
                 format!(" \u{2191} {} more ", app.scroll_offset)
@@ -847,10 +912,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             (spans, right)
         }
-        None => (vec![Span::styled(
-            " siggy ".to_string(),
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
-        )], String::new()),
+        None => (
+            vec![Span::styled(
+                " siggy ".to_string(),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )],
+            String::new(),
+        ),
     };
 
     let mut block = Block::default()
@@ -874,7 +944,10 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Build pinned message banner text
     let pinned_banner_text: Option<String> = messages_ref.and_then(|msgs| {
-        let pinned: Vec<_> = msgs.iter().filter(|m| m.is_pinned && !m.is_deleted).collect();
+        let pinned: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.is_pinned && !m.is_deleted)
+            .collect();
         match pinned.len() {
             0 => None,
             1 => {
@@ -900,7 +973,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         if let Some(banner) = banner_area {
             let pin_line = Line::from(Span::styled(
                 truncate(pin_text, banner.width as usize),
-                Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
             ));
             frame.render_widget(Paragraph::new(pin_line), banner);
         }
@@ -949,7 +1024,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut line_msg_idx: Vec<Option<usize>> = Vec::new();
 
     // Track images for native protocol overlay: (first_line_index, line_count, path)
-    let use_native = app.image.image_mode == "native" && app.image.image_protocol != ImageProtocol::Halfblock;
+    let use_native =
+        app.image.image_mode == "native" && app.image.image_protocol != ImageProtocol::Halfblock;
     let mut image_records: Vec<(usize, usize, String)> = Vec::new();
 
     for (i, msg) in visible.iter().enumerate() {
@@ -971,7 +1047,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                         local.format("%b %-d, %Y").to_string()
                     };
                     let label = format!(" {friendly} ");
-                    lines.push(build_separator(&label, inner_width, Style::default().fg(theme.fg_muted)));
+                    lines.push(build_separator(
+                        &label,
+                        inner_width,
+                        Style::default().fg(theme.fg_muted),
+                    ));
                     line_msg_idx.push(None);
                 }
                 prev_date = Some(date_str);
@@ -983,13 +1063,19 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(build_separator(
                 " new messages ",
                 inner_width,
-                Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
             ));
             line_msg_idx.push(None);
         }
 
         if msg.is_system {
-            let body = if app.reactions.emoji_to_text { emoji_to_text(&msg.body) } else { msg.body.clone() };
+            let body = if app.reactions.emoji_to_text {
+                emoji_to_text(&msg.body)
+            } else {
+                msg.body.clone()
+            };
             lines.push(Line::from(Span::styled(
                 format!("  {body}"),
                 Style::default().fg(theme.system_msg),
@@ -998,7 +1084,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             // Render quoted reply line above message
             if let Some(ref quote) = msg.quote {
-                let raw_body = if app.reactions.emoji_to_text { emoji_to_text(&quote.body) } else { quote.body.clone() };
+                let raw_body = if app.reactions.emoji_to_text {
+                    emoji_to_text(&quote.body)
+                } else {
+                    quote.body.clone()
+                };
                 let quote_body = truncate(&raw_body, 50);
                 lines.push(Line::from(vec![
                     Span::styled("  \u{256D} ", Style::default().fg(theme.quote)),
@@ -1008,10 +1098,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                             .fg(sender_color(&quote.author, theme))
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!(" {quote_body}"),
-                        Style::default().fg(theme.quote),
-                    ),
+                    Span::styled(format!(" {quote_body}"), Style::default().fg(theme.quote)),
                 ]));
                 line_msg_idx.push(Some(msg_index));
             }
@@ -1022,16 +1109,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             // Status symbol for outgoing messages (before timestamp)
             if app.show_receipts {
                 if let Some(status) = msg.status {
-                    let (sym, color) = status_symbol(status, app.nerd_fonts, app.color_receipts, theme);
-                    spans.push(Span::styled(
-                        format!("{sym} "),
-                        Style::default().fg(color),
-                    ));
+                    let (sym, color) =
+                        status_symbol(status, app.nerd_fonts, app.color_receipts, theme);
+                    spans.push(Span::styled(format!("{sym} "), Style::default().fg(color)));
                 }
             }
 
             if msg.expires_in_seconds > 0 {
-                let icon = if app.nerd_fonts { "\u{F0150}" } else { "\u{23F1}" };
+                let icon = if app.nerd_fonts {
+                    "\u{F0150}"
+                } else {
+                    "\u{23F1}"
+                };
                 spans.push(Span::styled(
                     format!("{icon} [{}] ", time),
                     Style::default().fg(theme.fg_muted),
@@ -1053,7 +1142,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             if msg.is_edited {
                 spans.push(Span::styled(
                     " (edited)",
-                    Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme.fg_muted)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             }
 
@@ -1061,7 +1152,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             if msg.is_pinned {
                 spans.push(Span::styled(
                     " (pinned)",
-                    Style::default().fg(theme.warning).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             }
 
@@ -1069,21 +1162,27 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 // Deleted message body
                 spans.push(Span::styled(
                     " [deleted]",
-                    Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(theme.fg_muted)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             } else {
                 // Style URIs and @mentions
-                let (body_spans, hidden_url) = styled_uri_spans(&msg.body, &msg.mention_ranges, &msg.style_ranges, theme);
+                let (body_spans, hidden_url) =
+                    styled_uri_spans(&msg.body, &msg.mention_ranges, &msg.style_ranges, theme);
                 if let Some(url) = hidden_url {
                     // Collect display text for link_url_map lookup
-                    let display_text: String = body_spans.iter().map(|s| s.content.as_ref()).collect();
+                    let display_text: String =
+                        body_spans.iter().map(|s| s.content.as_ref()).collect();
                     app.image.link_url_map.insert(display_text, url);
                 }
                 spans.push(Span::raw(" ".to_string()));
                 if app.reactions.emoji_to_text {
-                    spans.extend(body_spans.into_iter().map(|s| {
-                        Span::styled(emoji_to_text(&s.content), s.style)
-                    }));
+                    spans.extend(
+                        body_spans
+                            .into_iter()
+                            .map(|s| Span::styled(emoji_to_text(&s.content), s.style)),
+                    );
                 } else {
                     spans.extend(body_spans);
                 }
@@ -1127,10 +1226,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                         // Description is a middle line; URL always follows
                         lines.push(Line::from(vec![
                             Span::styled("  \u{251C} ", Style::default().fg(theme.link)),
-                            Span::styled(
-                                truncate(desc, 60),
-                                Style::default().fg(theme.fg_muted),
-                            ),
+                            Span::styled(truncate(desc, 60), Style::default().fg(theme.fg_muted)),
                         ]));
                         line_msg_idx.push(Some(msg_index));
                     }
@@ -1138,7 +1234,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled("  \u{2570} ", Style::default().fg(theme.link)),
                         Span::styled(
                             truncate(&preview.url, 60),
-                            Style::default().fg(theme.link).add_modifier(Modifier::UNDERLINED),
+                            Style::default()
+                                .fg(theme.link)
+                                .add_modifier(Modifier::UNDERLINED),
                         ),
                     ]));
                     line_msg_idx.push(Some(msg_index));
@@ -1165,7 +1263,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             // Render inline poll display
             if !msg.is_deleted {
                 if let Some(ref poll_data) = msg.poll_data {
-                    let poll_lines = build_poll_display(poll_data, &msg.poll_votes, &app.account, theme);
+                    let poll_lines =
+                        build_poll_display(poll_data, &msg.poll_votes, &app.account, theme);
                     for line in poll_lines {
                         lines.push(line);
                         line_msg_idx.push(Some(msg_index));
@@ -1175,7 +1274,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Render reaction summary line (skip for deleted or when reactions hidden)
             if app.reactions.show_reactions && !msg.is_deleted && !msg.reactions.is_empty() {
-                lines.push(build_reaction_summary(&msg.reactions, app.reactions.verbose, app.reactions.emoji_to_text, theme));
+                lines.push(build_reaction_summary(
+                    &msg.reactions,
+                    app.reactions.verbose,
+                    app.reactions.emoji_to_text,
+                    theme,
+                ));
                 line_msg_idx.push(Some(msg_index));
             }
         }
@@ -1184,18 +1288,22 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Append typing indicator as the last line inside the message area
     if let Some(ref conv_id) = app.active_conversation {
         let typers: Vec<String> = app
-            .typing.indicators
+            .typing
+            .indicators
             .get(conv_id)
             .map(|senders| {
-                senders.keys().map(|sender| {
-                    if let Some(name) = app.store.contact_names.get(sender) {
-                        name.clone()
-                    } else if let Some(conv) = app.store.conversations.get(sender) {
-                        conv.name.clone()
-                    } else {
-                        sender.clone()
-                    }
-                }).collect()
+                senders
+                    .keys()
+                    .map(|sender| {
+                        if let Some(name) = app.store.contact_names.get(sender) {
+                            name.clone()
+                        } else if let Some(conv) = app.store.conversations.get(sender) {
+                            conv.name.clone()
+                        } else {
+                            sender.clone()
+                        }
+                    })
+                    .collect()
             })
             .unwrap_or_default();
 
@@ -1216,10 +1324,17 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Compute actual content height accounting for line wrapping
-    let content_height: usize = lines.iter().map(|line| {
-        let w = line.width();
-        if w == 0 { 1 } else { w.div_ceil(inner_width.max(1)) }
-    }).sum();
+    let content_height: usize = lines
+        .iter()
+        .map(|line| {
+            let w = line.width();
+            if w == 0 {
+                1
+            } else {
+                w.div_ceil(inner_width.max(1))
+            }
+        })
+        .sum();
 
     // Bottom-align by default; scroll_offset shifts the view upward
     let base_scroll = content_height.saturating_sub(available_height);
@@ -1229,7 +1344,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Signal when user has scrolled to the top of loaded content
     app.at_scroll_top = app.scroll_offset >= base_scroll
         && base_scroll > 0
-        && app.active_conversation.as_ref()
+        && app
+            .active_conversation
+            .as_ref()
             .is_some_and(|id| app.store.has_more_messages.contains(id));
 
     // Determine the focused message for highlight and full-timestamp display in Normal mode.
@@ -1290,7 +1407,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         for line in &lines {
             wrapped_positions.push(cumulative);
             let w = line.width();
-            cumulative += if w == 0 { 1 } else { w.div_ceil(inner_width.max(1)) };
+            cumulative += if w == 0 {
+                1
+            } else {
+                w.div_ceil(inner_width.max(1))
+            };
         }
 
         for (first_idx, count, path) in &image_records {
@@ -1341,10 +1462,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(focused_idx) = render_focus {
         for (i, line) in lines.iter_mut().enumerate() {
             if line_msg_idx.get(i) == Some(&Some(focused_idx)) {
-                let patched: Vec<Span> = line.spans.drain(..).map(|mut s| {
-                    s.style = s.style.bg(theme.msg_selected_bg);
-                    s
-                }).collect();
+                let patched: Vec<Span> = line
+                    .spans
+                    .drain(..)
+                    .map(|mut s| {
+                        s.style = s.style.bg(theme.msg_selected_bg);
+                        s
+                    })
+                    .collect();
                 *line = Line::from(patched);
             }
         }
@@ -1419,15 +1544,28 @@ fn patch_kitty_placeholders(frame: &mut Frame, app: &mut App) {
 }
 
 /// Build a reaction summary line like "    👍 2  ❤️ 1  😂 1"
-pub(crate) fn build_reaction_summary(reactions: &[Reaction], verbose: bool, convert_emoji: bool, theme: &Theme) -> Line<'static> {
+pub(crate) fn build_reaction_summary(
+    reactions: &[Reaction],
+    verbose: bool,
+    convert_emoji: bool,
+    theme: &Theme,
+) -> Line<'static> {
     let display = |emoji: &str| -> String {
-        if convert_emoji { emoji_to_text(emoji) } else { emoji.to_string() }
+        if convert_emoji {
+            emoji_to_text(emoji)
+        } else {
+            emoji.to_string()
+        }
     };
     if verbose {
         // Verbose: group by emoji, show sender names
-        let mut grouped: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        let mut grouped: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
         for r in reactions {
-            grouped.entry(r.emoji.clone()).or_default().push(r.sender.clone());
+            grouped
+                .entry(r.emoji.clone())
+                .or_default()
+                .push(r.sender.clone());
         }
         let mut spans = vec![Span::raw("    ".to_string())];
         for (emoji, senders) in &grouped {
@@ -1441,7 +1579,8 @@ pub(crate) fn build_reaction_summary(reactions: &[Reaction], verbose: bool, conv
         Line::from(spans)
     } else {
         // Summary: emoji + count
-        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for r in reactions {
             *counts.entry(r.emoji.clone()).or_default() += 1;
         }
@@ -1470,13 +1609,20 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 return;
             }
             let popup_height = items.len() as u16 + 4;
-            let title = app.active_conversation.as_ref()
+            let title = app
+                .active_conversation
+                .as_ref()
                 .and_then(|id| app.store.conversations.get(id))
                 .filter(|c| c.is_group)
                 .map(|c| format!(" #{} ", c.name))
                 .unwrap_or_else(|| " Group ".to_string());
             let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, popup_height, &title, theme,
+                frame,
+                area,
+                GROUP_MENU_POPUP_WIDTH,
+                popup_height,
+                &title,
+                theme,
             );
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
@@ -1499,7 +1645,10 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default()
                 };
                 let hint_style = if is_selected {
-                    Style::default().bg(theme.bg_selected).fg(theme.fg_muted).add_modifier(Modifier::DIM)
+                    Style::default()
+                        .bg(theme.bg_selected)
+                        .fg(theme.fg_muted)
+                        .add_modifier(Modifier::DIM)
                 } else {
                     Style::default().fg(theme.fg_muted)
                 };
@@ -1521,7 +1670,12 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             let pref_height = max_visible as u16 + 5;
             let title = " Members ".to_string();
             let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, pref_height, &title, theme,
+                frame,
+                area,
+                GROUP_MENU_POPUP_WIDTH,
+                pref_height,
+                &title,
+                theme,
             );
             let inner_height = popup_area.height.saturating_sub(2) as usize;
             let footer_lines = 2;
@@ -1539,7 +1693,10 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 )));
             } else {
                 let end = (scroll_offset + visible_rows).min(app.group_menu.filtered.len());
-                for (i, (phone, name)) in app.group_menu.filtered[scroll_offset..end].iter().enumerate() {
+                for (i, (phone, name)) in app.group_menu.filtered[scroll_offset..end]
+                    .iter()
+                    .enumerate()
+                {
                     let actual_index = scroll_offset + i;
                     let is_selected = actual_index == app.group_menu.index;
                     let is_self = *phone == app.account;
@@ -1549,7 +1706,10 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                         format!("  {}", name)
                     };
                     let name_style = if is_selected {
-                        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .bg(theme.bg_selected)
+                            .fg(theme.fg)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.fg)
                     };
@@ -1591,7 +1751,12 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 format!(" Remove Member [{}] ", app.group_menu.filter)
             };
             let (popup_area, block) = centered_popup(
-                frame, area, CONTACTS_POPUP_WIDTH, pref_height, &title, theme,
+                frame,
+                area,
+                CONTACTS_POPUP_WIDTH,
+                pref_height,
+                &title,
+                theme,
             );
             let inner_height = popup_area.height.saturating_sub(2) as usize;
             let footer_lines = 2;
@@ -1603,7 +1768,11 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             };
             let mut lines: Vec<Line> = Vec::new();
             if app.group_menu.filtered.is_empty() {
-                let msg = if is_add { "  No contacts to add" } else { "  No members to remove" };
+                let msg = if is_add {
+                    "  No contacts to add"
+                } else {
+                    "  No members to remove"
+                };
                 lines.push(Line::from(Span::styled(
                     msg,
                     Style::default().fg(theme.fg_muted),
@@ -1611,14 +1780,20 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 let end = (scroll_offset + visible_rows).min(app.group_menu.filtered.len());
                 let inner_w = popup_area.width.saturating_sub(2) as usize;
-                for (i, (phone, name)) in app.group_menu.filtered[scroll_offset..end].iter().enumerate() {
+                for (i, (phone, name)) in app.group_menu.filtered[scroll_offset..end]
+                    .iter()
+                    .enumerate()
+                {
                     let actual_index = scroll_offset + i;
                     let is_selected = actual_index == app.group_menu.index;
                     let number_display = format!("  {}", phone);
                     let name_max = inner_w.saturating_sub(number_display.len() + 2);
                     let display_name = truncate(name, name_max);
                     let name_style = if is_selected {
-                        Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .bg(theme.bg_selected)
+                            .fg(theme.fg)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(theme.fg)
                     };
@@ -1646,10 +1821,13 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
         }
         GroupMenuState::Rename | GroupMenuState::Create => {
             let is_rename = *state == GroupMenuState::Rename;
-            let title = if is_rename { " Rename Group " } else { " Create Group " };
-            let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, 6, title, theme,
-            );
+            let title = if is_rename {
+                " Rename Group "
+            } else {
+                " Create Group "
+            };
+            let (popup_area, block) =
+                centered_popup(frame, area, GROUP_MENU_POPUP_WIDTH, 6, title, theme);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
             let mut lines: Vec<Line> = Vec::new();
@@ -1667,13 +1845,20 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(popup, inner);
         }
         GroupMenuState::LeaveConfirm => {
-            let group_name = app.active_conversation.as_ref()
+            let group_name = app
+                .active_conversation
+                .as_ref()
                 .and_then(|id| app.store.conversations.get(id))
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| "this group".to_string());
             let prompt = format!("Leave #{}?", group_name);
             let (popup_area, block) = centered_popup(
-                frame, area, GROUP_MENU_POPUP_WIDTH, 5, " Leave Group ", theme,
+                frame,
+                area,
+                GROUP_MENU_POPUP_WIDTH,
+                5,
+                " Leave Group ",
+                theme,
             );
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
@@ -1711,22 +1896,48 @@ fn draw_message_request(frame: &mut Frame, app: &App, area: Rect) {
     let (popup_area, block) = centered_popup(frame, area, 36, 9, " Message Request ", theme);
     frame.render_widget(block, popup_area);
 
-    let inner = popup_area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 2 });
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
     let lines = vec![
-        Line::from(Span::styled(name.as_str(), Style::default().fg(theme.fg).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled(phone.as_str(), Style::default().fg(theme.fg_muted))),
         Line::from(Span::styled(
-            format!("{} message{}", msg_count, if msg_count == 1 { "" } else { "s" }),
+            name.as_str(),
+            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            phone.as_str(),
+            Style::default().fg(theme.fg_muted),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "{} message{}",
+                msg_count,
+                if msg_count == 1 { "" } else { "s" }
+            ),
             Style::default().fg(theme.fg_secondary),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("(a)", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "(a)",
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("ccept / ", Style::default().fg(theme.fg_secondary)),
-            Span::styled("(d)", Style::default().fg(theme.error).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "(d)",
+                Style::default()
+                    .fg(theme.error)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("elete", Style::default().fg(theme.fg_secondary)),
         ]),
-        Line::from(Span::styled("Esc to go back", Style::default().fg(theme.fg_muted))),
+        Line::from(Span::styled(
+            "Esc to go back",
+            Style::default().fg(theme.fg_muted),
+        )),
     ];
 
     let text = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
@@ -1743,9 +1954,8 @@ fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) {
     let popup_width: u16 = 30;
     let popup_height = items.len() as u16 + 4;
 
-    let (popup_area, block) = centered_popup(
-        frame, area, popup_width, popup_height, " Actions ", theme,
-    );
+    let (popup_area, block) =
+        centered_popup(frame, area, popup_width, popup_height, " Actions ", theme);
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -1772,7 +1982,10 @@ fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
         let hint_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg_muted).add_modifier(Modifier::DIM)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg_muted)
+                .add_modifier(Modifier::DIM)
         } else {
             Style::default().fg(theme.fg_muted)
         };
@@ -1800,18 +2013,33 @@ fn draw_reaction_picker(frame: &mut Frame, app: &App, area: Rect) {
     let popup_height = 3u16;
 
     let (popup_area, block) = centered_popup(
-        frame, area, popup_width, popup_height, " React (e: search all) ", theme,
+        frame,
+        area,
+        popup_width,
+        popup_height,
+        " React (e: search all) ",
+        theme,
     );
 
     let mut spans = vec![Span::raw(" ".to_string())];
     for (i, emoji) in QUICK_REACTIONS.iter().enumerate() {
         let style = if i == app.reactions.picker_index {
-            Style::default().bg(theme.bg_selected).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
-        let prefix = if i == app.reactions.picker_index { "[" } else { " " };
-        let suffix = if i == app.reactions.picker_index { "]" } else { " " };
+        let prefix = if i == app.reactions.picker_index {
+            "["
+        } else {
+            " "
+        };
+        let suffix = if i == app.reactions.picker_index {
+            "]"
+        } else {
+            " "
+        };
         spans.push(Span::styled(format!("{prefix}{emoji}{suffix}"), style));
     }
 
@@ -1830,7 +2058,12 @@ fn draw_emoji_picker(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let (popup_area, block) = centered_popup(
-        frame, area, EMOJI_POPUP_WIDTH, EMOJI_POPUP_HEIGHT, &title, theme,
+        frame,
+        area,
+        EMOJI_POPUP_WIDTH,
+        EMOJI_POPUP_HEIGHT,
+        &title,
+        theme,
     );
 
     let inner = block.inner(popup_area);
@@ -1848,7 +2081,10 @@ fn draw_emoji_picker(frame: &mut Frame, app: &App, area: Rect) {
     let mut cat_spans: Vec<Span<'static>> = Vec::new();
     for (i, (icon, _label)) in CATEGORIES.iter().enumerate() {
         let style = if i == app.emoji_picker.category_index {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg_muted)
         };
@@ -1858,7 +2094,10 @@ fn draw_emoji_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     // Separator
     let sep = "\u{2500}".repeat(inner.width as usize);
-    lines.push(Line::from(Span::styled(sep, Style::default().fg(theme.fg_muted))));
+    lines.push(Line::from(Span::styled(
+        sep,
+        Style::default().fg(theme.fg_muted),
+    )));
 
     // Grid dimensions
     let footer_lines = 3; // blank + preview + help
@@ -1898,13 +2137,20 @@ fn draw_emoji_picker(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Preview line: name + shortcode of selected emoji
-    if let Some(entry) = app.emoji_picker.filtered.get(app.emoji_picker.selected_index) {
+    if let Some(entry) = app
+        .emoji_picker
+        .filtered
+        .get(app.emoji_picker.selected_index)
+    {
         let preview = if let Some(sc) = entry.shortcode {
             format!("{} :{sc}: - {}", entry.emoji, entry.name)
         } else {
             format!("{} - {}", entry.emoji, entry.name)
         };
-        lines.push(Line::from(Span::styled(preview, Style::default().fg(theme.accent))));
+        lines.push(Line::from(Span::styled(
+            preview,
+            Style::default().fg(theme.accent),
+        )));
     } else {
         lines.push(Line::from(""));
     }
@@ -1929,9 +2175,7 @@ fn draw_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
     let msg = app.selected_message();
     let is_outgoing = msg.is_some_and(|m| m.sender == "you");
 
-    let (popup_area, block) = centered_popup(
-        frame, area, 44, 5, " Delete Message ", theme,
-    );
+    let (popup_area, block) = centered_popup(frame, area, 44, 5, " Delete Message ", theme);
 
     let prompt = if is_outgoing {
         "Delete for everyone? (y)es / (l)ocal / (n)o"
@@ -1958,7 +2202,9 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(ref err) = app.connection_error {
         lines.push(Line::from(Span::styled(
             "  Connection Error",
-            Style::default().fg(theme.error).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.error)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             format!("  {err}"),
@@ -1974,7 +2220,9 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
         let spinner_char = SPINNER[app.spinner_tick % SPINNER.len()];
         lines.push(Line::from(Span::styled(
             "  siggy",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -1984,7 +2232,9 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
     } else if app.store.conversation_order.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Welcome to siggy",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -2011,7 +2261,9 @@ fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         lines.push(Line::from(Span::styled(
             "  Welcome to siggy",
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -2076,22 +2328,28 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         let label = format!(" replying: {}… ", truncate(snippet, 30));
         block = block.title(Line::from(Span::styled(
             label,
-            Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.fg_muted)
+                .add_modifier(Modifier::ITALIC),
         )));
     } else if app.editing_message.is_some() {
         block = block.title(Line::from(Span::styled(
             " editing… ",
-            Style::default().fg(theme.accent_secondary).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(theme.accent_secondary)
+                .add_modifier(Modifier::ITALIC),
         )));
     }
 
     // Build attachment badge if present
     let badge = app.pending_attachment.as_ref().map(|path| {
-        let fname = path.file_name()
+        let fname = path
+            .file_name()
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
         // Detect type hint from extension
-        let ext = path.extension()
+        let ext = path
+            .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         let type_hint = match ext.as_str() {
@@ -2140,7 +2398,9 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
                 if let Some(ref badge_text) = badge {
                     spans.push(Span::styled(
                         badge_text.clone(),
-                        Style::default().fg(theme.mention).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme.mention)
+                            .add_modifier(Modifier::BOLD),
                     ));
                 }
                 spans.push(Span::styled(prefix, Style::default().fg(theme.fg)));
@@ -2153,17 +2413,15 @@ fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
 
             if i == cursor_line {
                 let char_scroll = cursor_col.saturating_sub(text_width);
-                let visible_text: String = line_str.chars().skip(char_scroll).take(text_width).collect();
-                spans.push(Span::styled(
-                    visible_text,
-                    Style::default().fg(theme.fg),
-                ));
+                let visible_text: String = line_str
+                    .chars()
+                    .skip(char_scroll)
+                    .take(text_width)
+                    .collect();
+                spans.push(Span::styled(visible_text, Style::default().fg(theme.fg)));
             } else {
                 let visible_text: String = line_str.chars().take(text_width).collect();
-                spans.push(Span::styled(
-                    visible_text,
-                    Style::default().fg(theme.fg),
-                ));
+                spans.push(Span::styled(visible_text, Style::default().fg(theme.fg)));
             }
             text_lines.push(Line::from(spans));
         }
@@ -2197,7 +2455,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
     if app.quit_confirm {
         let bar = Line::from(Span::styled(
             " Unsent message in buffer. Press quit again to confirm.",
-            Style::default().fg(theme.warning).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
         ));
         frame.render_widget(
             Paragraph::new(bar).style(Style::default().bg(theme.statusbar_bg)),
@@ -2218,13 +2478,17 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
             };
             segments.push(Span::styled(
                 label,
-                Style::default().fg(theme.accent_secondary).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent_secondary)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
         InputMode::Insert => {
             segments.push(Span::styled(
                 " [INSERT] ",
-                Style::default().fg(theme.success).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
     }
@@ -2240,17 +2504,25 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
         ));
     } else if app.connected {
         segments.push(Span::styled(" ● ", Style::default().fg(theme.success)));
-        segments.push(Span::styled("connected", Style::default().fg(theme.statusbar_fg)));
+        segments.push(Span::styled(
+            "connected",
+            Style::default().fg(theme.statusbar_fg),
+        ));
         if app.incognito {
             segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
             segments.push(Span::styled(
                 "incognito",
-                Style::default().fg(theme.mention).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.mention)
+                    .add_modifier(Modifier::BOLD),
             ));
         }
     } else {
         segments.push(Span::styled(" ● ", Style::default().fg(theme.error)));
-        segments.push(Span::styled("disconnected", Style::default().fg(theme.statusbar_fg)));
+        segments.push(Span::styled(
+            "disconnected",
+            Style::default().fg(theme.statusbar_fg),
+        ));
     }
 
     // Pipe separator
@@ -2301,10 +2573,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
     // Auto-hidden sidebar indicator
     if sidebar_auto_hidden && app.sidebar_visible {
         segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
-        segments.push(Span::styled(
-            "[+]",
-            Style::default().fg(theme.fg_muted),
-        ));
+        segments.push(Span::styled("[+]", Style::default().fg(theme.fg_muted)));
     }
 
     // Pad the rest with background
@@ -2340,7 +2609,10 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
                 let is_selected = i == app.autocomplete.index;
                 let style = if is_selected {
-                    Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .bg(theme.bg_selected)
+                        .fg(theme.fg)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.fg_secondary)
                 };
@@ -2357,7 +2629,8 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
             }
         }
         AutocompleteMode::Mention => {
-            for (i, (phone, name, _uuid)) in app.autocomplete.mention_candidates.iter().enumerate() {
+            for (i, (phone, name, _uuid)) in app.autocomplete.mention_candidates.iter().enumerate()
+            {
                 let left = format!("  @{name}");
                 let right = format!("  {phone}");
                 let total_len = left.len() + right.len() + 2;
@@ -2367,7 +2640,10 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
                 let is_selected = i == app.autocomplete.index;
                 let style = if is_selected {
-                    Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .bg(theme.bg_selected)
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.accent)
                 };
@@ -2393,14 +2669,15 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
                 let is_selected = i == app.autocomplete.index;
                 let style = if is_selected {
-                    Style::default().bg(theme.bg_selected).fg(theme.success).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .bg(theme.bg_selected)
+                        .fg(theme.success)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme.success)
                 };
 
-                lines.push(Line::from(vec![
-                    Span::styled(left, style),
-                ]));
+                lines.push(Line::from(vec![Span::styled(left, style)]));
             }
         }
     }
@@ -2409,7 +2686,9 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
 
     // Size the popup, clamping to available space
     let terminal_height = frame.area().height;
-    let popup_width = (max_content_width as u16 + 2).min(terminal_width.saturating_sub(2)).max(20);
+    let popup_width = (max_content_width as u16 + 2)
+        .min(terminal_width.saturating_sub(2))
+        .max(20);
     let popup_height = ((count as u16) + 2).min(input_area.y).min(terminal_height); // +2 for border
     if popup_height < 3 {
         return; // not enough space to render anything useful
@@ -2419,7 +2698,12 @@ fn draw_autocomplete(frame: &mut Frame, app: &App, input_area: Rect) {
     let x = input_area.x;
     let y = input_area.y.saturating_sub(popup_height);
 
-    let area = Rect::new(x, y, popup_width.min(terminal_width.saturating_sub(x)), popup_height);
+    let area = Rect::new(
+        x,
+        y,
+        popup_width.min(terminal_width.saturating_sub(x)),
+        popup_height,
+    );
     lines.truncate((popup_height.saturating_sub(2)) as usize);
 
     // Clear the area behind the popup so chat text doesn't leak through
@@ -2439,10 +2723,17 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let height = SETTINGS_POPUP_HEIGHT;
     let (popup_area, block) = centered_popup(
-        frame, area, SETTINGS_POPUP_WIDTH, height, " Settings ", theme,
+        frame,
+        area,
+        SETTINGS_POPUP_WIDTH,
+        height,
+        " Settings ",
+        theme,
     );
 
-    let header_style = Style::default().fg(theme.fg_muted).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(theme.fg_muted)
+        .add_modifier(Modifier::BOLD);
 
     // Render a toggle row
     let render_toggle = |lines: &mut Vec<Line>, i: usize, def: &SettingDef| {
@@ -2450,12 +2741,18 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         let checkbox = if enabled { "[x]" } else { "[ ]" };
         let is_selected = i == app.settings_index;
         let style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg_secondary)
         };
         let check_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else if enabled {
             Style::default().fg(theme.success)
         } else {
@@ -2471,7 +2768,10 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     let render_special = |lines: &mut Vec<Line>, label: &str, value: &str, index: usize| {
         let is_selected = app.settings_index == index;
         let label_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg_secondary)
         };
@@ -2486,7 +2786,9 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     };
 
-    use crate::app::{SETTINGS_SECTION_DISPLAY, SETTINGS_SECTION_MESSAGES, SETTINGS_SECTION_INTERFACE};
+    use crate::app::{
+        SETTINGS_SECTION_DISPLAY, SETTINGS_SECTION_INTERFACE, SETTINGS_SECTION_MESSAGES,
+    };
 
     let preview_index = SETTINGS.len();
     let image_mode_index = SETTINGS.len() + 1;
@@ -2496,21 +2798,49 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
 
     // — Notifications —
     lines.push(Line::from(Span::styled("  Notifications", header_style)));
-    for (i, def) in SETTINGS.iter().enumerate().take(SETTINGS_SECTION_DISPLAY) { render_toggle(&mut lines, i, def); }
-    render_special(&mut lines, "Notification preview: ", &app.notifications.notification_preview, preview_index);
+    for (i, def) in SETTINGS.iter().enumerate().take(SETTINGS_SECTION_DISPLAY) {
+        render_toggle(&mut lines, i, def);
+    }
+    render_special(
+        &mut lines,
+        "Notification preview: ",
+        &app.notifications.notification_preview,
+        preview_index,
+    );
 
     // — Display —
     lines.push(Line::from(Span::styled("  Display", header_style)));
-    for (i, def) in SETTINGS.iter().enumerate().take(SETTINGS_SECTION_MESSAGES).skip(SETTINGS_SECTION_DISPLAY) { render_toggle(&mut lines, i, def); }
-    render_special(&mut lines, "Image mode: ", &app.image.image_mode, image_mode_index);
+    for (i, def) in SETTINGS
+        .iter()
+        .enumerate()
+        .take(SETTINGS_SECTION_MESSAGES)
+        .skip(SETTINGS_SECTION_DISPLAY)
+    {
+        render_toggle(&mut lines, i, def);
+    }
+    render_special(
+        &mut lines,
+        "Image mode: ",
+        &app.image.image_mode,
+        image_mode_index,
+    );
 
     // — Messages —
     lines.push(Line::from(Span::styled("  Messages", header_style)));
-    for (i, def) in SETTINGS.iter().enumerate().take(SETTINGS_SECTION_INTERFACE).skip(SETTINGS_SECTION_MESSAGES) { render_toggle(&mut lines, i, def); }
+    for (i, def) in SETTINGS
+        .iter()
+        .enumerate()
+        .take(SETTINGS_SECTION_INTERFACE)
+        .skip(SETTINGS_SECTION_MESSAGES)
+    {
+        render_toggle(&mut lines, i, def);
+    }
 
     // — Interface —
     lines.push(Line::from(Span::styled("  Interface", header_style)));
-    for (i, def) in SETTINGS.iter().enumerate().skip(SETTINGS_SECTION_INTERFACE) { render_toggle(&mut lines, i, def); }
+    for (i, def) in SETTINGS.iter().enumerate().skip(SETTINGS_SECTION_INTERFACE) {
+        render_toggle(&mut lines, i, def);
+    }
     render_special(&mut lines, "Customize...", "", customize_index);
 
     // Hint line for the currently selected item
@@ -2526,7 +2856,9 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     };
     lines.push(Line::from(Span::styled(
         format!("  {hint}"),
-        Style::default().fg(theme.fg_muted).add_modifier(Modifier::ITALIC),
+        Style::default()
+            .fg(theme.fg_muted)
+            .add_modifier(Modifier::ITALIC),
     )));
 
     let popup = Paragraph::new(lines).block(block);
@@ -2536,15 +2868,16 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_customize(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let items = ["Theme", "Keybindings", "Settings profile"];
-    let (popup_area, block) = centered_popup(
-        frame, area, 30, 5, " Customize ", theme,
-    );
+    let (popup_area, block) = centered_popup(frame, area, 30, 5, " Customize ", theme);
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, label) in items.iter().enumerate() {
         let is_selected = i == app.customize_index;
         let style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg_secondary)
         };
@@ -2576,9 +2909,21 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
 
     // Dynamic shortcuts from active keybindings
     let dk = |a: KeyAction| kb.display_key(a);
-    let nav_keys = format!("{} / {}", dk(KeyAction::NextConversation), dk(KeyAction::PrevConversation));
-    let scroll_keys = format!("{} / {}", dk(KeyAction::PageScrollUp), dk(KeyAction::PageScrollDown));
-    let resize_keys = format!("{} / {}", dk(KeyAction::ResizeSidebarLeft), dk(KeyAction::ResizeSidebarRight));
+    let nav_keys = format!(
+        "{} / {}",
+        dk(KeyAction::NextConversation),
+        dk(KeyAction::PrevConversation)
+    );
+    let scroll_keys = format!(
+        "{} / {}",
+        dk(KeyAction::PageScrollUp),
+        dk(KeyAction::PageScrollDown)
+    );
+    let resize_keys = format!(
+        "{} / {}",
+        dk(KeyAction::ResizeSidebarLeft),
+        dk(KeyAction::ResizeSidebarRight)
+    );
     let quit_key = dk(KeyAction::Quit);
     let shortcuts: Vec<(String, &str)> = vec![
         (nav_keys, "Next / prev conversation"),
@@ -2597,20 +2942,60 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
 
     // Dynamic normal-mode keybindings
     let exit_key = dk(KeyAction::ExitInsert);
-    let insert_keys = format!("{} / {} / {} / {} / {}",
-        dk(KeyAction::InsertAtCursor), dk(KeyAction::InsertAfterCursor),
-        dk(KeyAction::InsertLineStart), dk(KeyAction::InsertLineEnd),
-        dk(KeyAction::OpenLineBelow));
-    let scroll_ud = format!("{} / {}", dk(KeyAction::ScrollDown), dk(KeyAction::ScrollUp));
-    let focus_ud = format!("{} / {}", dk(KeyAction::FocusNextMessage), dk(KeyAction::FocusPrevMessage));
-    let top_bottom = format!("{} / {}", dk(KeyAction::ScrollToTop), dk(KeyAction::ScrollToBottom));
-    let half_page = format!("{} / {}", dk(KeyAction::HalfPageDown), dk(KeyAction::HalfPageUp));
-    let cursor_lr = format!("{} / {}", dk(KeyAction::CursorLeft), dk(KeyAction::CursorRight));
-    let word_fb = format!("{} / {}", dk(KeyAction::WordForward), dk(KeyAction::WordBack));
+    let insert_keys = format!(
+        "{} / {} / {} / {} / {}",
+        dk(KeyAction::InsertAtCursor),
+        dk(KeyAction::InsertAfterCursor),
+        dk(KeyAction::InsertLineStart),
+        dk(KeyAction::InsertLineEnd),
+        dk(KeyAction::OpenLineBelow)
+    );
+    let scroll_ud = format!(
+        "{} / {}",
+        dk(KeyAction::ScrollDown),
+        dk(KeyAction::ScrollUp)
+    );
+    let focus_ud = format!(
+        "{} / {}",
+        dk(KeyAction::FocusNextMessage),
+        dk(KeyAction::FocusPrevMessage)
+    );
+    let top_bottom = format!(
+        "{} / {}",
+        dk(KeyAction::ScrollToTop),
+        dk(KeyAction::ScrollToBottom)
+    );
+    let half_page = format!(
+        "{} / {}",
+        dk(KeyAction::HalfPageDown),
+        dk(KeyAction::HalfPageUp)
+    );
+    let cursor_lr = format!(
+        "{} / {}",
+        dk(KeyAction::CursorLeft),
+        dk(KeyAction::CursorRight)
+    );
+    let word_fb = format!(
+        "{} / {}",
+        dk(KeyAction::WordForward),
+        dk(KeyAction::WordBack)
+    );
     let line_se = format!("{} / {}", dk(KeyAction::LineStart), dk(KeyAction::LineEnd));
-    let del_keys = format!("{} / {}", dk(KeyAction::DeleteChar), dk(KeyAction::DeleteToEnd));
-    let copy_keys = format!("{} / {}", dk(KeyAction::CopyMessage), dk(KeyAction::CopyAllMessages));
-    let search_keys = format!("{} / {}", dk(KeyAction::NextSearchResult), dk(KeyAction::PrevSearchResult));
+    let del_keys = format!(
+        "{} / {}",
+        dk(KeyAction::DeleteChar),
+        dk(KeyAction::DeleteToEnd)
+    );
+    let copy_keys = format!(
+        "{} / {}",
+        dk(KeyAction::CopyMessage),
+        dk(KeyAction::CopyAllMessages)
+    );
+    let search_keys = format!(
+        "{} / {}",
+        dk(KeyAction::NextSearchResult),
+        dk(KeyAction::PrevSearchResult)
+    );
 
     let profile_label = format!("  Keybindings [{}]", app.keybindings.profile_name);
     let vim: Vec<(String, &str)> = vec![
@@ -2637,8 +3022,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let key_col_width = 20;
     let desc_col_width = 28;
     let pref_width = (key_col_width + desc_col_width + 6) as u16;
-    let content_lines =
-        commands.len() + shortcuts.len() + vim.len() + cli.len() + 7;
+    let content_lines = commands.len() + shortcuts.len() + vim.len() + cli.len() + 7;
     let pref_height = content_lines as u16 + 2;
 
     let (popup_area, block) = centered_popup(frame, area, pref_width, pref_height, " Help ", theme);
@@ -2653,7 +3037,10 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
 
     let push_row = |lines: &mut Vec<Line>, key: &str, desc: &str| {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<width$}", key, width = key_col_width), key_style),
+            Span::styled(
+                format!("  {:<width$}", key, width = key_col_width),
+                key_style,
+            ),
             Span::styled(desc.to_string(), desc_style),
         ]));
     };
@@ -2703,11 +3090,17 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let (popup_area, block) = centered_popup(
-        frame, area, CONTACTS_POPUP_WIDTH, pref_height, &title, theme,
+        frame,
+        area,
+        CONTACTS_POPUP_WIDTH,
+        pref_height,
+        &title,
+        theme,
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
-    let (visible_rows, scroll_offset) = list_overlay::scroll_layout(inner_height, 2, app.contacts_overlay.index);
+    let (visible_rows, scroll_offset) =
+        list_overlay::scroll_layout(inner_height, 2, app.contacts_overlay.index);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -2720,7 +3113,10 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
         let end = (scroll_offset + visible_rows).min(app.contacts_overlay.filtered.len());
         let inner_w = popup_area.width.saturating_sub(2) as usize;
 
-        for (i, (number, name)) in app.contacts_overlay.filtered[scroll_offset..end].iter().enumerate() {
+        for (i, (number, name)) in app.contacts_overlay.filtered[scroll_offset..end]
+            .iter()
+            .enumerate()
+        {
             let actual_index = scroll_offset + i;
             let is_selected = actual_index == app.contacts_overlay.index;
             let has_conversation = app.store.conversation_order.contains(number);
@@ -2764,7 +3160,12 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    list_overlay::append_footer(&mut lines, visible_rows, "  j/k navigate  |  Enter select  |  Esc close", theme.fg_muted);
+    list_overlay::append_footer(
+        &mut lines,
+        visible_rows,
+        "  j/k navigate  |  Enter select  |  Esc close",
+        theme.fg_muted,
+    );
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -2772,7 +3173,9 @@ fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let is_group = app.active_conversation.as_ref()
+    let is_group = app
+        .active_conversation
+        .as_ref()
         .and_then(|id| app.store.conversations.get(id))
         .map(|c| c.is_group)
         .unwrap_or(false);
@@ -2780,9 +3183,17 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
     let pref_height: u16 = if is_group { 18 } else { 14 };
     let pref_width: u16 = 50;
     let (popup_area, block) = centered_popup(
-        frame, area, pref_width, pref_height, " Verify Identity ", theme,
+        frame,
+        area,
+        pref_width,
+        pref_height,
+        " Verify Identity ",
+        theme,
     );
-    let inner = popup_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
     let mut lines: Vec<Line> = Vec::new();
 
     if app.verify.identities.is_empty() {
@@ -2809,7 +3220,12 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
             let actual_idx = scroll_offset + i;
             let is_selected = actual_idx == app.verify.index;
             let number = identity.number.as_deref().unwrap_or("unknown");
-            let name = app.store.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
+            let name = app
+                .store
+                .contact_names
+                .get(number)
+                .cloned()
+                .unwrap_or_else(|| number.to_string());
             let (badge, badge_color) = match identity.trust_level {
                 TrustLevel::TrustedVerified => ("\u{2713}", theme.accent),
                 TrustLevel::Untrusted => ("\u{26A0}", theme.warning),
@@ -2817,7 +3233,10 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
             };
             let prefix = if is_selected { "> " } else { "  " };
             let style = if is_selected {
-                Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(theme.bg_selected)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.fg)
             };
@@ -2838,14 +3257,23 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         // Show selected member's safety number
         if let Some(identity) = app.verify.identities.get(app.verify.index) {
             if !identity.safety_number.is_empty() {
-                lines.push(Line::from(Span::styled("  Safety Number:", Style::default().fg(theme.fg_secondary))));
+                lines.push(Line::from(Span::styled(
+                    "  Safety Number:",
+                    Style::default().fg(theme.fg_secondary),
+                )));
                 let sn = &identity.safety_number;
                 let formatted = format_safety_number(sn);
                 for row in formatted {
-                    lines.push(Line::from(Span::styled(format!("  {row}"), Style::default().fg(theme.fg))));
+                    lines.push(Line::from(Span::styled(
+                        format!("  {row}"),
+                        Style::default().fg(theme.fg),
+                    )));
                 }
             } else {
-                lines.push(Line::from(Span::styled("  Safety number not available", Style::default().fg(theme.fg_muted))));
+                lines.push(Line::from(Span::styled(
+                    "  Safety number not available",
+                    Style::default().fg(theme.fg_muted),
+                )));
             }
         }
 
@@ -2865,7 +3293,12 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         // 1:1 view: single identity with full details
         let identity = &app.verify.identities[0];
         let number = identity.number.as_deref().unwrap_or("unknown");
-        let name = app.store.contact_names.get(number).cloned().unwrap_or_else(|| number.to_string());
+        let name = app
+            .store
+            .contact_names
+            .get(number)
+            .cloned()
+            .unwrap_or_else(|| number.to_string());
 
         lines.push(Line::from(Span::styled(
             format!("  {} ({})", name, number),
@@ -2884,13 +3317,22 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
 
         if !identity.safety_number.is_empty() {
-            lines.push(Line::from(Span::styled("  Safety Number:", Style::default().fg(theme.fg_secondary))));
+            lines.push(Line::from(Span::styled(
+                "  Safety Number:",
+                Style::default().fg(theme.fg_secondary),
+            )));
             let formatted = format_safety_number(&identity.safety_number);
             for row in formatted {
-                lines.push(Line::from(Span::styled(format!("  {row}"), Style::default().fg(theme.fg))));
+                lines.push(Line::from(Span::styled(
+                    format!("  {row}"),
+                    Style::default().fg(theme.fg),
+                )));
             }
         } else {
-            lines.push(Line::from(Span::styled("  Safety number not available", Style::default().fg(theme.fg_muted))));
+            lines.push(Line::from(Span::styled(
+                "  Safety number not available",
+                Style::default().fg(theme.fg_muted),
+            )));
         }
 
         lines.push(Line::from(""));
@@ -2922,13 +3364,12 @@ fn draw_verify(frame: &mut Frame, app: &App, area: Rect) {
 /// Format a safety number string as groups of 5 digits, 6 per line.
 fn format_safety_number(sn: &str) -> Vec<String> {
     let digits: String = sn.chars().filter(|c| c.is_ascii_digit()).collect();
-    let chunks: Vec<&str> = digits.as_bytes()
+    let chunks: Vec<&str> = digits
+        .as_bytes()
         .chunks(5)
         .map(|chunk| std::str::from_utf8(chunk).unwrap_or(""))
         .collect();
-    chunks.chunks(6)
-        .map(|row| row.join(" "))
-        .collect()
+    chunks.chunks(6).map(|row| row.join(" ")).collect()
 }
 
 fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
@@ -2942,9 +3383,8 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         format!(" Search [{}] ", app.search.query)
     };
 
-    let (popup_area, block) = centered_popup(
-        frame, area, SEARCH_POPUP_WIDTH, pref_height, &title, theme,
-    );
+    let (popup_area, block) =
+        centered_popup(frame, area, SEARCH_POPUP_WIDTH, pref_height, &title, theme);
 
     let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
     let footer_lines = 2; // footer + empty line
@@ -3003,7 +3443,13 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
 
             // Build spans with highlighted match
             let mut spans = vec![Span::styled(prefix, prefix_style)];
-            spans.extend(highlight_match_spans(&body_snippet, &app.search.query, body_style, is_selected, theme));
+            spans.extend(highlight_match_spans(
+                &body_snippet,
+                &app.search.query,
+                body_style,
+                is_selected,
+                theme,
+            ));
 
             lines.push(Line::from(spans));
         }
@@ -3021,10 +3467,7 @@ fn draw_search(frame: &mut Frame, app: &App, area: Rect) {
         format!("  {}/{}", app.search.index + 1, app.search.results.len())
     };
     lines.push(Line::from(vec![
-        Span::styled(
-            count_text,
-            Style::default().fg(theme.warning),
-        ),
+        Span::styled(count_text, Style::default().fg(theme.warning)),
         Span::styled(
             "  j/k nav | Enter jump | n/N cycle | Esc close",
             Style::default().fg(theme.fg_muted),
@@ -3065,7 +3508,10 @@ pub(crate) fn search_snippet(body: &str, query: &str, max_len: usize) -> String 
         result = format!("…{}", result.chars().skip(1).collect::<String>());
     }
     if end < char_count {
-        let trimmed: String = result.chars().take(result.chars().count().saturating_sub(1)).collect();
+        let trimmed: String = result
+            .chars()
+            .take(result.chars().count().saturating_sub(1))
+            .collect();
         result = format!("{trimmed}…");
     }
     result
@@ -3132,7 +3578,9 @@ fn highlight_match_spans<'a>(
     let mut orig_ranges: Vec<(usize, usize)> = Vec::new();
     for &(low_start, low_end) in &match_ranges {
         let start_char = lower_chars.iter().position(|&(pos, _)| pos == low_start);
-        let end_char = lower_chars.iter().position(|&(pos, _)| pos == low_end)
+        let end_char = lower_chars
+            .iter()
+            .position(|&(pos, _)| pos == low_end)
             .unwrap_or(char_count);
         if let Some(sc) = start_char {
             let orig_start = orig_chars[sc].0;
@@ -3180,9 +3628,11 @@ pub(crate) fn format_file_size(bytes: u64) -> String {
 
 fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let visible_count = FILE_BROWSER_MAX_VISIBLE.min(
-        if app.file_picker.filtered.is_empty() { 1 } else { app.file_picker.filtered.len() }
-    );
+    let visible_count = FILE_BROWSER_MAX_VISIBLE.min(if app.file_picker.filtered.is_empty() {
+        1
+    } else {
+        app.file_picker.filtered.len()
+    });
     let pref_height = visible_count as u16 + 5; // border + header + footer
 
     let title = if app.file_picker.filter.is_empty() {
@@ -3192,7 +3642,12 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let (popup_area, block) = centered_popup(
-        frame, area, FILE_BROWSER_POPUP_WIDTH, pref_height, &title, theme,
+        frame,
+        area,
+        FILE_BROWSER_POPUP_WIDTH,
+        pref_height,
+        &title,
+        theme,
     );
 
     let inner_height = popup_area.height.saturating_sub(2) as usize;
@@ -3208,7 +3663,9 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     let dir_truncated = truncate(&dir_display, inner_w.saturating_sub(2));
     lines.push(Line::from(Span::styled(
         format!("  {dir_truncated}"),
-        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
     )));
 
     if let Some(ref err) = app.file_picker.error {
@@ -3231,7 +3688,10 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
 
         let end = (scroll_offset + visible_rows).min(app.file_picker.filtered.len());
 
-        for (i, &entry_idx) in app.file_picker.filtered[scroll_offset..end].iter().enumerate() {
+        for (i, &entry_idx) in app.file_picker.filtered[scroll_offset..end]
+            .iter()
+            .enumerate()
+        {
             let actual_index = scroll_offset + i;
             let is_selected = actual_index == app.file_picker.index;
             let (ref name, is_dir, size) = app.file_picker.entries[entry_idx];
@@ -3255,9 +3715,15 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
 
             let name_style = if is_selected {
                 if is_dir {
-                    Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .bg(theme.bg_selected)
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .bg(theme.bg_selected)
+                        .fg(theme.fg)
+                        .add_modifier(Modifier::BOLD)
                 }
             } else if is_dir {
                 Style::default().fg(theme.accent)
@@ -3302,17 +3768,19 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
     let max_visible = 12usize.min(app.theme_picker.available_themes.len());
     let pref_height = max_visible as u16 + 5; // border + title + footer
 
-    let (popup_area, block) = centered_popup(
-        frame, area, 50, pref_height, " Theme ", theme,
-    );
+    let (popup_area, block) = centered_popup(frame, area, 50, pref_height, " Theme ", theme);
 
     let inner_height = popup_area.height.saturating_sub(2) as usize;
-    let (visible_rows, scroll_offset) = list_overlay::scroll_layout(inner_height, 2, app.theme_picker.index);
+    let (visible_rows, scroll_offset) =
+        list_overlay::scroll_layout(inner_height, 2, app.theme_picker.index);
 
     let mut lines: Vec<Line> = Vec::new();
 
     let end = (scroll_offset + visible_rows).min(app.theme_picker.available_themes.len());
-    for (i, t) in app.theme_picker.available_themes[scroll_offset..end].iter().enumerate() {
+    for (i, t) in app.theme_picker.available_themes[scroll_offset..end]
+        .iter()
+        .enumerate()
+    {
         let actual_index = scroll_offset + i;
         let is_selected = actual_index == app.theme_picker.index;
         let is_active = t.name == app.theme.name;
@@ -3324,16 +3792,37 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme.fg)
         };
         let marker_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(if is_active { theme.success } else { theme.fg_muted })
+            Style::default().bg(theme.bg_selected).fg(if is_active {
+                theme.success
+            } else {
+                theme.fg_muted
+            })
         } else {
-            Style::default().fg(if is_active { theme.success } else { theme.fg_muted })
+            Style::default().fg(if is_active {
+                theme.success
+            } else {
+                theme.fg_muted
+            })
         };
 
         // Color swatches: show accent, success, error as colored blocks
-        let swatch_bg = if is_selected { theme.bg_selected } else { theme.bg };
-        let swatch_accent = Span::styled("\u{2588}\u{2588}", Style::default().fg(t.accent).bg(swatch_bg));
-        let swatch_success = Span::styled("\u{2588}\u{2588}", Style::default().fg(t.success).bg(swatch_bg));
-        let swatch_error = Span::styled("\u{2588}\u{2588}", Style::default().fg(t.error).bg(swatch_bg));
+        let swatch_bg = if is_selected {
+            theme.bg_selected
+        } else {
+            theme.bg
+        };
+        let swatch_accent = Span::styled(
+            "\u{2588}\u{2588}",
+            Style::default().fg(t.accent).bg(swatch_bg),
+        );
+        let swatch_success = Span::styled(
+            "\u{2588}\u{2588}",
+            Style::default().fg(t.success).bg(swatch_bg),
+        );
+        let swatch_error = Span::styled(
+            "\u{2588}\u{2588}",
+            Style::default().fg(t.error).bg(swatch_bg),
+        );
 
         // Pad name to align swatches
         let name_width = 28;
@@ -3352,7 +3841,12 @@ fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    list_overlay::append_footer(&mut lines, visible_rows, "  j/k navigate  |  Enter apply  |  Esc cancel", theme.fg_muted);
+    list_overlay::append_footer(
+        &mut lines,
+        visible_rows,
+        "  j/k navigate  |  Enter apply  |  Esc cancel",
+        theme.fg_muted,
+    );
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -3372,9 +3866,8 @@ fn draw_keybindings(frame: &mut Frame, app: &App, area: Rect) {
     let pref_height = max_visible as u16 + 4; // borders + footer
     let pref_width = 52;
 
-    let (popup_area, block) = centered_popup(
-        frame, area, pref_width, pref_height, " Keybindings ", theme,
-    );
+    let (popup_area, block) =
+        centered_popup(frame, area, pref_width, pref_height, " Keybindings ", theme);
 
     let inner_height = popup_area.height.saturating_sub(2) as usize;
     let footer_lines = 2;
@@ -3398,7 +3891,10 @@ fn draw_keybindings(frame: &mut Frame, app: &App, area: Rect) {
         if row == 0 {
             // Profile row
             let style = if is_selected {
-                Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(theme.bg_selected)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.fg_secondary)
             };
@@ -3421,7 +3917,10 @@ fn draw_keybindings(frame: &mut Frame, app: &App, area: Rect) {
             let header_style = Style::default()
                 .fg(theme.accent_secondary)
                 .add_modifier(Modifier::BOLD);
-            lines.push(Line::from(Span::styled(format!("  -- {label} --"), header_style)));
+            lines.push(Line::from(Span::styled(
+                format!("  -- {label} --"),
+                header_style,
+            )));
         } else {
             // Action row
             let action = action.unwrap();
@@ -3438,7 +3937,10 @@ fn draw_keybindings(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             let row_style = if is_selected {
-                Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(theme.bg_selected)
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(theme.fg_secondary)
             };
@@ -3451,7 +3953,10 @@ fn draw_keybindings(frame: &mut Frame, app: &App, area: Rect) {
             let padded_label = format!("{label:width$}", width = key_col_width);
             lines.push(Line::from(vec![
                 Span::styled(format!("  {padded_label}"), row_style),
-                Span::styled(format!("{key_display:>width$}", width = val_col_width), key_style),
+                Span::styled(
+                    format!("{key_display:>width$}", width = val_col_width),
+                    key_style,
+                ),
             ]));
         }
     }
@@ -3476,9 +3981,8 @@ fn draw_keybindings_profile_picker(frame: &mut Frame, app: &App, area: Rect) {
     let max_visible = 8usize.min(app.keybindings_overlay.available_profiles.len());
     let pref_height = max_visible as u16 + 5;
 
-    let (popup_area, block) = centered_popup(
-        frame, area, 36, pref_height, " Keybinding Profile ", theme,
-    );
+    let (popup_area, block) =
+        centered_popup(frame, area, 36, pref_height, " Keybinding Profile ", theme);
 
     let inner_height = popup_area.height.saturating_sub(2) as usize;
     let footer_lines = 2;
@@ -3494,23 +3998,38 @@ fn draw_keybindings_profile_picker(frame: &mut Frame, app: &App, area: Rect) {
     let end = (scroll_offset + visible_rows).min(app.keybindings_overlay.available_profiles.len());
     for i in scroll_offset..end {
         let is_selected = i == app.keybindings_overlay.profile_index;
-        let is_active = app.keybindings_overlay.available_profiles[i] == app.keybindings.profile_name;
+        let is_active =
+            app.keybindings_overlay.available_profiles[i] == app.keybindings.profile_name;
         let marker = if is_active { "[*]" } else { "[ ]" };
 
         let row_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)
         };
         let marker_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(if is_active { theme.success } else { theme.fg_muted })
+            Style::default().bg(theme.bg_selected).fg(if is_active {
+                theme.success
+            } else {
+                theme.fg_muted
+            })
         } else {
-            Style::default().fg(if is_active { theme.success } else { theme.fg_muted })
+            Style::default().fg(if is_active {
+                theme.success
+            } else {
+                theme.fg_muted
+            })
         };
 
         lines.push(Line::from(vec![
             Span::styled(format!("  {marker} "), marker_style),
-            Span::styled(app.keybindings_overlay.available_profiles[i].clone(), row_style),
+            Span::styled(
+                app.keybindings_overlay.available_profiles[i].clone(),
+                row_style,
+            ),
         ]));
     }
 
@@ -3540,9 +4059,8 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
     let max_visible = 10usize.min(app.settings_profiles.available.len());
     let pref_height = max_visible as u16 + 5; // borders + footer
 
-    let (popup_area, block) = centered_popup(
-        frame, area, 42, pref_height, " Settings Profiles ", theme,
-    );
+    let (popup_area, block) =
+        centered_popup(frame, area, 42, pref_height, " Settings Profiles ", theme);
 
     let inner_height = popup_area.height.saturating_sub(2) as usize;
     let footer_lines = 2;
@@ -3555,7 +4073,10 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // Determine if current settings differ from loaded profile
-    let has_changes = !app.settings_profiles.available.iter()
+    let has_changes = !app
+        .settings_profiles
+        .available
+        .iter()
         .any(|p| p.name == app.settings_profiles.name && p.matches_app(app));
 
     let mut lines: Vec<Line> = Vec::new();
@@ -3567,14 +4088,25 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
 
         let marker = if is_active { ">" } else { " " };
         let row_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)
         };
         let marker_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(if is_active { theme.accent } else { theme.fg_muted })
+            Style::default().bg(theme.bg_selected).fg(if is_active {
+                theme.accent
+            } else {
+                theme.fg_muted
+            })
         } else {
-            Style::default().fg(if is_active { theme.accent } else { theme.fg_muted })
+            Style::default().fg(if is_active {
+                theme.accent
+            } else {
+                theme.fg_muted
+            })
         };
 
         lines.push(Line::from(vec![
@@ -3588,7 +4120,10 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Build contextual footer hints
-    let selected_profile = app.settings_profiles.available.get(app.settings_profiles.index);
+    let selected_profile = app
+        .settings_profiles
+        .available
+        .get(app.settings_profiles.index);
     let is_builtin = selected_profile
         .map(|p| crate::settings_profile::is_builtin(&p.name))
         .unwrap_or(true);
@@ -3616,18 +4151,22 @@ fn draw_settings_profile_manager(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_settings_profile_save_as(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let (popup_area, block) = centered_popup(
-        frame, area, 40, 7, " Save Profile As ", theme,
-    );
+    let (popup_area, block) = centered_popup(frame, area, 40, 7, " Save Profile As ", theme);
 
-    let cursor_char = if app.settings_profiles.save_as_input.is_empty() { "_" } else { "" };
+    let cursor_char = if app.settings_profiles.save_as_input.is_empty() {
+        "_"
+    } else {
+        ""
+    };
     let lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("  Name: ", Style::default().fg(theme.fg_secondary)),
             Span::styled(
                 format!("{}{cursor_char}", app.settings_profiles.save_as_input),
-                Style::default().fg(theme.fg).add_modifier(Modifier::UNDERLINED),
+                Style::default()
+                    .fg(theme.fg)
+                    .add_modifier(Modifier::UNDERLINED),
             ),
         ]),
         Line::from(""),
@@ -3646,9 +4185,8 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
     let item_count = PIN_DURATIONS.len();
     let popup_height = item_count as u16 + 4; // borders + footer
 
-    let (popup_area, block) = centered_popup(
-        frame, area, 24, popup_height, " Pin Duration ", theme,
-    );
+    let (popup_area, block) =
+        centered_popup(frame, area, 24, popup_height, " Pin Duration ", theme);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -3658,7 +4196,11 @@ fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(theme.fg)
         };
-        let marker = if i == app.pin_duration.index { ">" } else { " " };
+        let marker = if i == app.pin_duration.index {
+            ">"
+        } else {
+            " "
+        };
         lines.push(Line::from(Span::styled(
             format!(" {marker} {label}"),
             style,
@@ -3703,15 +4245,17 @@ pub(crate) fn build_poll_display(
 
     for (i, opt) in poll.options.iter().enumerate() {
         let count = counts[i];
-        let pct = if total_votes > 0 { (count * 100) / total_votes } else { 0 };
-        let filled = if total_votes > 0 { (count * bar_width) / total_votes } else { 0 };
+        let pct = (count * 100).checked_div(total_votes).unwrap_or(0);
+        let filled = (count * bar_width).checked_div(total_votes).unwrap_or(0);
         let empty = bar_width - filled;
 
         let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(empty);
 
         let voted_marker = if own_selections[i] { "\u{2713} " } else { "  " };
         let text_style = if own_selections[i] {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)
         };
@@ -3724,10 +4268,7 @@ pub(crate) fn build_poll_display(
         };
         lines.push(Line::from(vec![
             Span::styled(format!("  {voted_marker}"), text_style),
-            Span::styled(
-                format!("{:<12}", label),
-                text_style,
-            ),
+            Span::styled(format!("{:<12}", label), text_style),
             Span::styled(bar, Style::default().fg(theme.accent)),
             Span::styled(
                 format!("  {count} ({pct}%)"),
@@ -3736,7 +4277,11 @@ pub(crate) fn build_poll_display(
         ]));
     }
 
-    let mode = if poll.allow_multiple { "multi-select" } else { "single choice" };
+    let mode = if poll.allow_multiple {
+        "multi-select"
+    } else {
+        "single choice"
+    };
     let status = if poll.closed { " [CLOSED]" } else { "" };
     lines.push(Line::from(Span::styled(
         format!("    {total_votes} votes \u{00b7} {mode}{status}"),
@@ -3754,13 +4299,19 @@ fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let option_count = pending.options.len();
-    let max_text_len = pending.options.iter().map(|o| o.text.len()).max().unwrap_or(8);
-    let popup_width = (max_text_len as u16 + 12).max(24).min(area.width.saturating_sub(4));
+    let max_text_len = pending
+        .options
+        .iter()
+        .map(|o| o.text.len())
+        .max()
+        .unwrap_or(8);
+    let popup_width = (max_text_len as u16 + 12)
+        .max(24)
+        .min(area.width.saturating_sub(4));
     let popup_height = option_count as u16 + 5;
 
-    let (popup_area, block) = centered_popup(
-        frame, area, popup_width, popup_height, " Vote ", theme,
-    );
+    let (popup_area, block) =
+        centered_popup(frame, area, popup_width, popup_height, " Vote ", theme);
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -3769,7 +4320,10 @@ fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
         let marker = if i == app.poll_vote.index { ">" } else { " " };
         let checkbox = if selected { "[x]" } else { "[ ]" };
         let style = if i == app.poll_vote.index {
-            Style::default().bg(theme.bg_selected).fg(theme.fg).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg)
         };
@@ -3780,7 +4334,11 @@ fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     lines.push(Line::from(""));
-    let mode_hint = if pending.allow_multiple { "Space: toggle" } else { "Space: select" };
+    let mode_hint = if pending.allow_multiple {
+        "Space: toggle"
+    } else {
+        "Space: select"
+    };
     lines.push(Line::from(Span::styled(
         format!(" {mode_hint}  Enter: submit  Esc"),
         Style::default().fg(theme.fg_muted),
@@ -3798,7 +4356,9 @@ fn draw_about(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             format!("  siggy v{version}"),
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -3827,7 +4387,12 @@ fn draw_about(frame: &mut Frame, app: &App, area: Rect) {
 
     let pref_height = lines.len() as u16 + 2; // +2 for borders
     let (popup_area, block) = centered_popup(
-        frame, area, ABOUT_POPUP_WIDTH, pref_height, " About ", theme,
+        frame,
+        area,
+        ABOUT_POPUP_WIDTH,
+        pref_height,
+        " About ",
+        theme,
     );
 
     let popup = Paragraph::new(lines).block(block);
@@ -3845,7 +4410,9 @@ fn draw_profile(frame: &mut Frame, app: &App, area: Rect) {
         let is_editing = is_selected && app.profile.editing;
 
         let label_style = if is_selected {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.fg_secondary)
         };
@@ -3854,7 +4421,11 @@ fn draw_profile(frame: &mut Frame, app: &App, area: Rect) {
             format!("{}\u{2588}", app.profile.edit_buffer) // block cursor
         } else {
             let v = &app.profile.fields[i];
-            if v.is_empty() { "(empty)".to_string() } else { v.clone() }
+            if v.is_empty() {
+                "(empty)".to_string()
+            } else {
+                v.clone()
+            }
         };
 
         let value_style = if is_editing || is_selected {
@@ -3885,7 +4456,10 @@ fn draw_profile(frame: &mut Frame, app: &App, area: Rect) {
     // Save button
     let save_selected = app.profile.index == 4;
     let save_style = if save_selected {
-        Style::default().bg(theme.bg_selected).fg(theme.accent).add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(theme.bg_selected)
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.fg_secondary)
     };
@@ -3905,7 +4479,12 @@ fn draw_profile(frame: &mut Frame, app: &App, area: Rect) {
 
     let pref_height = lines.len() as u16 + 2; // +2 for borders
     let (popup_area, block) = centered_popup(
-        frame, area, PROFILE_POPUP_WIDTH, pref_height, " Edit Profile ", theme,
+        frame,
+        area,
+        PROFILE_POPUP_WIDTH,
+        pref_height,
+        " Edit Profile ",
+        theme,
     );
 
     let popup = Paragraph::new(lines).block(block);
@@ -3917,10 +4496,11 @@ fn draw_forward(frame: &mut Frame, app: &App, area: Rect) {
     let max_rows = 10usize;
     let list_height = app.forward.filtered.len().min(max_rows);
     let pref_height = (list_height + 4) as u16; // filter line + blank + list + footer
-    let (popup_area, block) = centered_popup(
-        frame, area, 45, pref_height, " Forward to ", theme,
-    );
-    let inner = popup_area.inner(ratatui::layout::Margin { horizontal: 1, vertical: 1 });
+    let (popup_area, block) = centered_popup(frame, area, 45, pref_height, " Forward to ", theme);
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -3935,7 +4515,10 @@ fn draw_forward(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default().fg(theme.fg)
     };
-    lines.push(Line::from(Span::styled(format!("  > {filter_display}"), filter_style)));
+    lines.push(Line::from(Span::styled(
+        format!("  > {filter_display}"),
+        filter_style,
+    )));
     lines.push(Line::from(""));
 
     // Conversation list
@@ -3962,10 +4545,7 @@ fn draw_forward(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(theme.fg)
             };
-            lines.push(Line::from(Span::styled(
-                format!("{prefix}{name}"),
-                style,
-            )));
+            lines.push(Line::from(Span::styled(format!("{prefix}{name}"), style)));
         }
     }
 
@@ -4076,8 +4656,14 @@ mod tests {
     fn reaction_summary_counts() {
         let theme = default_theme();
         let reactions = vec![
-            Reaction { emoji: "\u{1f44d}".to_string(), sender: "Alice".to_string() },
-            Reaction { emoji: "\u{1f44d}".to_string(), sender: "Bob".to_string() },
+            Reaction {
+                emoji: "\u{1f44d}".to_string(),
+                sender: "Alice".to_string(),
+            },
+            Reaction {
+                emoji: "\u{1f44d}".to_string(),
+                sender: "Bob".to_string(),
+            },
         ];
         let line = build_reaction_summary(&reactions, false, false, &theme);
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
@@ -4087,9 +4673,10 @@ mod tests {
     #[test]
     fn reaction_summary_verbose_names() {
         let theme = default_theme();
-        let reactions = vec![
-            Reaction { emoji: "\u{2764}".to_string(), sender: "Alice".to_string() },
-        ];
+        let reactions = vec![Reaction {
+            emoji: "\u{2764}".to_string(),
+            sender: "Alice".to_string(),
+        }];
         let line = build_reaction_summary(&reactions, true, false, &theme);
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("Alice"), "expected sender name in: {text}");
@@ -4111,19 +4698,41 @@ mod tests {
         let poll = PollData {
             question: "Favorite?".to_string(),
             options: vec![
-                PollOption { id: 0, text: "A".to_string() },
-                PollOption { id: 1, text: "B".to_string() },
+                PollOption {
+                    id: 0,
+                    text: "A".to_string(),
+                },
+                PollOption {
+                    id: 1,
+                    text: "B".to_string(),
+                },
             ],
             allow_multiple: false,
             closed: false,
         };
         let votes = vec![
-            PollVote { voter: "+1".to_string(), voter_name: None, option_indexes: vec![0], vote_count: 1 },
-            PollVote { voter: "+2".to_string(), voter_name: None, option_indexes: vec![0], vote_count: 1 },
+            PollVote {
+                voter: "+1".to_string(),
+                voter_name: None,
+                option_indexes: vec![0],
+                vote_count: 1,
+            },
+            PollVote {
+                voter: "+2".to_string(),
+                voter_name: None,
+                option_indexes: vec![0],
+                vote_count: 1,
+            },
         ];
         let lines = build_poll_display(&poll, &votes, "+99", &theme);
         assert_eq!(lines.len(), 3);
-        let summary: String = lines.last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
+        let summary: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(summary.contains("votes"), "expected 'votes' in: {summary}");
     }
 
@@ -4132,16 +4741,29 @@ mod tests {
         let theme = default_theme();
         let poll = PollData {
             question: "Q?".to_string(),
-            options: vec![PollOption { id: 0, text: "Yes".to_string() }],
+            options: vec![PollOption {
+                id: 0,
+                text: "Yes".to_string(),
+            }],
             allow_multiple: false,
             closed: false,
         };
-        let votes = vec![
-            PollVote { voter: "+me".to_string(), voter_name: None, option_indexes: vec![0], vote_count: 1 },
-        ];
+        let votes = vec![PollVote {
+            voter: "+me".to_string(),
+            voter_name: None,
+            option_indexes: vec![0],
+            vote_count: 1,
+        }];
         let lines = build_poll_display(&poll, &votes, "+me", &theme);
-        let option_text: String = lines[0].spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(option_text.contains("\u{2713}"), "expected checkmark in: {option_text}");
+        let option_text: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            option_text.contains("\u{2713}"),
+            "expected checkmark in: {option_text}"
+        );
     }
 
     #[test]
@@ -4149,13 +4771,25 @@ mod tests {
         let theme = default_theme();
         let poll = PollData {
             question: "Q?".to_string(),
-            options: vec![PollOption { id: 0, text: "X".to_string() }],
+            options: vec![PollOption {
+                id: 0,
+                text: "X".to_string(),
+            }],
             allow_multiple: false,
             closed: true,
         };
         let lines = build_poll_display(&poll, &[], "+me", &theme);
-        let summary: String = lines.last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(summary.contains("[CLOSED]"), "expected [CLOSED] in: {summary}");
+        let summary: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            summary.contains("[CLOSED]"),
+            "expected [CLOSED] in: {summary}"
+        );
     }
 
     #[test]
@@ -4163,15 +4797,34 @@ mod tests {
         let theme = default_theme();
         let poll = PollData {
             question: "Q?".to_string(),
-            options: vec![PollOption { id: 0, text: "A".to_string() }],
+            options: vec![PollOption {
+                id: 0,
+                text: "A".to_string(),
+            }],
             allow_multiple: false,
             closed: false,
         };
         let lines = build_poll_display(&poll, &[], "+me", &theme);
-        let option_text: String = lines[0].spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(option_text.contains("0 (0%)"), "expected '0 (0%)' in: {option_text}");
-        let summary: String = lines.last().unwrap().spans.iter().map(|s| s.content.to_string()).collect();
-        assert!(summary.contains("0 votes"), "expected '0 votes' in: {summary}");
+        let option_text: String = lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            option_text.contains("0 (0%)"),
+            "expected '0 (0%)' in: {option_text}"
+        );
+        let summary: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            summary.contains("0 votes"),
+            "expected '0 votes' in: {summary}"
+        );
     }
 
     // --- format_file_size ---
@@ -4199,8 +4852,15 @@ mod tests {
     fn search_snippet_centers_on_match() {
         let body = "a".repeat(100) + "NEEDLE" + &"b".repeat(100);
         let snippet = search_snippet(&body, "NEEDLE", 30);
-        assert!(snippet.chars().count() <= 30, "snippet too long ({} chars): {snippet}", snippet.chars().count());
-        assert!(snippet.contains("NEEDLE"), "expected query in snippet: {snippet}");
+        assert!(
+            snippet.chars().count() <= 30,
+            "snippet too long ({} chars): {snippet}",
+            snippet.chars().count()
+        );
+        assert!(
+            snippet.contains("NEEDLE"),
+            "expected query in snippet: {snippet}"
+        );
     }
 }
 
@@ -4236,9 +4896,7 @@ mod snapshot_tests {
     fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| draw(frame, app))
-            .unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
         let buffer = terminal.backend().buffer().clone();
         let mut output = String::new();
         for y in 0..buffer.area.height {
@@ -4375,15 +5033,18 @@ mod snapshot_tests {
         use crate::app::Conversation;
         let mut app = demo_app();
         let empty_id = "+15550009999".to_string();
-        app.store.conversations.insert(empty_id.clone(), Conversation {
-            name: "Empty".to_string(),
-            id: empty_id.clone(),
-            messages: Vec::new(),
-            unread: 0,
-            is_group: false,
-            expiration_timer: 0,
-            accepted: true,
-        });
+        app.store.conversations.insert(
+            empty_id.clone(),
+            Conversation {
+                name: "Empty".to_string(),
+                id: empty_id.clone(),
+                messages: Vec::new(),
+                unread: 0,
+                is_group: false,
+                expiration_timer: 0,
+                accepted: true,
+            },
+        );
         app.store.conversation_order.push(empty_id.clone());
         app.active_conversation = Some(empty_id);
         let output = render_to_string(&mut app, 100, 30);
