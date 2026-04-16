@@ -243,7 +243,7 @@ impl ConversationStore {
 
         // Sort mentions by start descending so replacements don't shift earlier offsets
         let mut sorted: Vec<&Mention> = mentions.iter().collect();
-        sorted.sort_by(|a, b| b.start.cmp(&a.start));
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.start));
 
         // Convert body to UTF-16 for offset mapping
         let utf16: Vec<u16> = body.encode_utf16().collect();

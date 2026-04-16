@@ -52,11 +52,10 @@ impl SearchState {
         db: &Database,
     ) -> SearchAction {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.results.is_empty() && self.index < self.results.len() - 1 {
+            KeyCode::Char('j') | KeyCode::Down
+                if !self.results.is_empty() && self.index < self.results.len() - 1 => {
                     self.index += 1;
                 }
-            }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.index = self.index.saturating_sub(1);
             }
@@ -77,12 +76,11 @@ impl SearchState {
                 self.visible = false;
                 self.query.clear();
             }
-            KeyCode::Backspace => {
-                if !self.query.is_empty() {
+            KeyCode::Backspace
+                if !self.query.is_empty() => {
                     self.query.pop();
                     self.run(active_conversation, db);
                 }
-            }
             KeyCode::Char(c) => {
                 self.query.push(c);
                 self.run(active_conversation, db);

@@ -4245,16 +4245,8 @@ pub(crate) fn build_poll_display(
 
     for (i, opt) in poll.options.iter().enumerate() {
         let count = counts[i];
-        let pct = if total_votes > 0 {
-            (count * 100) / total_votes
-        } else {
-            0
-        };
-        let filled = if total_votes > 0 {
-            (count * bar_width) / total_votes
-        } else {
-            0
-        };
+        let pct = (count * 100).checked_div(total_votes).unwrap_or(0);
+        let filled = (count * bar_width).checked_div(total_votes).unwrap_or(0);
         let empty = bar_width - filled;
 
         let bar: String = "\u{2588}".repeat(filled) + &"\u{2591}".repeat(empty);

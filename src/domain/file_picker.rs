@@ -64,8 +64,8 @@ impl FilePickerState {
                         files.push((name, false, size));
                     }
                 }
-                dirs.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
-                files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+                dirs.sort_by_key(|a| a.0.to_lowercase());
+                files.sort_by_key(|a| a.0.to_lowercase());
                 self.entries.extend(dirs);
                 self.entries.extend(files);
             }
@@ -99,11 +99,10 @@ impl FilePickerState {
     /// Returns `Some(path)` when the user selects a file.
     pub fn handle_key(&mut self, code: KeyCode) -> Option<PathBuf> {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !self.filtered.is_empty() && self.index < self.filtered.len() - 1 {
+            KeyCode::Char('j') | KeyCode::Down
+                if !self.filtered.is_empty() && self.index < self.filtered.len() - 1 => {
                     self.index += 1;
                 }
-            }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.index = self.index.saturating_sub(1);
             }

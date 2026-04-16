@@ -101,28 +101,25 @@ pub async fn run_setup(
                                 return Ok(SetupResult::Cancelled);
                             }
                             _ if custom_path_mode => match key.code {
-                                KeyCode::Enter => {
-                                    if !custom_path_input.is_empty() {
+                                KeyCode::Enter
+                                    if !custom_path_input.is_empty() => {
                                         signal_cli_path = custom_path_input.clone();
                                         signal_cli_found = false;
                                         custom_path_mode = false;
                                         // Will re-check on next loop
                                     }
-                                }
-                                KeyCode::Backspace => {
-                                    if custom_path_cursor > 0 {
+                                KeyCode::Backspace
+                                    if custom_path_cursor > 0 => {
                                         custom_path_cursor -= 1;
                                         custom_path_input.remove(custom_path_cursor);
                                     }
-                                }
                                 KeyCode::Left => {
                                     custom_path_cursor = custom_path_cursor.saturating_sub(1);
                                 }
-                                KeyCode::Right => {
-                                    if custom_path_cursor < custom_path_input.len() {
+                                KeyCode::Right
+                                    if custom_path_cursor < custom_path_input.len() => {
                                         custom_path_cursor += 1;
                                     }
-                                }
                                 KeyCode::Char(c) => {
                                     custom_path_input.insert(custom_path_cursor, c);
                                     custom_path_cursor += 1;
@@ -187,11 +184,10 @@ pub async fn run_setup(
                             (_, KeyCode::Left) => {
                                 phone_cursor = phone_cursor.saturating_sub(1);
                             }
-                            (_, KeyCode::Right) => {
-                                if phone_cursor < phone_input.len() {
+                            (_, KeyCode::Right)
+                                if phone_cursor < phone_input.len() => {
                                     phone_cursor += 1;
                                 }
-                            }
                             (_, KeyCode::Char(c)) => {
                                 phone_input.insert(phone_cursor, c);
                                 phone_cursor += 1;
