@@ -1478,3 +1478,5 @@ async fn run_app(
 
     Ok(())
 }
+
+compile_error!("smoke test");
