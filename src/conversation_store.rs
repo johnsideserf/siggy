@@ -14,6 +14,91 @@ pub(crate) fn db_warn<T>(result: Result<T, impl std::fmt::Display>, context: &st
     }
 }
 
+/// Resolve U+FFFC placeholders in a message body using bodyRanges mentions against
+/// a supplied `uuid_to_name` map. Returns (resolved_body, mention_byte_ranges).
+/// Extracted as a free function so callers can re-resolve against a cloned or
+/// borrowed map without conflicting with mutable iteration over conversations.
+pub fn resolve_mentions_with(
+    body: &str,
+    mentions: &[Mention],
+    uuid_to_name: &HashMap<String, String>,
+) -> (String, Vec<(usize, usize)>) {
+    if mentions.is_empty() {
+        return (body.to_string(), Vec::new());
+    }
+
+    let lookup = |uuid: &str| -> String {
+        uuid_to_name.get(uuid).cloned().unwrap_or_else(|| {
+            // Truncated UUID fallback
+            let short = if uuid.len() > 8 { &uuid[..8] } else { uuid };
+            short.to_string()
+        })
+    };
+
+    // Sort mentions by start descending so replacements don't shift earlier offsets
+    let mut sorted: Vec<&Mention> = mentions.iter().collect();
+    sorted.sort_by_key(|b| std::cmp::Reverse(b.start));
+
+    // Convert body to UTF-16 for offset mapping
+    let utf16: Vec<u16> = body.encode_utf16().collect();
+    let mut result_utf16 = utf16.clone();
+    for mention in &sorted {
+        if mention.start >= result_utf16.len() {
+            continue;
+        }
+        let name = lookup(&mention.uuid);
+        let replacement = format!("@{name}");
+        let replacement_utf16: Vec<u16> = replacement.encode_utf16().collect();
+        let end = (mention.start + mention.length).min(result_utf16.len());
+        result_utf16.splice(mention.start..end, replacement_utf16);
+    }
+
+    let resolved = String::from_utf16_lossy(&result_utf16);
+
+    // Compute byte ranges for each @Name in the resolved string
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut sorted_fwd: Vec<&Mention> = mentions.iter().collect();
+    sorted_fwd.sort_by_key(|m| m.start);
+
+    // Re-build with forward pass to get accurate byte offsets
+    let resolved_utf16: Vec<u16> = resolved.encode_utf16().collect();
+    let mut byte_pos = 0;
+    let resolved_bytes = resolved.as_bytes();
+
+    // Build utf16_offset -> byte_offset mapping
+    let mut utf16_to_byte: Vec<usize> = Vec::with_capacity(resolved_utf16.len() + 1);
+    for ch in resolved.chars() {
+        let utf16_len = ch.len_utf16();
+        let utf8_len = ch.len_utf8();
+        for _ in 0..utf16_len {
+            utf16_to_byte.push(byte_pos);
+        }
+        byte_pos += utf8_len;
+    }
+    utf16_to_byte.push(byte_pos); // sentinel for end
+
+    // Calculate where each mention ended up after all replacements
+    let mut offset_shift: i64 = 0;
+    for mention in &sorted_fwd {
+        let adjusted_start = (mention.start as i64 + offset_shift) as usize;
+        let name = lookup(&mention.uuid);
+        let replacement_utf16_len = format!("@{name}").encode_utf16().count();
+        let byte_start = utf16_to_byte
+            .get(adjusted_start)
+            .copied()
+            .unwrap_or(resolved_bytes.len());
+        let byte_end = utf16_to_byte
+            .get(adjusted_start + replacement_utf16_len)
+            .copied()
+            .unwrap_or(resolved_bytes.len());
+        ranges.push((byte_start, byte_end));
+        // This mention replaced `mention.length` UTF-16 units with `replacement_utf16_len`
+        offset_shift += replacement_utf16_len as i64 - mention.length as i64;
+    }
+
+    (resolved, ranges)
+}
+
 /// Shorten a phone number for display: +15551234567 -> +1***4567
 pub(crate) fn short_name(number: &str) -> String {
     let chars: Vec<char> = number.chars().collect();
@@ -55,6 +140,13 @@ pub struct DisplayMessage {
     pub reactions: Vec<Reaction>,
     /// Byte ranges of @mentions in body (for styling)
     pub mention_ranges: Vec<(usize, usize)>,
+    /// Original body with U+FFFC placeholders, for lazy re-resolution of mentions
+    /// when the contact list updates. `None` for legacy messages or messages with
+    /// no mentions.
+    pub body_raw: Option<String>,
+    /// Raw mentions from signal-cli's bodyRanges array. Empty for messages with
+    /// no mentions or legacy messages without a stored raw body.
+    pub mentions: Vec<Mention>,
     /// Byte ranges + style type for text styling (bold, italic, etc.)
     pub style_ranges: Vec<(usize, usize, StyleType)>,
     /// Quoted reply context
@@ -237,95 +329,40 @@ impl ConversationStore {
         body: &str,
         mentions: &[Mention],
     ) -> (String, Vec<(usize, usize)>) {
-        if mentions.is_empty() {
-            return (body.to_string(), Vec::new());
-        }
+        resolve_mentions_with(body, mentions, &self.uuid_to_name)
+    }
 
-        // Sort mentions by start descending so replacements don't shift earlier offsets
-        let mut sorted: Vec<&Mention> = mentions.iter().collect();
-        sorted.sort_by_key(|b| std::cmp::Reverse(b.start));
-
-        // Convert body to UTF-16 for offset mapping
-        let utf16: Vec<u16> = body.encode_utf16().collect();
-        let mut result_utf16 = utf16.clone();
-        for mention in &sorted {
-            if mention.start >= result_utf16.len() {
-                continue;
+    /// Re-resolve @mentions across all stored messages using the current
+    /// `uuid_to_name` map. Intended to be called after a contact or group list
+    /// update populates previously-unknown UUIDs. Persists updated bodies to
+    /// the database.
+    ///
+    /// Fix for #283: before this, the first render of a message with mentions
+    /// that arrived before the contact list would bake the truncated UUID into
+    /// the display body forever.
+    pub fn rebuild_mention_display(&mut self, db: &Database) {
+        let uuid_to_name = self.uuid_to_name.clone();
+        for (conv_id, conv) in self.conversations.iter_mut() {
+            for msg in conv.messages.iter_mut() {
+                if msg.mentions.is_empty() {
+                    continue;
+                }
+                let body_raw = match &msg.body_raw {
+                    Some(b) => b.clone(),
+                    None => continue,
+                };
+                let (resolved, ranges) =
+                    resolve_mentions_with(&body_raw, &msg.mentions, &uuid_to_name);
+                if resolved != msg.body {
+                    msg.body = resolved.clone();
+                    msg.mention_ranges = ranges;
+                    db_warn(
+                        db.update_message_body(conv_id, msg.timestamp_ms, &resolved),
+                        "update_message_body (rebuild_mentions)",
+                    );
+                }
             }
-            let name = self
-                .uuid_to_name
-                .get(&mention.uuid)
-                .cloned()
-                .unwrap_or_else(|| {
-                    // Truncated UUID fallback
-                    let short = if mention.uuid.len() > 8 {
-                        &mention.uuid[..8]
-                    } else {
-                        &mention.uuid
-                    };
-                    short.to_string()
-                });
-            let replacement = format!("@{name}");
-            let replacement_utf16: Vec<u16> = replacement.encode_utf16().collect();
-            let end = (mention.start + mention.length).min(result_utf16.len());
-            result_utf16.splice(mention.start..end, replacement_utf16);
         }
-
-        let resolved = String::from_utf16_lossy(&result_utf16);
-
-        // Compute byte ranges for each @Name in the resolved string
-        let mut ranges: Vec<(usize, usize)> = Vec::new();
-        let mut sorted_fwd: Vec<&Mention> = mentions.iter().collect();
-        sorted_fwd.sort_by_key(|m| m.start);
-
-        // Re-build with forward pass to get accurate byte offsets
-        let resolved_utf16: Vec<u16> = resolved.encode_utf16().collect();
-        let mut byte_pos = 0;
-        let resolved_bytes = resolved.as_bytes();
-
-        // Build utf16_offset -> byte_offset mapping
-        let mut utf16_to_byte: Vec<usize> = Vec::with_capacity(resolved_utf16.len() + 1);
-        for ch in resolved.chars() {
-            let utf16_len = ch.len_utf16();
-            let utf8_len = ch.len_utf8();
-            for _ in 0..utf16_len {
-                utf16_to_byte.push(byte_pos);
-            }
-            byte_pos += utf8_len;
-        }
-        utf16_to_byte.push(byte_pos); // sentinel for end
-
-        // Calculate where each mention ended up after all replacements
-        let mut offset_shift: i64 = 0;
-        for mention in &sorted_fwd {
-            let adjusted_start = (mention.start as i64 + offset_shift) as usize;
-            let name = self
-                .uuid_to_name
-                .get(&mention.uuid)
-                .cloned()
-                .unwrap_or_else(|| {
-                    let short = if mention.uuid.len() > 8 {
-                        &mention.uuid[..8]
-                    } else {
-                        &mention.uuid
-                    };
-                    short.to_string()
-                });
-            let replacement_utf16_len = format!("@{name}").encode_utf16().count();
-            let byte_start = utf16_to_byte
-                .get(adjusted_start)
-                .copied()
-                .unwrap_or(resolved_bytes.len());
-            let byte_end = utf16_to_byte
-                .get(adjusted_start + replacement_utf16_len)
-                .copied()
-                .unwrap_or(resolved_bytes.len());
-            ranges.push((byte_start, byte_end));
-            // This mention replaced `mention.length` UTF-16 units with `replacement_utf16_len`
-            offset_shift += replacement_utf16_len as i64 - mention.length as i64;
-        }
-
-        (resolved, ranges)
     }
 
     /// Convert text style ranges from UTF-16 offsets (on the original body) to byte offsets
