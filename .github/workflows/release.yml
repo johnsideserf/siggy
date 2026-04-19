@@ -50,6 +50,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Ensure cross-compile target is installed
+        # dtolnay/rust-toolchain ignores its `targets:` input when a
+        # rust-toolchain.toml is present; install explicitly as a fallback.
+        run: rustup target add ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
