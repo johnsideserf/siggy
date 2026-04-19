@@ -361,7 +361,7 @@ pub struct JsonRpcError {
 }
 
 /// A body range mention from signal-cli's bodyRanges array.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mention {
     pub start: usize,  // UTF-16 offset in body
     pub length: usize, // Always 1 (U+FFFC)

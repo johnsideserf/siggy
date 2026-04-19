@@ -5,7 +5,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 
 use crate::app::{Conversation, DisplayMessage};
-use crate::signal::types::{LinkPreview, MessageStatus, PollData, PollVote, Reaction};
+use crate::signal::types::{LinkPreview, Mention, MessageStatus, PollData, PollVote, Reaction};
 
 /// (sender, body, timestamp_ms, conversation_id, conversation_name)
 pub type SearchRow = (String, String, i64, String, String);
@@ -226,6 +226,18 @@ impl Database {
             )?;
         }
 
+        if version < 13 {
+            self.conn.execute_batch(
+                "
+                BEGIN;
+                ALTER TABLE messages ADD COLUMN body_raw TEXT;
+                ALTER TABLE messages ADD COLUMN mentions_json TEXT;
+                UPDATE schema_version SET version = 13;
+                COMMIT;
+                ",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -276,7 +288,7 @@ impl Database {
         offset: usize,
     ) -> Result<Vec<DisplayMessage>> {
         let mut msg_stmt = self.conn.prepare(
-            "SELECT sender, timestamp, body, is_system, status, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, pinned, poll_data, link_preview FROM messages
+            "SELECT sender, timestamp, body, is_system, status, timestamp_ms, is_edited, is_deleted, quote_author, quote_body, quote_ts_ms, sender_id, expires_in_seconds, expiration_start_ms, pinned, poll_data, link_preview, body_raw, mentions_json FROM messages
              WHERE conversation_id = ?1
              ORDER BY timestamp_ms DESC, rowid DESC LIMIT ?2 OFFSET ?3",
         )?;
@@ -300,6 +312,8 @@ impl Database {
                 let is_pinned: bool = row.get::<_, i32>(14)? != 0;
                 let poll_data_json: Option<String> = row.get(15)?;
                 let link_preview_json: Option<String> = row.get(16)?;
+                let body_raw: Option<String> = row.get(17)?;
+                let mentions_json: Option<String> = row.get(18)?;
                 Ok((
                     sender,
                     ts_str,
@@ -318,6 +332,8 @@ impl Database {
                     is_pinned,
                     poll_data_json,
                     link_preview_json,
+                    body_raw,
+                    mentions_json,
                 ))
             })?
             .filter_map(|r| r.ok())
@@ -340,6 +356,8 @@ impl Database {
                     is_pinned,
                     poll_data_json,
                     link_preview_json,
+                    body_raw,
+                    mentions_json,
                 )| {
                     let timestamp = chrono::DateTime::parse_from_rfc3339(&ts_str)
                         .ok()?
@@ -357,6 +375,10 @@ impl Database {
                         poll_data_json.and_then(|j| serde_json::from_str::<PollData>(&j).ok());
                     let preview = link_preview_json
                         .and_then(|j| serde_json::from_str::<LinkPreview>(&j).ok());
+                    let mentions: Vec<Mention> = mentions_json
+                        .as_deref()
+                        .and_then(|j| serde_json::from_str(j).ok())
+                        .unwrap_or_default();
                     Some(DisplayMessage {
                         sender,
                         timestamp,
@@ -369,6 +391,8 @@ impl Database {
                         reactions: Vec::new(),
                         mention_ranges: Vec::new(),
                         style_ranges: Vec::new(),
+                        body_raw,
+                        mentions,
                         quote,
                         is_edited,
                         is_deleted,
@@ -867,6 +891,24 @@ impl Database {
             "UPDATE messages SET link_preview = ?3
              WHERE conversation_id = ?1 AND timestamp_ms = ?2",
             params![conv_id, timestamp_ms, json],
+        )?;
+        Ok(())
+    }
+
+    /// Store the raw body (with U+FFFC placeholders) and raw mentions for a message,
+    /// so later contact list updates can re-resolve the display body.
+    pub fn upsert_message_mentions(
+        &self,
+        conv_id: &str,
+        timestamp_ms: i64,
+        body_raw: &str,
+        mentions: &[Mention],
+    ) -> Result<()> {
+        let json = serde_json::to_string(mentions)?;
+        self.conn.execute(
+            "UPDATE messages SET body_raw = ?3, mentions_json = ?4
+             WHERE conversation_id = ?1 AND timestamp_ms = ?2",
+            params![conv_id, timestamp_ms, body_raw, json],
         )?;
         Ok(())
     }

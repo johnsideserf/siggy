@@ -25,7 +25,7 @@ use crate::input::{self, InputAction, COMMANDS};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
 use crate::list_overlay::{self, classify_list_key, ListKeyAction};
 use crate::signal::types::{
-    Contact, Group, IdentityInfo, MessageStatus, PollData, PollOption, PollVote, Reaction,
+    Contact, Group, IdentityInfo, Mention, MessageStatus, PollData, PollOption, PollVote, Reaction,
     SignalEvent, SignalMessage, StyleType, TrustLevel,
 };
 use crate::theme::{self, Theme};
@@ -4360,7 +4360,9 @@ impl App {
                             image_path: Option<String>,
                             mention_ranges: Vec<(usize, usize)>,
                             style_ranges: Vec<(usize, usize, StyleType)>,
-                            quote: Option<Quote>| {
+                            quote: Option<Quote>,
+                            body_raw: Option<String>,
+                            mentions: Vec<Mention>| {
             // Check for buffered poll data from a race condition (poll event arrived first)
             let deferred_poll = self
                 .poll_vote
@@ -4384,6 +4386,8 @@ impl App {
                         reactions: Vec::new(),
                         mention_ranges,
                         style_ranges,
+                        body_raw: body_raw.clone(),
+                        mentions: mentions.clone(),
                         quote,
                         is_edited: false,
                         is_deleted: false,
@@ -4429,8 +4433,24 @@ impl App {
         };
 
         // Add text body (with resolved @mentions and text styles)
+        let had_mentions = !msg.mentions.is_empty();
         if let Some((resolved, ranges)) = resolved_body {
-            push_msg(resolved, None, None, ranges, resolved_styles, display_quote);
+            let raw_body_for_msg = if had_mentions { msg.body.clone() } else { None };
+            let mentions_for_msg = if had_mentions {
+                msg.mentions.clone()
+            } else {
+                Vec::new()
+            };
+            push_msg(
+                resolved,
+                None,
+                None,
+                ranges,
+                resolved_styles,
+                display_quote,
+                raw_body_for_msg,
+                mentions_for_msg,
+            );
         }
 
         // Add attachment notices
@@ -4459,6 +4479,8 @@ impl App {
                     Vec::new(),
                     Vec::new(),
                     None,
+                    None,
+                    Vec::new(),
                 );
             } else {
                 push_msg(
@@ -4468,6 +4490,20 @@ impl App {
                     Vec::new(),
                     Vec::new(),
                     None,
+                    None,
+                    Vec::new(),
+                );
+            }
+        }
+
+        // Persist raw body + mentions so the display body can be re-resolved
+        // later when the contact list or group list fills in unknown UUIDs.
+        if had_mentions {
+            if let Some(ref raw) = msg.body {
+                db_warn(
+                    self.db
+                        .upsert_message_mentions(&conv_id, msg_ts_ms, raw, &msg.mentions),
+                    "upsert_message_mentions",
                 );
             }
         }
@@ -4640,6 +4676,8 @@ impl App {
                     reactions: Vec::new(),
                     mention_ranges: Vec::new(),
                     style_ranges: Vec::new(),
+                    body_raw: None,
+                    mentions: Vec::new(),
                     quote: None,
                     is_edited: false,
                     is_deleted: false,
@@ -5366,6 +5404,10 @@ impl App {
         // Re-resolve reaction senders: DB stores phone numbers but display
         // needs contact names (or "you" for own reactions).
         self.store.resolve_stored_names(&self.account);
+
+        // Re-resolve @mention display bodies: messages that arrived before the
+        // contact list may have fallen back to truncated UUIDs. (#283)
+        self.store.rebuild_mention_display(&self.db);
     }
 
     fn handle_group_list(&mut self, groups: Vec<Group>) {
@@ -5410,6 +5452,10 @@ impl App {
         }
         // Re-resolve reaction senders with any new names from group members.
         self.store.resolve_stored_names(&self.account);
+
+        // Re-resolve @mention display bodies: group member names may now fill
+        // in UUIDs that weren't known at message-receipt time. (#283)
+        self.store.rebuild_mention_display(&self.db);
     }
 
     fn handle_identity_list(&mut self, identities: Vec<IdentityInfo>) {
@@ -5843,6 +5889,19 @@ impl App {
                             reactions: Vec::new(),
                             mention_ranges,
                             style_ranges: Vec::new(),
+                            body_raw: if wire_mentions.is_empty() {
+                                None
+                            } else {
+                                Some(wire_body.clone())
+                            },
+                            mentions: wire_mentions
+                                .iter()
+                                .map(|(start, uuid)| Mention {
+                                    start: *start,
+                                    length: 1,
+                                    uuid: uuid.clone(),
+                                })
+                                .collect(),
                             quote,
                             is_edited: false,
                             is_deleted: false,
@@ -6242,6 +6301,8 @@ impl App {
                             reactions: Vec::new(),
                             mention_ranges: Vec::new(),
                             style_ranges: Vec::new(),
+                            body_raw: None,
+                            mentions: Vec::new(),
                             quote: None,
                             is_edited: false,
                             is_deleted: false,
@@ -7460,6 +7521,8 @@ impl App {
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
                 style_ranges: Vec::new(),
+                body_raw: None,
+                mentions: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -8911,6 +8974,8 @@ mod tests {
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
                 style_ranges: Vec::new(),
+                body_raw: None,
+                mentions: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -8968,6 +9033,8 @@ mod tests {
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
                 style_ranges: Vec::new(),
+                body_raw: None,
+                mentions: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -9016,6 +9083,8 @@ mod tests {
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
                 style_ranges: Vec::new(),
+                body_raw: None,
+                mentions: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -9065,6 +9134,8 @@ mod tests {
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
                 style_ranges: Vec::new(),
+                body_raw: None,
+                mentions: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -9231,6 +9302,8 @@ mod tests {
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
                 style_ranges: Vec::new(),
+                body_raw: None,
+                mentions: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -9434,6 +9507,8 @@ mod tests {
                 reactions: Vec::new(),
                 mention_ranges: Vec::new(),
                 style_ranges: Vec::new(),
+                body_raw: None,
+                mentions: Vec::new(),
                 quote: None,
                 is_edited: false,
                 is_deleted: false,
@@ -9508,6 +9583,8 @@ mod tests {
             reactions: Vec::new(),
             mention_ranges: Vec::new(),
             style_ranges: Vec::new(),
+            body_raw: None,
+            mentions: Vec::new(),
             quote: None,
             is_edited: false,
             is_deleted: false,
@@ -9546,6 +9623,8 @@ mod tests {
             ],
             mention_ranges: Vec::new(),
             style_ranges: Vec::new(),
+            body_raw: None,
+            mentions: Vec::new(),
             // Quote from own account (should become "you")
             quote: Some(Quote {
                 author: "+10000000000".to_string(),
@@ -9578,6 +9657,8 @@ mod tests {
             reactions: Vec::new(),
             mention_ranges: Vec::new(),
             style_ranges: Vec::new(),
+            body_raw: None,
+            mentions: Vec::new(),
             quote: Some(Quote {
                 author: "+3".to_string(),
                 body: "hey".to_string(),
@@ -9663,6 +9744,54 @@ mod tests {
         for (range, tag) in ranges.iter().zip(expected_tags.iter()) {
             assert_eq!(&resolved[range.0..range.1], *tag);
         }
+    }
+
+    #[rstest]
+    fn mention_reresolves_when_contact_arrives_after_message(mut app: App) {
+        // Regression test for #283: message with mention arrives before
+        // contact list is processed, so the mention initially falls back
+        // to a truncated UUID. When the contact list arrives, the mention
+        // should update to the real name.
+        let msg = SignalMessage {
+            source: "+15550001111".to_string(),
+            source_name: None,
+            source_uuid: Some("aaaaaaaa-1111-1111-1111-111111111111".to_string()),
+            timestamp: chrono::Utc::now(),
+            body: Some("hi \u{FFFC} welcome".to_string()),
+            attachments: vec![],
+            group_id: None,
+            group_name: None,
+            is_outgoing: false,
+            destination: None,
+            mentions: vec![Mention {
+                start: 3,
+                length: 1,
+                uuid: "bbbbbbbb-2222-2222-2222-222222222222".to_string(),
+            }],
+            text_styles: vec![],
+            quote: None,
+            expires_in_seconds: 0,
+            previews: Vec::new(),
+        };
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+
+        // Initial resolution falls back to truncated UUID.
+        let body = &app.store.conversations["+15550001111"].messages[0].body;
+        assert!(
+            body.contains("@bbbbbbbb"),
+            "expected truncated UUID fallback, got {body:?}"
+        );
+
+        // Contact list arrives with the mentioned user.
+        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
+            number: "+15550002222".to_string(),
+            name: Some("Bob".to_string()),
+            uuid: Some("bbbbbbbb-2222-2222-2222-222222222222".to_string()),
+        }]));
+
+        // Mention should now resolve to the real name.
+        let body = &app.store.conversations["+15550001111"].messages[0].body;
+        assert_eq!(body, "hi @Bob welcome");
     }
 
     #[rstest]
