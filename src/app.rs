@@ -816,8 +816,8 @@ impl App {
         }
 
         // Spawn background render tasks
-        let native_sixel = self.image.image_mode == "native"
-            && self.image.image_protocol == image_render::ImageProtocol::Sixel;
+        let is_native = self.image.image_mode == "native";
+        let is_sixel = self.image.image_protocol == image_render::ImageProtocol::Sixel;
         let cell_px = self.image.cell_px;
         for (ts, path, max_width, is_preview) in work {
             self.image.image_render_in_flight
@@ -827,9 +827,10 @@ impl App {
             tokio::task::spawn_blocking(move || {
                 let lines = image_render::render_image(Path::new(&path), max_width);
 
-                // Pre-encode PNG + full Sixel alongside halfblock so caches are
-                // populated before the image first appears in the viewport.
-                let (pre_native_png, pre_sixel) = if native_sixel {
+                // Pre-encode PNG (all native protocols) and Sixel alongside halfblock
+                // so caches are populated before the image first appears in the viewport.
+                // Without this, Kitty/iTerm2 would encode synchronously on first scroll-in.
+                let (pre_native_png, pre_sixel) = if is_native {
                     let cell_w = lines.as_ref()
                         .and_then(|l| l.first())
                         .map(|l| l.width().saturating_sub(2) as u32)
@@ -839,12 +840,16 @@ impl App {
                         let png = image_render::encode_native_png(
                             Path::new(&path), cell_w, cell_h,
                         );
-                        let sixel = png.as_ref().and_then(|p| {
-                            image_render::encode_sixel(
-                                &p.0,
-                                cell_w as u16, cell_h as u16, cell_px,
-                            )
-                        });
+                        let sixel = if is_sixel {
+                            png.as_ref().and_then(|p| {
+                                image_render::encode_sixel(
+                                    &p.0,
+                                    cell_w as u16, cell_h as u16, cell_px,
+                                )
+                            })
+                        } else {
+                            None
+                        };
                         let pre_png = png.map(|(b64, pw, ph)| (path.clone(), b64, pw, ph));
                         let pre_six = sixel.map(|s| (path.clone(), s));
                         (pre_png, pre_six)
