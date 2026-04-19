@@ -73,6 +73,17 @@ Use prefixed names: `feature/`, `fix/`, `refactor/`, `docs/` (e.g. `feature/dark
 
 Trivial docs-only changes (CLAUDE.md tweaks, typo fixes) may be committed directly to master. All code changes must go through a PR.
 
+## Toolchain
+
+The Rust toolchain is pinned in `rust-toolchain.toml` to keep CI deterministic - a new stable Rust release cannot break CI without a PR.
+
+### Updating the pin
+
+1. Read the [Rust release blog](https://blog.rust-lang.org/) for the new version.
+2. Bump `channel` in `rust-toolchain.toml`.
+3. Run `cargo clippy --tests -- -D warnings` locally; fix any new lints.
+4. Open a PR. CI will run against the new pin.
+
 ## Releases
 
 CI runs automatically on every push/PR (`.github/workflows/ci.yml`). Releases are triggered by pushing a version tag.
