@@ -90,7 +90,10 @@ pub async fn run_linking_flow(
             }
         })?;
 
-    let stdout = child.stdout.take().context("No stdout from signal-cli link")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("No stdout from signal-cli link")?;
     let mut reader = tokio::io::BufReader::new(stdout).lines();
 
     // Read lines until we find the linking URI
@@ -160,7 +163,11 @@ fn render_qr_lines(qr: &qrcode::QrCode) -> Vec<Line<'static>> {
     while y < total_h {
         let mut spans = Vec::new();
         for (x, &top) in grid[y].iter().enumerate() {
-            let bottom = if y + 1 < total_h { grid[y + 1][x] } else { false };
+            let bottom = if y + 1 < total_h {
+                grid[y + 1][x]
+            } else {
+                false
+            };
 
             let (ch, fg, bg) = match (top, bottom) {
                 (true, true) => ('\u{2588}', Color::Black, Color::Reset),
@@ -168,10 +175,7 @@ fn render_qr_lines(qr: &qrcode::QrCode) -> Vec<Line<'static>> {
                 (false, true) => ('\u{2584}', Color::Black, Color::White),
                 (false, false) => (' ', Color::White, Color::White),
             };
-            spans.push(Span::styled(
-                ch.to_string(),
-                Style::default().fg(fg).bg(bg),
-            ));
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(fg).bg(bg)));
         }
         lines.push(Line::from(spans));
         y += 2;
@@ -239,9 +243,10 @@ fn draw_qr_screen(frame: &mut ratatui::Frame, qr_lines: &[Line<'static>]) {
 
     // Check if terminal is too small
     if area.width < qr_width + 4 || area.height < qr_height + 8 {
-        let msg = Paragraph::new("Terminal too small to display QR code.\nPlease resize your terminal.")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::Red));
+        let msg =
+            Paragraph::new("Terminal too small to display QR code.\nPlease resize your terminal.")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Red));
         let msg_area = centered_rect(60, 4, area);
         frame.render_widget(msg, msg_area);
         return;
@@ -249,13 +254,13 @@ fn draw_qr_screen(frame: &mut ratatui::Frame, qr_lines: &[Line<'static>]) {
 
     // Vertical layout: title, qr, instructions
     let [_, title_area, _, qr_area, _, instr_area, _] = Layout::vertical([
-        Constraint::Min(1),        // top padding
-        Constraint::Length(3),     // title
-        Constraint::Length(1),     // gap
+        Constraint::Min(1),                // top padding
+        Constraint::Length(3),             // title
+        Constraint::Length(1),             // gap
         Constraint::Length(qr_height + 2), // qr + border
-        Constraint::Length(1),     // gap
-        Constraint::Length(5),     // instructions
-        Constraint::Min(1),        // bottom padding
+        Constraint::Length(1),             // gap
+        Constraint::Length(5),             // instructions
+        Constraint::Min(1),                // bottom padding
     ])
     .flex(Flex::Center)
     .areas(area);
@@ -299,7 +304,11 @@ fn draw_qr_screen(frame: &mut ratatui::Frame, qr_lines: &[Line<'static>]) {
 }
 
 /// Helper to create a centered rect of given percentage width and fixed height.
-fn centered_rect(percent_x: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+fn centered_rect(
+    percent_x: u16,
+    height: u16,
+    area: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
     let [centered] = Layout::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .areas(area);

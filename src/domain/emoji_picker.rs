@@ -285,7 +285,10 @@ mod tests {
         state.refresh_filter();
 
         // Should find smiley emojis even though category is Flags
-        assert!(state.filtered.iter().any(|e| e.name.to_lowercase().contains("smile")));
+        assert!(state
+            .filtered
+            .iter()
+            .any(|e| e.name.to_lowercase().contains("smile")));
     }
 
     #[test]

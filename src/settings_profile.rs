@@ -156,7 +156,13 @@ pub fn find_settings_profile(name: &str) -> SettingsProfile {
 /// Convert a profile name to a safe filename (lowercase, spaces to hyphens).
 fn name_to_filename(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 

@@ -7,30 +7,150 @@ pub struct CommandInfo {
 }
 
 pub const COMMANDS: &[CommandInfo] = &[
-    CommandInfo { name: "/join",     alias: "/j",  args: "<name>",  description: "Switch to a conversation" },
-    CommandInfo { name: "/part",     alias: "/p",  args: "",        description: "Leave current conversation" },
-    CommandInfo { name: "/sidebar",  alias: "/sb", args: "",        description: "Toggle sidebar" },
-    CommandInfo { name: "/bell",     alias: "",    args: "[type]",  description: "Toggle notifications (direct/group)" },
-    CommandInfo { name: "/mute",     alias: "",    args: "",        description: "Mute/unmute current chat" },
-    CommandInfo { name: "/block",    alias: "",    args: "",        description: "Block current contact/group" },
-    CommandInfo { name: "/unblock",  alias: "",    args: "",        description: "Unblock current contact/group" },
-    CommandInfo { name: "/attach",   alias: "/a",  args: "",        description: "Attach a file" },
-    CommandInfo { name: "/paste",    alias: "/pa", args: "",        description: "Paste from clipboard (text, image, or file)" },
-    CommandInfo { name: "/search",   alias: "/s",  args: "<query>", description: "Search messages" },
-    CommandInfo { name: "/contacts", alias: "/c",  args: "",        description: "Browse contacts" },
-    CommandInfo { name: "/settings", alias: "",    args: "",        description: "Open settings" },
-    CommandInfo { name: "/disappearing", alias: "/dm", args: "<duration>", description: "Set disappearing timer (off/30s/5m/1h/1d/1w)" },
-    CommandInfo { name: "/group",    alias: "/g",  args: "",        description: "Group management" },
-    CommandInfo { name: "/theme",    alias: "/t",  args: "",        description: "Change color theme" },
-    CommandInfo { name: "/poll",     alias: "",    args: "\"question\" \"opt1\" \"opt2\" [--single]", description: "Create a poll" },
-    CommandInfo { name: "/verify",   alias: "/v",  args: "",        description: "Verify contact identity" },
-    CommandInfo { name: "/profile",  alias: "",    args: "",        description: "Edit your Signal profile" },
-    CommandInfo { name: "/about",    alias: "",    args: "",        description: "About siggy" },
-    CommandInfo { name: "/keybindings", alias: "/kb", args: "",    description: "Configure keybindings" },
-    CommandInfo { name: "/emoji",    alias: "/e",  args: "[search]", description: "Open emoji picker" },
-    CommandInfo { name: "/export",   alias: "",    args: "[n]",     description: "Export chat history to text file" },
-    CommandInfo { name: "/help",     alias: "/h",  args: "",        description: "Show help" },
-    CommandInfo { name: "/quit",     alias: "/q",  args: "",        description: "Exit siggy" },
+    CommandInfo {
+        name: "/join",
+        alias: "/j",
+        args: "<name>",
+        description: "Switch to a conversation",
+    },
+    CommandInfo {
+        name: "/part",
+        alias: "/p",
+        args: "",
+        description: "Leave current conversation",
+    },
+    CommandInfo {
+        name: "/sidebar",
+        alias: "/sb",
+        args: "",
+        description: "Toggle sidebar",
+    },
+    CommandInfo {
+        name: "/bell",
+        alias: "",
+        args: "[type]",
+        description: "Toggle notifications (direct/group)",
+    },
+    CommandInfo {
+        name: "/mute",
+        alias: "",
+        args: "",
+        description: "Mute/unmute current chat",
+    },
+    CommandInfo {
+        name: "/block",
+        alias: "",
+        args: "",
+        description: "Block current contact/group",
+    },
+    CommandInfo {
+        name: "/unblock",
+        alias: "",
+        args: "",
+        description: "Unblock current contact/group",
+    },
+    CommandInfo {
+        name: "/attach",
+        alias: "/a",
+        args: "",
+        description: "Attach a file",
+    },
+    CommandInfo {
+        name: "/paste",
+        alias: "/pa",
+        args: "",
+        description: "Paste from clipboard (text, image, or file)",
+    },
+    CommandInfo {
+        name: "/search",
+        alias: "/s",
+        args: "<query>",
+        description: "Search messages",
+    },
+    CommandInfo {
+        name: "/contacts",
+        alias: "/c",
+        args: "",
+        description: "Browse contacts",
+    },
+    CommandInfo {
+        name: "/settings",
+        alias: "",
+        args: "",
+        description: "Open settings",
+    },
+    CommandInfo {
+        name: "/disappearing",
+        alias: "/dm",
+        args: "<duration>",
+        description: "Set disappearing timer (off/30s/5m/1h/1d/1w)",
+    },
+    CommandInfo {
+        name: "/group",
+        alias: "/g",
+        args: "",
+        description: "Group management",
+    },
+    CommandInfo {
+        name: "/theme",
+        alias: "/t",
+        args: "",
+        description: "Change color theme",
+    },
+    CommandInfo {
+        name: "/poll",
+        alias: "",
+        args: "\"question\" \"opt1\" \"opt2\" [--single]",
+        description: "Create a poll",
+    },
+    CommandInfo {
+        name: "/verify",
+        alias: "/v",
+        args: "",
+        description: "Verify contact identity",
+    },
+    CommandInfo {
+        name: "/profile",
+        alias: "",
+        args: "",
+        description: "Edit your Signal profile",
+    },
+    CommandInfo {
+        name: "/about",
+        alias: "",
+        args: "",
+        description: "About siggy",
+    },
+    CommandInfo {
+        name: "/keybindings",
+        alias: "/kb",
+        args: "",
+        description: "Configure keybindings",
+    },
+    CommandInfo {
+        name: "/emoji",
+        alias: "/e",
+        args: "[search]",
+        description: "Open emoji picker",
+    },
+    CommandInfo {
+        name: "/export",
+        alias: "",
+        args: "[n]",
+        description: "Export chat history to text file",
+    },
+    CommandInfo {
+        name: "/help",
+        alias: "/h",
+        args: "",
+        description: "Show help",
+    },
+    CommandInfo {
+        name: "/quit",
+        alias: "/q",
+        args: "",
+        description: "Exit siggy",
+    },
 ];
 
 /// Parsed user input — either a command or plain text to send
@@ -73,7 +193,11 @@ pub enum InputAction {
     /// Open theme picker
     Theme,
     /// Create a poll
-    Poll { question: String, options: Vec<String>, allow_multiple: bool },
+    Poll {
+        question: String,
+        options: Vec<String>,
+        allow_multiple: bool,
+    },
     /// Show identity verification overlay
     Verify,
     /// Edit Signal profile
@@ -143,21 +267,25 @@ pub fn parse_input(input: &str) -> InputAction {
         "/settings" => InputAction::Settings,
         "/disappearing" | "/dm" => {
             if arg.is_empty() {
-                InputAction::Unknown("/disappearing requires a duration (e.g. off, 30s, 5m, 1h, 1d, 1w)".to_string())
+                InputAction::Unknown(
+                    "/disappearing requires a duration (e.g. off, 30s, 5m, 1h, 1d, 1w)".to_string(),
+                )
             } else {
                 InputAction::SetDisappearing(arg)
             }
         }
         "/group" | "/g" => InputAction::Group,
         "/theme" | "/t" => InputAction::Theme,
-        "/poll" => {
-            match parse_poll_args(&arg) {
-                Some((question, options, allow_multiple)) if options.len() >= 2 => {
-                    InputAction::Poll { question, options, allow_multiple }
-                }
-                _ => InputAction::Unknown("Usage: /poll \"question\" \"option1\" \"option2\" [--single]".into()),
-            }
-        }
+        "/poll" => match parse_poll_args(&arg) {
+            Some((question, options, allow_multiple)) if options.len() >= 2 => InputAction::Poll {
+                question,
+                options,
+                allow_multiple,
+            },
+            _ => InputAction::Unknown(
+                "Usage: /poll \"question\" \"option1\" \"option2\" [--single]".into(),
+            ),
+        },
         "/emoji" | "/e" => InputAction::Emoji(arg),
         "/verify" | "/v" => InputAction::Verify,
         "/profile" => InputAction::Profile,
@@ -169,7 +297,9 @@ pub fn parse_input(input: &str) -> InputAction {
             } else {
                 match arg.parse::<usize>() {
                     Ok(n) => InputAction::Export(Some(n)),
-                    Err(_) => InputAction::Unknown("/export takes an optional number (e.g. /export 100)".to_string()),
+                    Err(_) => InputAction::Unknown(
+                        "/export takes an optional number (e.g. /export 100)".to_string(),
+                    ),
                 }
             }
         }
@@ -177,7 +307,6 @@ pub fn parse_input(input: &str) -> InputAction {
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
 }
-
 
 /// Parse `/poll` arguments: extract quoted strings and `--single` flag.
 /// Returns (question, options, allow_multiple) or None on parse failure.
@@ -378,7 +507,10 @@ mod tests {
         let InputAction::Unknown(s) = parse_input(input) else {
             panic!("expected Unknown for {input}");
         };
-        assert!(s.contains("requires"), "error for {input} should mention 'requires': {s}");
+        assert!(
+            s.contains("requires"),
+            "error for {input} should mention 'requires': {s}"
+        );
     }
 
     // --- SendText variants ---
@@ -399,7 +531,9 @@ mod tests {
 
     #[test]
     fn unknown_command() {
-        let InputAction::Unknown(s) = parse_input("/foo") else { panic!("expected Unknown") };
+        let InputAction::Unknown(s) = parse_input("/foo") else {
+            panic!("expected Unknown")
+        };
         assert!(s.contains("/foo"));
     }
 
@@ -427,7 +561,10 @@ mod tests {
     #[case("0s")]
     #[case("-1h")]
     fn duration_parser_invalid(#[case] input: &str) {
-        assert!(parse_duration_to_seconds(input).is_err(), "expected error for {input:?}");
+        assert!(
+            parse_duration_to_seconds(input).is_err(),
+            "expected error for {input:?}"
+        );
     }
 
     // --- Poll command ---
@@ -436,7 +573,11 @@ mod tests {
     fn poll_command_basic() {
         let result = parse_input(r#"/poll "What for lunch?" "Pizza" "Sushi""#);
         match result {
-            InputAction::Poll { question, options, allow_multiple } => {
+            InputAction::Poll {
+                question,
+                options,
+                allow_multiple,
+            } => {
                 assert_eq!(question, "What for lunch?");
                 assert_eq!(options, vec!["Pizza", "Sushi"]);
                 assert!(allow_multiple);
@@ -449,7 +590,11 @@ mod tests {
     fn poll_command_single_select() {
         let result = parse_input(r#"/poll "Q" "A" "B" --single"#);
         match result {
-            InputAction::Poll { allow_multiple, options, .. } => {
+            InputAction::Poll {
+                allow_multiple,
+                options,
+                ..
+            } => {
                 assert!(!allow_multiple);
                 assert_eq!(options, vec!["A", "B"]);
             }
@@ -485,7 +630,10 @@ mod tests {
 
     #[test]
     fn shortcode_unknown_left_as_is() {
-        assert_eq!(replace_shortcodes(":not_a_real_emoji_xyz:"), ":not_a_real_emoji_xyz:");
+        assert_eq!(
+            replace_shortcodes(":not_a_real_emoji_xyz:"),
+            ":not_a_real_emoji_xyz:"
+        );
     }
 
     #[test]

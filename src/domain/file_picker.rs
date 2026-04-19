@@ -100,9 +100,10 @@ impl FilePickerState {
     pub fn handle_key(&mut self, code: KeyCode) -> Option<PathBuf> {
         match code {
             KeyCode::Char('j') | KeyCode::Down
-                if !self.filtered.is_empty() && self.index < self.filtered.len() - 1 => {
-                    self.index += 1;
-                }
+                if !self.filtered.is_empty() && self.index < self.filtered.len() - 1 =>
+            {
+                self.index += 1;
+            }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.index = self.index.saturating_sub(1);
             }

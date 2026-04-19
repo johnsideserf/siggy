@@ -42,7 +42,11 @@ pub fn detect_protocol() -> ImageProtocol {
 ///
 /// Returns `(base64_data, pixel_width, pixel_height)` sized to look good at the
 /// given cell dimensions. Assumes ~8px per cell width and ~16px per cell height.
-pub fn encode_native_png(path: &Path, cell_width: u32, cell_height: u32) -> Option<(String, u32, u32)> {
+pub fn encode_native_png(
+    path: &Path,
+    cell_width: u32,
+    cell_height: u32,
+) -> Option<(String, u32, u32)> {
     let img = image::open(path).ok()?;
     let (orig_w, orig_h) = img.dimensions();
     if orig_w == 0 || orig_h == 0 {
@@ -65,14 +69,15 @@ pub fn encode_native_png(path: &Path, cell_width: u32, cell_height: u32) -> Opti
     let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
 
     let mut buf = Cursor::new(Vec::new());
-    resized
-        .write_to(&mut buf, image::ImageFormat::Png)
-        .ok()?;
+    resized.write_to(&mut buf, image::ImageFormat::Png).ok()?;
 
     use base64::Engine;
-    Some((base64::engine::general_purpose::STANDARD.encode(buf.into_inner()), new_w, new_h))
+    Some((
+        base64::engine::general_purpose::STANDARD.encode(buf.into_inner()),
+        new_w,
+        new_h,
+    ))
 }
-
 
 /// Detect the pixel dimensions of a single terminal cell.
 ///
@@ -103,7 +108,9 @@ pub fn encode_sixel(
     cell_px: (u16, u16),
 ) -> Option<String> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64_png).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_png)
+        .ok()?;
     let img = image::load_from_memory(&bytes).ok()?;
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
@@ -267,7 +274,9 @@ pub fn crop_png_vertical(
     visible_height_cells: u16,
 ) -> Option<String> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64_full).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_full)
+        .ok()?;
     let img = image::load_from_memory(&bytes).ok()?;
     let (w, _) = img.dimensions();
 
@@ -344,7 +353,7 @@ const DIACRITICS: [char; 256] = [
     '\u{2DFB}', '\u{2DFC}', '\u{2DFD}', '\u{2DFE}', '\u{2DFF}', // 240-244
     '\u{A66F}', '\u{A67C}', '\u{A67D}', '\u{A6F0}', '\u{A6F1}', // 245-249
     '\u{A8E0}', '\u{A8E1}', '\u{A8E2}', '\u{A8E3}', '\u{A8E4}', // 250-254
-    '\u{A8E5}',                                                    // 255
+    '\u{A8E5}', // 255
 ];
 
 /// Return the placeholder symbol for a specific (row, col) image cell.
@@ -426,10 +435,7 @@ pub fn render_image(path: &Path, max_width: u32) -> Option<Vec<Line<'static>>> {
                 Color::Reset
             };
 
-            spans.push(Span::styled(
-                "▀",
-                Style::default().fg(fg).bg(bg),
-            ));
+            spans.push(Span::styled("▀", Style::default().fg(fg).bg(bg)));
         }
 
         lines.push(Line::from(spans));
