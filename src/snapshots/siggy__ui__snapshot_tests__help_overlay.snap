@@ -1,5 +1,6 @@
 ---
 source: src/ui.rs
+assertion_line: 5062
 expression: output
 ---
  Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
@@ -28,7 +29,7 @@ expression: output
                      │││  Keybindings [Default]                             │                      │
                      │││  Esc                 Normal mode                   │                      │
                      │╰│  i / a / I / A / o   Insert mode                   │──────────────────────╯
-                     │╭│  Ctrl+e / Ctrl+y     Scroll up / down              │──────────────────────╮
-                     │││  j / k               Prev / next message           │                      │
+                     │╭│  Shift+Enter         Insert newline in input       │──────────────────────╮
+                     │││  Ctrl+e / Ctrl+y     Scroll up / down              │                      │
                      │╰╰────────────────────────────────────────────────────╯──────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats

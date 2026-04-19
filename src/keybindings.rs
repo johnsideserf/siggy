@@ -141,6 +141,17 @@ impl KeyBindings {
                 result.push((BindingMode::Insert, combo.clone()));
             }
         }
+        // Sort for deterministic ordering so `display_key` and help-overlay
+        // snapshots aren't flaky when an action has multiple bindings.
+        // Prefer simpler modifiers first (SHIFT < CONTROL < ALT by bit value),
+        // breaking ties with the KeyCode's debug form.
+        result.sort_by(|a, b| {
+            let a_mod = a.1.modifiers.bits();
+            let b_mod = b.1.modifiers.bits();
+            a_mod
+                .cmp(&b_mod)
+                .then_with(|| format!("{:?}", a.1.code).cmp(&format!("{:?}", b.1.code)))
+        });
         result
     }
 

@@ -3051,6 +3051,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let vim: Vec<(String, &str)> = vec![
         (exit_key, "Normal mode"),
         (insert_keys, "Insert mode"),
+        (dk(KeyAction::InsertNewline), "Insert newline in input"),
         (scroll_ud, "Scroll up / down"),
         (focus_ud, "Prev / next message"),
         (top_bottom, "Top / bottom of messages"),

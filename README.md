@@ -207,6 +207,7 @@ Press `Esc` to enter Normal mode.
 |---|---|
 | `Esc` | Switch to Normal mode |
 | `Enter` | Send message / execute command |
+| `Shift+Enter` / `Alt+Enter` | Insert newline (for multi-line messages) |
 | `Backspace` / `Delete` | Delete characters |
 | `Up` / `Down` | Recall input history |
 | `Left` / `Right` | Move cursor |
