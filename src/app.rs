@@ -884,16 +884,14 @@ impl App {
             .unwrap_or(0);
 
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if visual_pos + 1 < SETTINGS_VISUAL_ORDER.len() {
+            KeyCode::Char('j') | KeyCode::Down
+                if visual_pos + 1 < SETTINGS_VISUAL_ORDER.len() => {
                     self.settings_index = SETTINGS_VISUAL_ORDER[visual_pos + 1];
                 }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if visual_pos > 0 {
+            KeyCode::Char('k') | KeyCode::Up
+                if visual_pos > 0 => {
                     self.settings_index = SETTINGS_VISUAL_ORDER[visual_pos - 1];
                 }
-            }
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
                 if self.settings_index == preview_index {
                     self.notifications.notification_preview = match self.notifications.notification_preview.as_str() {
@@ -927,11 +925,10 @@ impl App {
     pub fn handle_customize_key(&mut self, code: KeyCode) {
         const ITEMS: usize = 3; // Theme, Keybindings, Profile
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.customize_index + 1 < ITEMS {
+            KeyCode::Char('j') | KeyCode::Down
+                if self.customize_index + 1 < ITEMS => {
                     self.customize_index += 1;
                 }
-            }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.customize_index = self.customize_index.saturating_sub(1);
             }
@@ -1025,11 +1022,10 @@ impl App {
                 KeyCode::Backspace => {
                     self.settings_profiles.save_as_input.pop();
                 }
-                KeyCode::Char(c) => {
-                    if self.settings_profiles.save_as_input.len() < 30 {
+                KeyCode::Char(c)
+                    if self.settings_profiles.save_as_input.len() < 30 => {
                         self.settings_profiles.save_as_input.push(c);
                     }
-                }
                 _ => {}
             }
             return;
@@ -1037,11 +1033,10 @@ impl App {
 
         // List navigation mode
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.settings_profiles.index < self.settings_profiles.available.len().saturating_sub(1) {
+            KeyCode::Char('j') | KeyCode::Down
+                if self.settings_profiles.index < self.settings_profiles.available.len().saturating_sub(1) => {
                     self.settings_profiles.index += 1;
                 }
-            }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.settings_profiles.index = self.settings_profiles.index.saturating_sub(1);
             }
@@ -1130,11 +1125,10 @@ impl App {
             other => other,
         };
         match classify_list_key(code, false) {
-            ListKeyAction::Down => {
-                if self.theme_picker.index < self.theme_picker.available_themes.len().saturating_sub(1) {
+            ListKeyAction::Down
+                if self.theme_picker.index < self.theme_picker.available_themes.len().saturating_sub(1) => {
                     self.theme_picker.index += 1;
                 }
-            }
             ListKeyAction::Up => {
                 self.theme_picker.index = self.theme_picker.index.saturating_sub(1);
             }
@@ -1156,11 +1150,10 @@ impl App {
     pub fn handle_keybindings_key(&mut self, code: KeyCode) {
         if self.keybindings_overlay.profile_picker {
             match code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if self.keybindings_overlay.profile_index < self.keybindings_overlay.available_profiles.len().saturating_sub(1) {
+                KeyCode::Char('j') | KeyCode::Down
+                    if self.keybindings_overlay.profile_index < self.keybindings_overlay.available_profiles.len().saturating_sub(1) => {
                         self.keybindings_overlay.profile_index += 1;
                     }
-                }
                 KeyCode::Char('k') | KeyCode::Up => {
                     self.keybindings_overlay.profile_index = self.keybindings_overlay.profile_index.saturating_sub(1);
                 }
@@ -1346,7 +1339,7 @@ impl App {
             })
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
-        contacts.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        contacts.sort_by_key(|a| a.1.to_lowercase());
         self.contacts_overlay.filtered = contacts;
         list_overlay::clamp_index(&mut self.contacts_overlay.index, self.contacts_overlay.filtered.len());
     }
@@ -1392,7 +1385,7 @@ impl App {
             })
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
-        contacts.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        contacts.sort_by_key(|a| a.1.to_lowercase());
         self.group_menu.filtered = contacts;
         if self.group_menu.filtered.is_empty() {
             self.group_menu.index = 0;
@@ -1425,7 +1418,7 @@ impl App {
                     || phone.to_lowercase().contains(&filter_lower)
             })
             .collect();
-        result.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        result.sort_by_key(|a| a.1.to_lowercase());
         self.group_menu.filtered = result;
         if self.group_menu.filtered.is_empty() {
             self.group_menu.index = 0;
@@ -1442,11 +1435,10 @@ impl App {
                 let items = self.group_menu_items();
                 let item_count = items.len();
                 match code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if self.group_menu.index < item_count.saturating_sub(1) {
+                    KeyCode::Char('j') | KeyCode::Down
+                        if self.group_menu.index < item_count.saturating_sub(1) => {
                             self.group_menu.index += 1;
                         }
-                    }
                     KeyCode::Char('k') | KeyCode::Up => {
                         self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
@@ -1475,11 +1467,10 @@ impl App {
             GroupMenuState::Members => {
                 let member_count = self.group_menu.filtered.len();
                 match code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if self.group_menu.index < member_count.saturating_sub(1) {
+                    KeyCode::Char('j') | KeyCode::Down
+                        if self.group_menu.index < member_count.saturating_sub(1) => {
                             self.group_menu.index += 1;
                         }
-                    }
                     KeyCode::Char('k') | KeyCode::Up => {
                         self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
@@ -1493,13 +1484,12 @@ impl App {
             }
             GroupMenuState::AddMember => {
                 match code {
-                    KeyCode::Char('j') | KeyCode::Down => {
+                    KeyCode::Char('j') | KeyCode::Down
                         if !self.group_menu.filtered.is_empty()
                             && self.group_menu.index < self.group_menu.filtered.len() - 1
-                        {
+                        => {
                             self.group_menu.index += 1;
                         }
-                    }
                     KeyCode::Char('k') | KeyCode::Up => {
                         self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
@@ -1536,13 +1526,12 @@ impl App {
             }
             GroupMenuState::RemoveMember => {
                 match code {
-                    KeyCode::Char('j') | KeyCode::Down => {
+                    KeyCode::Char('j') | KeyCode::Down
                         if !self.group_menu.filtered.is_empty()
                             && self.group_menu.index < self.group_menu.filtered.len() - 1
-                        {
+                        => {
                             self.group_menu.index += 1;
                         }
-                    }
                     KeyCode::Char('k') | KeyCode::Up => {
                         self.group_menu.index = self.group_menu.index.saturating_sub(1);
                     }
@@ -4429,16 +4418,14 @@ impl App {
 
         // Navigation mode
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.profile.index < SAVE_INDEX {
+            KeyCode::Char('j') | KeyCode::Down
+                if self.profile.index < SAVE_INDEX => {
                     self.profile.index += 1;
                 }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.profile.index > 0 {
+            KeyCode::Char('k') | KeyCode::Up
+                if self.profile.index > 0 => {
                     self.profile.index -= 1;
                 }
-            }
             KeyCode::Enter => {
                 if self.profile.index < FIELD_COUNT {
                     // Start editing the selected field
@@ -4735,7 +4722,7 @@ impl App {
                 }
             }
         }
-        found.sort_by(|a, b| b.0.cmp(&a.0)); // reverse order
+        found.sort_by_key(|b| std::cmp::Reverse(b.0)); // reverse order
 
         for (byte_start, byte_end, uuid) in &found {
             // Compute UTF-16 offset before replacement
@@ -5475,7 +5462,7 @@ impl App {
                 }
             }
 
-            candidates.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+            candidates.sort_by_key(|a| a.0.to_lowercase());
 
             if !candidates.is_empty() {
                 self.autocomplete.visible = true;
@@ -5529,7 +5516,7 @@ impl App {
                             candidates.push((conv_id.clone(), name, uuid));
                         }
                     }
-                    candidates.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+                    candidates.sort_by_key(|a| a.1.to_lowercase());
 
                     if !candidates.is_empty() {
                         self.autocomplete.visible = true;
@@ -6200,20 +6187,18 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.handle_left_click(event.column, event.row);
             }
-            MouseEventKind::ScrollUp => {
-                if is_in_rect(event.column, event.row, self.mouse_messages_area) {
+            MouseEventKind::ScrollUp
+                if is_in_rect(event.column, event.row, self.mouse_messages_area) => {
                     self.sync.user_scrolled = true;
                     self.scroll_offset = self.scroll_offset.saturating_add(3);
                     self.focused_msg_index = None;
                 }
-            }
-            MouseEventKind::ScrollDown => {
-                if is_in_rect(event.column, event.row, self.mouse_messages_area) {
+            MouseEventKind::ScrollDown
+                if is_in_rect(event.column, event.row, self.mouse_messages_area) => {
                     self.sync.user_scrolled = true;
                     self.scroll_offset = self.scroll_offset.saturating_sub(3);
                     self.focused_msg_index = None;
                 }
-            }
             _ => {}
         }
         None
