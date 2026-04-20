@@ -176,7 +176,7 @@ impl App {
 
         // Sidebar reorder (skip for system messages, which shouldn't bump
         // conversations to the top just because someone changed the group name).
-        if !is_system && self.store.move_conversation_to_top(conv_id) && self.sidebar_filter_active
+        if !is_system && self.store.move_conversation_to_top(conv_id) && self.is_overlay(OverlayKind::SidebarFilter)
         {
             self.refresh_sidebar_filter();
         }
@@ -411,8 +411,6 @@ pub struct App {
     pub sidebar_width: u16,
     /// Display sidebar on the right side instead of left
     pub sidebar_on_right: bool,
-    /// Sidebar filter mode active
-    pub sidebar_filter_active: bool,
     /// Current filter text for sidebar
     pub sidebar_filter: String,
     /// Filtered conversation IDs matching the filter
@@ -2643,7 +2641,7 @@ impl App {
                     let local_ts_ms = chrono::Utc::now().timestamp_millis();
                     self.forward.show = false;
                     self.status_message = format!("Forwarded to {name}");
-                    if self.store.move_conversation_to_top(&conv_id) && self.sidebar_filter_active {
+                    if self.store.move_conversation_to_top(&conv_id) && self.is_overlay(OverlayKind::SidebarFilter) {
                         self.refresh_sidebar_filter();
                     }
                     return Some(SendRequest::Message {
@@ -2905,7 +2903,6 @@ impl App {
             account,
             sidebar_width: 22,
             sidebar_on_right: false,
-            sidebar_filter_active: false,
             sidebar_filter: String::new(),
             sidebar_filtered: Vec::new(),
             typing: TypingState::default(),
@@ -3184,7 +3181,9 @@ impl App {
 
     /// Clear sidebar filter state and restore the full list.
     fn clear_sidebar_filter(&mut self) {
-        self.sidebar_filter_active = false;
+        if self.is_overlay(OverlayKind::SidebarFilter) {
+            self.close_overlay();
+        }
         self.sidebar_filter.clear();
         self.sidebar_filtered.clear();
     }
@@ -3447,7 +3446,7 @@ impl App {
             }
             Some(KeyAction::SidebarSearch) => {
                 self.sidebar_visible = true;
-                self.sidebar_filter_active = true;
+                self.open_overlay(OverlayKind::SidebarFilter);
                 self.sidebar_filter.clear();
                 self.sidebar_filtered.clear();
                 true
@@ -3468,7 +3467,7 @@ impl App {
     /// this method so dispatch, visibility checks, and any future per-overlay
     /// logic stay in sync automatically.
     pub fn active_overlay(&self) -> Option<OverlayKind> {
-        if self.sidebar_filter_active {
+        if self.current_overlay == Some(OverlayKind::SidebarFilter) {
             return Some(OverlayKind::SidebarFilter);
         }
         if self.poll_vote.show {
@@ -3884,7 +3883,7 @@ impl App {
             }
             Some(KeyAction::SidebarSearch) => {
                 self.sidebar_visible = true;
-                self.sidebar_filter_active = true;
+                self.open_overlay(OverlayKind::SidebarFilter);
                 self.sidebar_filter.clear();
                 self.sidebar_filtered.clear();
                 None
@@ -4453,7 +4452,7 @@ impl App {
             msg.source.clone()
         };
 
-        if self.store.move_conversation_to_top(&conv_id) && self.sidebar_filter_active {
+        if self.store.move_conversation_to_top(&conv_id) && self.is_overlay(OverlayKind::SidebarFilter) {
             self.refresh_sidebar_filter();
         }
 
@@ -7427,7 +7426,7 @@ impl App {
             && is_in_rect(col, row, inner)
         {
             let index = (row - inner.y) as usize;
-            let sidebar_list = if self.sidebar_filter_active && !self.sidebar_filtered.is_empty() {
+            let sidebar_list = if self.is_overlay(OverlayKind::SidebarFilter) && !self.sidebar_filtered.is_empty() {
                 &self.sidebar_filtered
             } else {
                 &self.store.conversation_order
@@ -11116,7 +11115,7 @@ mod tests {
     /// extending this test is a compile error.
     fn toggle_overlay(app: &mut App, kind: OverlayKind, on: bool) {
         match kind {
-            OverlayKind::SidebarFilter => app.sidebar_filter_active = on,
+            OverlayKind::SidebarFilter => toggle_current_overlay(app, OverlayKind::SidebarFilter, on),
             OverlayKind::PollVote => app.poll_vote.show = on,
             OverlayKind::PinDuration => app.pin_duration.show = on,
             OverlayKind::ActionMenu => app.action_menu.show = on,

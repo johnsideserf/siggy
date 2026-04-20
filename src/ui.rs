@@ -723,7 +723,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     // Use filtered list when sidebar filter is active.
     // When filtering, show everything (so users can find hidden conversations).
     // In normal view, hide stale conversations (empty groups, unresolvable contacts).
-    let display_order: Vec<String> = if app.sidebar_filter_active {
+    let display_order: Vec<String> = if app.is_overlay(OverlayKind::SidebarFilter) {
         if app.sidebar_filter.is_empty() {
             app.store.conversation_order.clone()
         } else {
@@ -822,7 +822,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Borders::RIGHT
     };
-    let title = if app.sidebar_filter_active {
+    let title = if app.is_overlay(OverlayKind::SidebarFilter) {
         if app.sidebar_filter.is_empty() {
             " /_ ".to_string()
         } else {
@@ -831,7 +831,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         " Chats ".to_string()
     };
-    let title_style = if app.sidebar_filter_active {
+    let title_style = if app.is_overlay(OverlayKind::SidebarFilter) {
         Style::default()
             .fg(theme.warning)
             .add_modifier(Modifier::BOLD)
@@ -5171,7 +5171,7 @@ mod snapshot_tests {
     #[test]
     fn test_sidebar_filter() {
         let mut app = demo_app();
-        app.sidebar_filter_active = true;
+        app.open_overlay(OverlayKind::SidebarFilter);
         app.sidebar_filter = "ali".to_string();
         app.refresh_sidebar_filter();
         let output = render_to_string(&mut app, 100, 30);
