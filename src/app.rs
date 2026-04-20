@@ -3549,12 +3549,12 @@ impl App {
         self.current_overlay = Some(kind);
     }
 
-    /// Close the currently-active App-owned overlay.
+    /// Clear `current_overlay`.
     ///
-    /// No-op if no overlay is open or if the active overlay belongs to a
-    /// still-unmigrated state struct (those still use their own `.show`
-    /// field). After all 23 overlays are migrated, this becomes the only way
-    /// to close any overlay.
+    /// Only closes overlays that have been migrated onto `current_overlay`.
+    /// It does not touch the per-struct `.show`/`.visible` fields that the
+    /// remaining 17 unmigrated overlays still use. After every overlay is
+    /// migrated, this becomes the only way to close any overlay.
     pub fn close_overlay(&mut self) {
         self.current_overlay = None;
     }
@@ -7205,14 +7205,24 @@ impl App {
                 let prefix = if conv.is_group { "#" } else { "" };
                 self.status_message = format!("connected | {}{}", prefix, conv.name);
             }
-            // Show message request overlay for unaccepted conversations
+            // Show message request overlay for unaccepted conversations.
+            //
+            // The pre-refactor model set `show_message_request` as an independent
+            // bool that coexisted with other overlays; dispatch priority decided
+            // which was visible. Naively calling `open_overlay(MessageRequest)`
+            // here would clobber any higher-priority App-owned overlay the user
+            // had open (e.g. closing Settings mid-edit when Tab switches to an
+            // unaccepted conversation). Only claim the slot when no other
+            // App-owned overlay is active.
             let should_show = self
                 .active_conversation
                 .as_ref()
                 .and_then(|id| self.store.conversations.get(id))
                 .is_some_and(|c| !c.accepted);
             if should_show {
-                self.open_overlay(OverlayKind::MessageRequest);
+                if self.current_overlay.is_none() || self.is_overlay(OverlayKind::MessageRequest) {
+                    self.open_overlay(OverlayKind::MessageRequest);
+                }
             } else if self.is_overlay(OverlayKind::MessageRequest) {
                 self.close_overlay();
             }
@@ -10842,6 +10852,28 @@ mod tests {
         assert!(req.is_none());
         assert!(!app.is_overlay(OverlayKind::MessageRequest));
         assert!(app.active_conversation.is_none());
+    }
+
+    #[rstest]
+    fn update_status_does_not_clobber_active_app_overlay(mut app: App) {
+        // Regression guard for PR #345: opening MessageRequest during a
+        // conversation switch must not close an already-open App-owned
+        // overlay (e.g. Settings mid-edit). The user would see their
+        // settings state silently vanish.
+        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+unaccepted")));
+        app.open_overlay(OverlayKind::Settings);
+        app.active_conversation = Some("+unaccepted".to_string());
+
+        // Simulate the conversation switch that triggers update_status.
+        // (update_status is private; calling the public code path via an
+        // explicit switch reaches it.)
+        app.update_status();
+
+        assert_eq!(
+            app.active_overlay(),
+            Some(OverlayKind::Settings),
+            "Settings overlay must not be clobbered by MessageRequest"
+        );
     }
 
     #[rstest]
