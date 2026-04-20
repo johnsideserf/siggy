@@ -229,6 +229,40 @@ fn show_desktop_notification(
     });
 }
 
+/// Tag identifying which overlay is currently active.
+///
+/// Variants are declared in priority order, matching `App::active_overlay`:
+/// when multiple overlay flags are set, the first variant listed here wins
+/// input dispatch. Adding a new overlay requires adding a variant here and
+/// handling it in both `App::active_overlay` and `App::handle_overlay_key`,
+/// which the compiler enforces via the exhaustive match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayKind {
+    SidebarFilter,
+    PollVote,
+    PinDuration,
+    ActionMenu,
+    DeleteConfirm,
+    FilePicker,
+    EmojiPicker,
+    ReactionPicker,
+    MessageRequest,
+    GroupMenu,
+    About,
+    Profile,
+    Help,
+    Verify,
+    Forward,
+    Contacts,
+    Search,
+    SettingsProfiles,
+    ThemePicker,
+    Keybindings,
+    Customize,
+    Settings,
+    Autocomplete,
+}
+
 /// An image visible on screen, for native protocol overlay rendering.
 #[derive(PartialEq, Eq)]
 pub struct VisibleImage {
@@ -3435,33 +3469,116 @@ impl App {
     /// Returns `Some((recipient, body, is_group, local_ts_ms))` if an autocomplete
     /// command triggers a message send. Returns `None` otherwise.
     /// Returns `Ok(true)` if the key was consumed by an overlay.
-    pub fn handle_overlay_key(&mut self, code: KeyCode) -> (bool, Option<SendRequest>) {
+    /// Returns the active overlay, if any, in priority order.
+    ///
+    /// If multiple overlay flags are set simultaneously (which should not
+    /// happen under normal usage), the variant earliest in `OverlayKind`'s
+    /// declaration wins. Both `has_overlay` and `handle_overlay_key` defer to
+    /// this method so dispatch, visibility checks, and any future per-overlay
+    /// logic stay in sync automatically.
+    pub fn active_overlay(&self) -> Option<OverlayKind> {
         if self.sidebar_filter_active {
-            self.handle_sidebar_filter_key(code);
-            return (true, None);
+            return Some(OverlayKind::SidebarFilter);
         }
         if self.poll_vote.show {
-            let send = self.handle_poll_vote_key(code);
-            return (true, send);
+            return Some(OverlayKind::PollVote);
         }
         if self.pin_duration.show {
-            let send = self.handle_pin_duration_key(code);
-            return (true, send);
+            return Some(OverlayKind::PinDuration);
         }
         if self.action_menu.show {
-            let send = self.handle_action_menu_key(code);
-            return (true, send);
+            return Some(OverlayKind::ActionMenu);
         }
         if self.show_delete_confirm {
-            let send = self.handle_delete_confirm_key(code);
-            return (true, send);
+            return Some(OverlayKind::DeleteConfirm);
         }
         if self.file_picker.visible {
-            self.handle_file_browser_key(code);
-            return (true, None);
+            return Some(OverlayKind::FilePicker);
         }
         if self.emoji_picker.visible {
-            match self.emoji_picker.handle_key(code) {
+            return Some(OverlayKind::EmojiPicker);
+        }
+        if self.reactions.show_picker {
+            return Some(OverlayKind::ReactionPicker);
+        }
+        if self.show_message_request {
+            return Some(OverlayKind::MessageRequest);
+        }
+        if self.group_menu.state.is_some() {
+            return Some(OverlayKind::GroupMenu);
+        }
+        if self.show_about {
+            return Some(OverlayKind::About);
+        }
+        if self.profile.show {
+            return Some(OverlayKind::Profile);
+        }
+        if self.show_help {
+            return Some(OverlayKind::Help);
+        }
+        if self.verify.show {
+            return Some(OverlayKind::Verify);
+        }
+        if self.forward.show {
+            return Some(OverlayKind::Forward);
+        }
+        if self.contacts_overlay.show {
+            return Some(OverlayKind::Contacts);
+        }
+        if self.search.visible {
+            return Some(OverlayKind::Search);
+        }
+        if self.settings_profiles.show {
+            return Some(OverlayKind::SettingsProfiles);
+        }
+        if self.theme_picker.show {
+            return Some(OverlayKind::ThemePicker);
+        }
+        if self.keybindings_overlay.show {
+            return Some(OverlayKind::Keybindings);
+        }
+        if self.show_customize {
+            return Some(OverlayKind::Customize);
+        }
+        if self.show_settings {
+            return Some(OverlayKind::Settings);
+        }
+        if self.autocomplete.visible {
+            return Some(OverlayKind::Autocomplete);
+        }
+        None
+    }
+
+    pub fn handle_overlay_key(&mut self, code: KeyCode) -> (bool, Option<SendRequest>) {
+        let Some(kind) = self.active_overlay() else {
+            return (false, None);
+        };
+        match kind {
+            OverlayKind::SidebarFilter => {
+                self.handle_sidebar_filter_key(code);
+                (true, None)
+            }
+            OverlayKind::PollVote => {
+                let send = self.handle_poll_vote_key(code);
+                (true, send)
+            }
+            OverlayKind::PinDuration => {
+                let send = self.handle_pin_duration_key(code);
+                (true, send)
+            }
+            OverlayKind::ActionMenu => {
+                let send = self.handle_action_menu_key(code);
+                (true, send)
+            }
+            OverlayKind::DeleteConfirm => {
+                let send = self.handle_delete_confirm_key(code);
+                (true, send)
+            }
+            OverlayKind::FilePicker => {
+                self.handle_file_browser_key(code);
+                (true, None)
+            }
+            OverlayKind::EmojiPicker => match self.emoji_picker.handle_key(code) {
                 EmojiPickerAction::Select(emoji) => {
                     let source = self.emoji_picker.source;
                     self.emoji_picker.close();
@@ -3469,11 +3586,11 @@ impl App {
                         EmojiPickerSource::Input => {
                             self.input_buffer.insert_str(self.input_cursor, &emoji);
                             self.input_cursor += emoji.len();
-                            return (true, None);
+                            (true, None)
                         }
                         EmojiPickerSource::Reaction => {
                             let send = self.prepare_reaction_send_emoji(&emoji);
-                            return (true, send);
+                            (true, send)
                         }
                     }
                 }
@@ -3483,76 +3600,75 @@ impl App {
                     if was_reaction {
                         self.reactions.show_picker = true;
                     }
-                    return (true, None);
+                    (true, None)
                 }
-                EmojiPickerAction::None => return (true, None),
+                EmojiPickerAction::None => (true, None),
+            },
+            OverlayKind::ReactionPicker => {
+                let send = self.handle_reaction_picker_key(code);
+                (true, send)
+            }
+            OverlayKind::MessageRequest => {
+                let send = self.handle_message_request_key(code);
+                (true, send)
+            }
+            OverlayKind::GroupMenu => {
+                let send = self.handle_group_menu_key(code);
+                (true, send)
+            }
+            OverlayKind::About => {
+                self.show_about = false;
+                (true, None)
+            }
+            OverlayKind::Profile => {
+                let send = self.handle_profile_key(code);
+                (true, send)
+            }
+            OverlayKind::Help => {
+                self.show_help = false;
+                (true, None)
+            }
+            OverlayKind::Verify => {
+                let send = self.handle_verify_key(code);
+                (true, send)
+            }
+            OverlayKind::Forward => {
+                let send = self.handle_forward_key(code);
+                (true, send)
+            }
+            OverlayKind::Contacts => {
+                self.handle_contacts_key(code);
+                (true, None)
+            }
+            OverlayKind::Search => {
+                self.handle_search_key(code);
+                (true, None)
+            }
+            OverlayKind::SettingsProfiles => {
+                self.handle_settings_profile_manager_key(code);
+                (true, None)
+            }
+            OverlayKind::ThemePicker => {
+                self.handle_theme_key(code);
+                (true, None)
+            }
+            OverlayKind::Keybindings => {
+                self.handle_keybindings_key(code);
+                (true, None)
+            }
+            OverlayKind::Customize => {
+                self.handle_customize_key(code);
+                (true, None)
+            }
+            OverlayKind::Settings => {
+                self.handle_settings_key(code);
+                (true, None)
+            }
+            OverlayKind::Autocomplete => {
+                let send = self.handle_autocomplete_key(code);
+                (true, send)
             }
         }
-        if self.reactions.show_picker {
-            let send = self.handle_reaction_picker_key(code);
-            return (true, send);
-        }
-        if self.show_message_request {
-            let send = self.handle_message_request_key(code);
-            return (true, send);
-        }
-        if self.group_menu.state.is_some() {
-            let send = self.handle_group_menu_key(code);
-            return (true, send);
-        }
-        if self.show_about {
-            self.show_about = false;
-            return (true, None);
-        }
-        if self.profile.show {
-            let send = self.handle_profile_key(code);
-            return (true, send);
-        }
-        if self.show_help {
-            self.show_help = false;
-            return (true, None);
-        }
-        if self.verify.show {
-            let send = self.handle_verify_key(code);
-            return (true, send);
-        }
-        if self.forward.show {
-            let send = self.handle_forward_key(code);
-            return (true, send);
-        }
-        if self.contacts_overlay.show {
-            self.handle_contacts_key(code);
-            return (true, None);
-        }
-        if self.search.visible {
-            self.handle_search_key(code);
-            return (true, None);
-        }
-        if self.settings_profiles.show {
-            self.handle_settings_profile_manager_key(code);
-            return (true, None);
-        }
-        if self.theme_picker.show {
-            self.handle_theme_key(code);
-            return (true, None);
-        }
-        if self.keybindings_overlay.show {
-            self.handle_keybindings_key(code);
-            return (true, None);
-        }
-        if self.show_customize {
-            self.handle_customize_key(code);
-            return (true, None);
-        }
-        if self.show_settings {
-            self.handle_settings_key(code);
-            return (true, None);
-        }
-        if self.autocomplete.visible {
-            let send = self.handle_autocomplete_key(code);
-            return (true, send);
-        }
-        (false, None)
     }
 
     /// Handle Normal mode key. Dispatches to scroll, edit, or action sub-handlers.
@@ -7212,28 +7328,11 @@ impl App {
 
     // --- Mouse support ---
 
-    /// Returns true if any overlay is currently visible (mouse events should be ignored).
+    /// Returns true if any overlay is currently visible.
+    ///
+    /// Derived from `active_overlay` so it can never drift from dispatch.
     pub fn has_overlay(&self) -> bool {
-        self.show_settings
-            || self.show_help
-            || self.contacts_overlay.show
-            || self.search.visible
-            || self.file_picker.visible
-            || self.action_menu.show
-            || self.reactions.show_picker
-            || self.emoji_picker.visible
-            || self.show_delete_confirm
-            || self.group_menu.state.is_some()
-            || self.show_message_request
-            || self.theme_picker.show
-            || self.keybindings_overlay.show
-            || self.settings_profiles.show
-            || self.pin_duration.show
-            || self.poll_vote.show
-            || self.show_about
-            || self.profile.show
-            || self.forward.show
-            || self.autocomplete.visible
+        self.active_overlay().is_some()
     }
 
     /// Handle a mouse event. Returns an optional SendRequest (currently unused but future-proof).
@@ -10938,78 +11037,85 @@ mod tests {
         assert_eq!(app.input_cursor, 5); // byte offset of space after "café"
     }
 
+    /// Walk every `OverlayKind` variant by flipping the corresponding visibility
+    /// flag(s), asserting that `active_overlay` returns that variant and
+    /// `has_overlay` returns true, then clearing and asserting no overlay.
+    ///
+    /// The `match` is exhaustive so adding a new `OverlayKind` variant without
+    /// extending this test is a compile error.
+    fn toggle_overlay(app: &mut App, kind: OverlayKind, on: bool) {
+        match kind {
+            OverlayKind::SidebarFilter => app.sidebar_filter_active = on,
+            OverlayKind::PollVote => app.poll_vote.show = on,
+            OverlayKind::PinDuration => app.pin_duration.show = on,
+            OverlayKind::ActionMenu => app.action_menu.show = on,
+            OverlayKind::DeleteConfirm => app.show_delete_confirm = on,
+            OverlayKind::FilePicker => app.file_picker.visible = on,
+            OverlayKind::EmojiPicker => app.emoji_picker.visible = on,
+            OverlayKind::ReactionPicker => app.reactions.show_picker = on,
+            OverlayKind::MessageRequest => app.show_message_request = on,
+            OverlayKind::GroupMenu => {
+                app.group_menu.state = if on { Some(GroupMenuState::Menu) } else { None }
+            }
+            OverlayKind::About => app.show_about = on,
+            OverlayKind::Profile => app.profile.show = on,
+            OverlayKind::Help => app.show_help = on,
+            OverlayKind::Verify => app.verify.show = on,
+            OverlayKind::Forward => app.forward.show = on,
+            OverlayKind::Contacts => app.contacts_overlay.show = on,
+            OverlayKind::Search => app.search.visible = on,
+            OverlayKind::SettingsProfiles => app.settings_profiles.show = on,
+            OverlayKind::ThemePicker => app.theme_picker.show = on,
+            OverlayKind::Keybindings => app.keybindings_overlay.show = on,
+            OverlayKind::Customize => app.show_customize = on,
+            OverlayKind::Settings => app.show_settings = on,
+            OverlayKind::Autocomplete => app.autocomplete.visible = on,
+        }
+    }
+
+    const ALL_OVERLAYS: &[OverlayKind] = &[
+        OverlayKind::SidebarFilter,
+        OverlayKind::PollVote,
+        OverlayKind::PinDuration,
+        OverlayKind::ActionMenu,
+        OverlayKind::DeleteConfirm,
+        OverlayKind::FilePicker,
+        OverlayKind::EmojiPicker,
+        OverlayKind::ReactionPicker,
+        OverlayKind::MessageRequest,
+        OverlayKind::GroupMenu,
+        OverlayKind::About,
+        OverlayKind::Profile,
+        OverlayKind::Help,
+        OverlayKind::Verify,
+        OverlayKind::Forward,
+        OverlayKind::Contacts,
+        OverlayKind::Search,
+        OverlayKind::SettingsProfiles,
+        OverlayKind::ThemePicker,
+        OverlayKind::Keybindings,
+        OverlayKind::Customize,
+        OverlayKind::Settings,
+        OverlayKind::Autocomplete,
+    ];
+
     #[rstest]
-    fn has_overlay_detects_all_overlays(mut app: App) {
+    fn active_overlay_covers_every_variant(mut app: App) {
+        assert_eq!(app.active_overlay(), None);
         assert!(!app.has_overlay());
 
-        app.show_settings = true;
-        assert!(app.has_overlay());
-        app.show_settings = false;
+        for &kind in ALL_OVERLAYS {
+            toggle_overlay(&mut app, kind, true);
+            assert_eq!(
+                app.active_overlay(),
+                Some(kind),
+                "active_overlay did not match after enabling {kind:?}"
+            );
+            assert!(app.has_overlay(), "has_overlay returned false for {kind:?}");
+            toggle_overlay(&mut app, kind, false);
+        }
 
-        app.show_help = true;
-        assert!(app.has_overlay());
-        app.show_help = false;
-
-        app.contacts_overlay.show = true;
-        assert!(app.has_overlay());
-        app.contacts_overlay.show = false;
-
-        app.search.visible = true;
-        assert!(app.has_overlay());
-        app.search.visible = false;
-
-        app.file_picker.visible = true;
-        assert!(app.has_overlay());
-        app.file_picker.visible = false;
-
-        app.action_menu.show = true;
-        assert!(app.has_overlay());
-        app.action_menu.show = false;
-
-        app.reactions.show_picker = true;
-        assert!(app.has_overlay());
-        app.reactions.show_picker = false;
-
-        app.emoji_picker.visible = true;
-        assert!(app.has_overlay());
-        app.emoji_picker.visible = false;
-
-        app.show_delete_confirm = true;
-        assert!(app.has_overlay());
-        app.show_delete_confirm = false;
-
-        app.group_menu.state = Some(GroupMenuState::Menu);
-        assert!(app.has_overlay());
-        app.group_menu.state = None;
-
-        app.show_message_request = true;
-        assert!(app.has_overlay());
-        app.show_message_request = false;
-
-        app.autocomplete.visible = true;
-        assert!(app.has_overlay());
-        app.autocomplete.visible = false;
-
-        app.pin_duration.show = true;
-        assert!(app.has_overlay());
-        app.pin_duration.show = false;
-
-        app.poll_vote.show = true;
-        assert!(app.has_overlay());
-        app.poll_vote.show = false;
-
-        app.show_about = true;
-        assert!(app.has_overlay());
-        app.show_about = false;
-
-        app.profile.show = true;
-        assert!(app.has_overlay());
-        app.profile.show = false;
-
-        app.forward.show = true;
-        assert!(app.has_overlay());
-        app.forward.show = false;
-
+        assert_eq!(app.active_overlay(), None);
         assert!(!app.has_overlay());
     }
 
