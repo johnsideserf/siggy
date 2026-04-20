@@ -2293,7 +2293,7 @@ impl App {
     pub fn handle_action_menu_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         let item_count = self.action_menu_items().len();
         if item_count == 0 {
-            self.action_menu.show = false;
+            self.close_overlay();
             return None;
         }
         match classify_list_key(code, false) {
@@ -2311,15 +2311,15 @@ impl App {
                 let items = self.action_menu_items();
                 if let Some(action) = items.get(self.action_menu.index) {
                     let hint = action.key_hint;
-                    self.action_menu.show = false;
+                    self.close_overlay();
                     self.execute_action_by_hint(hint)
                 } else {
-                    self.action_menu.show = false;
+                    self.close_overlay();
                     None
                 }
             }
             ListKeyAction::Close => {
-                self.action_menu.show = false;
+                self.close_overlay();
                 None
             }
             ListKeyAction::None => {
@@ -2342,7 +2342,7 @@ impl App {
                     // Only execute if this action is available in the menu
                     let items = self.action_menu_items();
                     if items.iter().any(|a| a.key_hint == hint) {
-                        self.action_menu.show = false;
+                        self.close_overlay();
                         self.execute_action_by_hint(hint)
                     } else {
                         None
@@ -3473,10 +3473,10 @@ impl App {
         if self.current_overlay == Some(OverlayKind::PollVote) {
             return Some(OverlayKind::PollVote);
         }
-        if self.pin_duration.show {
+        if self.current_overlay == Some(OverlayKind::PinDuration) {
             return Some(OverlayKind::PinDuration);
         }
-        if self.action_menu.show {
+        if self.current_overlay == Some(OverlayKind::ActionMenu) {
             return Some(OverlayKind::ActionMenu);
         }
         if self.current_overlay == Some(OverlayKind::DeleteConfirm) {
@@ -3976,7 +3976,7 @@ impl App {
             }
             Some(KeyAction::OpenActionMenu) => {
                 if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.action_menu.show = true;
+                    self.open_overlay(OverlayKind::ActionMenu);
                     self.action_menu.index = 0;
                 }
                 None
@@ -4182,7 +4182,7 @@ impl App {
             }
             Some(KeyAction::OpenActionMenu) => {
                 if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.action_menu.show = true;
+                    self.open_overlay(OverlayKind::ActionMenu);
                     self.action_menu.index = 0;
                 }
                 None
@@ -5278,7 +5278,7 @@ impl App {
                 target_author,
                 target_timestamp,
             });
-            self.pin_duration.show = true;
+            self.open_overlay(OverlayKind::PinDuration);
             self.pin_duration.index = 0;
             None
         }
@@ -5299,7 +5299,7 @@ impl App {
             }
             ListKeyAction::Select => {
                 let duration = PIN_DURATIONS[self.pin_duration.index].0;
-                self.pin_duration.show = false;
+                self.close_overlay();
                 let pending = self.pin_duration.pending.take()?;
 
                 // Optimistically pin
@@ -5329,7 +5329,7 @@ impl App {
                 })
             }
             ListKeyAction::Close => {
-                self.pin_duration.show = false;
+                self.close_overlay();
                 self.pin_duration.pending = None;
                 None
             }
@@ -11117,8 +11117,8 @@ mod tests {
         match kind {
             OverlayKind::SidebarFilter => toggle_current_overlay(app, OverlayKind::SidebarFilter, on),
             OverlayKind::PollVote => toggle_current_overlay(app, OverlayKind::PollVote, on),
-            OverlayKind::PinDuration => app.pin_duration.show = on,
-            OverlayKind::ActionMenu => app.action_menu.show = on,
+            OverlayKind::PinDuration => toggle_current_overlay(app, OverlayKind::PinDuration, on),
+            OverlayKind::ActionMenu => toggle_current_overlay(app, OverlayKind::ActionMenu, on),
             OverlayKind::DeleteConfirm => {
                 toggle_current_overlay(app, OverlayKind::DeleteConfirm, on)
             }

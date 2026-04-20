@@ -643,7 +643,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Action menu overlay
-    if app.action_menu.show {
+    if app.is_overlay(OverlayKind::ActionMenu) {
         draw_action_menu(frame, app, size);
     }
 
@@ -678,7 +678,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Pin duration picker overlay
-    if app.pin_duration.show {
+    if app.is_overlay(OverlayKind::PinDuration) {
         draw_pin_duration_picker(frame, app, size);
     }
 
