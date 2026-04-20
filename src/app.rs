@@ -9,8 +9,8 @@ use std::time::Instant;
 
 pub use crate::autocomplete::AutocompleteMode;
 use crate::autocomplete::AutocompleteState;
-use crate::conversation_store::{db_warn, short_name, ConversationStore};
 pub use crate::conversation_store::{Conversation, DisplayMessage, Quote};
+use crate::conversation_store::{ConversationStore, db_warn, short_name};
 use crate::db::Database;
 use crate::domain::{
     ActionMenuState, ContactsOverlayState, EmojiPickerAction, EmojiPickerSource, EmojiPickerState,
@@ -21,9 +21,9 @@ use crate::domain::{
 };
 use crate::image_render;
 use crate::image_render::ImageProtocol;
-use crate::input::{self, InputAction, COMMANDS};
+use crate::input::{self, COMMANDS, InputAction};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
-use crate::list_overlay::{self, classify_list_key, ListKeyAction};
+use crate::list_overlay::{self, ListKeyAction, classify_list_key};
 use crate::signal::types::{
     Contact, Group, IdentityInfo, Mention, MessageStatus, PollData, PollOption, PollVote, Reaction,
     SignalEvent, SignalMessage, StyleType, TrustLevel,
@@ -785,30 +785,29 @@ impl App {
                 result.timestamp_ms,
                 result.is_preview,
             ));
-            if let Some(conv) = self.store.conversations.get_mut(&result.conv_id) {
-                if let Some(idx) = conv.find_msg_idx(result.timestamp_ms) {
-                    if result.is_preview {
-                        // Store empty vec on None to prevent infinite retry for broken images
-                        conv.messages[idx].preview_image_lines =
-                            Some(result.lines.unwrap_or_default());
-                        if let Some(p) = result.image_path {
-                            conv.messages[idx].preview_image_path = Some(p);
-                        }
-                    } else {
-                        conv.messages[idx].image_lines = Some(result.lines.unwrap_or_default());
+            if let Some(conv) = self.store.conversations.get_mut(&result.conv_id)
+                && let Some(idx) = conv.find_msg_idx(result.timestamp_ms)
+            {
+                if result.is_preview {
+                    // Store empty vec on None to prevent infinite retry for broken images
+                    conv.messages[idx].preview_image_lines = Some(result.lines.unwrap_or_default());
+                    if let Some(p) = result.image_path {
+                        conv.messages[idx].preview_image_path = Some(p);
                     }
-                    // Pre-populate native image caches from background task
-                    if let Some((path, b64, pw, ph)) = result.pre_native_png {
-                        self.image
-                            .native_image_cache
-                            .entry(path)
-                            .or_insert((b64, pw, ph));
-                    }
-                    if let Some((path, sixel)) = result.pre_sixel {
-                        self.image.sixel_cache.entry(path).or_insert(sixel);
-                    }
-                    drained = true;
+                } else {
+                    conv.messages[idx].image_lines = Some(result.lines.unwrap_or_default());
                 }
+                // Pre-populate native image caches from background task
+                if let Some((path, b64, pw, ph)) = result.pre_native_png {
+                    self.image
+                        .native_image_cache
+                        .entry(path)
+                        .or_insert((b64, pw, ph));
+                }
+                if let Some((path, sixel)) = result.pre_sixel {
+                    self.image.sixel_cache.entry(path).or_insert(sixel);
+                }
+                drained = true;
             }
         }
 
@@ -837,22 +836,23 @@ impl App {
             if self.image.image_render_in_flight.len() + work.len() >= 4 {
                 break;
             }
-            if msg.body.starts_with("[image:") && msg.image_lines.is_none() {
-                if let Some(ref p) = msg.image_path {
-                    let key = (id.clone(), msg.timestamp_ms, false);
-                    if !self.image.image_render_in_flight.contains(&key) {
-                        work.push((msg.timestamp_ms, p.clone(), 40, false));
-                    }
+            if msg.body.starts_with("[image:")
+                && msg.image_lines.is_none()
+                && let Some(ref p) = msg.image_path
+            {
+                let key = (id.clone(), msg.timestamp_ms, false);
+                if !self.image.image_render_in_flight.contains(&key) {
+                    work.push((msg.timestamp_ms, p.clone(), 40, false));
                 }
             }
-            if self.image.show_link_previews && msg.preview_image_lines.is_none() {
-                if let Some(ref preview) = msg.preview {
-                    if let Some(ref p) = preview.image_path {
-                        let key = (id.clone(), msg.timestamp_ms, true);
-                        if !self.image.image_render_in_flight.contains(&key) {
-                            work.push((msg.timestamp_ms, p.clone(), 30, true));
-                        }
-                    }
+            if self.image.show_link_previews
+                && msg.preview_image_lines.is_none()
+                && let Some(ref preview) = msg.preview
+                && let Some(ref p) = preview.image_path
+            {
+                let key = (id.clone(), msg.timestamp_ms, true);
+                if !self.image.image_render_in_flight.contains(&key) {
+                    work.push((msg.timestamp_ms, p.clone(), 30, true));
                 }
             }
         }
@@ -1392,16 +1392,16 @@ impl App {
         let displaced = self.keybindings.rebind(mode, action, combo.clone());
         self.keybindings_overlay.capturing = false;
 
-        if let Some(displaced_action) = displaced {
-            if displaced_action != action {
-                self.status_message = format!(
-                    "'{}' was bound to {}. Accept? (y/n)",
-                    keybindings::format_key_combo(&combo),
-                    keybindings::action_label(displaced_action)
-                );
-                self.keybindings_overlay.conflict = Some((displaced_action, combo));
-                return;
-            }
+        if let Some(displaced_action) = displaced
+            && displaced_action != action
+        {
+            self.status_message = format!(
+                "'{}' was bound to {}. Accept? (y/n)",
+                keybindings::format_key_combo(&combo),
+                keybindings::action_label(displaced_action)
+            );
+            self.keybindings_overlay.conflict = Some((displaced_action, combo));
+            return;
         }
         self.status_message = format!(
             "{} → {}",
@@ -2019,21 +2019,21 @@ impl App {
             .any(|r| r.sender == "you" && r.emoji == emoji);
 
         // Optimistic local update
-        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-            if let Some(msg) = conv.messages.get_mut(index) {
-                if is_remove {
-                    msg.reactions
-                        .retain(|r| !(r.sender == "you" && r.emoji == emoji));
+        if let Some(conv) = self.store.conversations.get_mut(&conv_id)
+            && let Some(msg) = conv.messages.get_mut(index)
+        {
+            if is_remove {
+                msg.reactions
+                    .retain(|r| !(r.sender == "you" && r.emoji == emoji));
+            } else {
+                // One reaction per user — replace or push
+                if let Some(existing) = msg.reactions.iter_mut().find(|r| r.sender == "you") {
+                    existing.emoji = emoji.to_string();
                 } else {
-                    // One reaction per user — replace or push
-                    if let Some(existing) = msg.reactions.iter_mut().find(|r| r.sender == "you") {
-                        existing.emoji = emoji.to_string();
-                    } else {
-                        msg.reactions.push(Reaction {
-                            emoji: emoji.to_string(),
-                            sender: "you".to_string(),
-                        });
-                    }
+                    msg.reactions.push(Reaction {
+                        emoji: emoji.to_string(),
+                        sender: "you".to_string(),
+                    });
                 }
             }
         }
@@ -2224,39 +2224,42 @@ impl App {
         match hint {
             "q" => {
                 // Reply — same as Normal 'q'
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        let author_phone = msg.sender_id.clone();
-                        let snippet: String = if msg.body.chars().count() > 50 {
-                            format!("{}…", msg.body.chars().take(50).collect::<String>())
-                        } else {
-                            msg.body.clone()
-                        };
-                        let ts = msg.timestamp_ms;
-                        let phone = if author_phone.is_empty() || author_phone == "you" {
-                            self.account.clone()
-                        } else {
-                            author_phone
-                        };
-                        self.reply_target = Some((phone, snippet, ts));
-                        self.mode = InputMode::Insert;
-                    }
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    let author_phone = msg.sender_id.clone();
+                    let snippet: String = if msg.body.chars().count() > 50 {
+                        format!("{}…", msg.body.chars().take(50).collect::<String>())
+                    } else {
+                        msg.body.clone()
+                    };
+                    let ts = msg.timestamp_ms;
+                    let phone = if author_phone.is_empty() || author_phone == "you" {
+                        self.account.clone()
+                    } else {
+                        author_phone
+                    };
+                    self.reply_target = Some((phone, snippet, ts));
+                    self.mode = InputMode::Insert;
                 }
                 None
             }
             "e" => {
                 // Edit — same as Normal 'e'
-                if let Some(msg) = self.selected_message() {
-                    if msg.sender == "you" && !msg.is_deleted && !msg.is_system {
-                        let ts = msg.timestamp_ms;
-                        let body = msg.body.clone();
-                        if let Some(ref conv_id) = self.active_conversation {
-                            let conv_id = conv_id.clone();
-                            self.editing_message = Some((ts, conv_id));
-                            self.input_buffer = body;
-                            self.input_cursor = self.input_buffer.len();
-                            self.mode = InputMode::Insert;
-                        }
+                if let Some(msg) = self.selected_message()
+                    && msg.sender == "you"
+                    && !msg.is_deleted
+                    && !msg.is_system
+                {
+                    let ts = msg.timestamp_ms;
+                    let body = msg.body.clone();
+                    if let Some(ref conv_id) = self.active_conversation {
+                        let conv_id = conv_id.clone();
+                        self.editing_message = Some((ts, conv_id));
+                        self.input_buffer = body;
+                        self.input_cursor = self.input_buffer.len();
+                        self.mode = InputMode::Insert;
                     }
                 }
                 None
@@ -2271,11 +2274,12 @@ impl App {
             }
             "f" => {
                 // Forward — open conversation picker
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        self.forward.body = msg.body.clone();
-                        self.open_forward_picker();
-                    }
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    self.forward.body = msg.body.clone();
+                    self.open_forward_picker();
                 }
                 None
             }
@@ -2286,10 +2290,11 @@ impl App {
             }
             "d" => {
                 // Delete — open delete confirm
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        self.show_delete_confirm = true;
-                    }
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    self.show_delete_confirm = true;
                 }
                 None
             }
@@ -2299,90 +2304,88 @@ impl App {
             }
             "v" => {
                 // Vote on poll
-                if let Some(msg) = self.selected_message() {
-                    if let Some(ref poll) = msg.poll_data {
-                        if !poll.closed {
-                            let conv_id = self.active_conversation.clone().unwrap_or_default();
-                            let is_group = self
-                                .store
-                                .conversations
-                                .get(&conv_id)
-                                .map(|c| c.is_group)
-                                .unwrap_or(false);
-                            let poll_author = if msg.sender_id.is_empty() || msg.sender_id == "you"
-                            {
-                                self.account.clone()
-                            } else {
-                                msg.sender_id.clone()
-                            };
-                            let options = poll.options.clone();
-                            let allow_multiple = poll.allow_multiple;
-                            let poll_timestamp = msg.timestamp_ms;
-                            let option_count = options.len();
-                            self.poll_vote.pending = Some(PollVotePending {
-                                conv_id,
-                                is_group,
-                                poll_author,
-                                poll_timestamp,
-                                allow_multiple,
-                                options,
-                            });
-                            self.poll_vote.selections = vec![false; option_count];
-                            self.poll_vote.index = 0;
-                            self.poll_vote.show = true;
-                        }
-                    }
+                if let Some(msg) = self.selected_message()
+                    && let Some(ref poll) = msg.poll_data
+                    && !poll.closed
+                {
+                    let conv_id = self.active_conversation.clone().unwrap_or_default();
+                    let is_group = self
+                        .store
+                        .conversations
+                        .get(&conv_id)
+                        .map(|c| c.is_group)
+                        .unwrap_or(false);
+                    let poll_author = if msg.sender_id.is_empty() || msg.sender_id == "you" {
+                        self.account.clone()
+                    } else {
+                        msg.sender_id.clone()
+                    };
+                    let options = poll.options.clone();
+                    let allow_multiple = poll.allow_multiple;
+                    let poll_timestamp = msg.timestamp_ms;
+                    let option_count = options.len();
+                    self.poll_vote.pending = Some(PollVotePending {
+                        conv_id,
+                        is_group,
+                        poll_author,
+                        poll_timestamp,
+                        allow_multiple,
+                        options,
+                    });
+                    self.poll_vote.selections = vec![false; option_count];
+                    self.poll_vote.index = 0;
+                    self.poll_vote.show = true;
                 }
                 None
             }
             "x" => {
                 // End poll
-                if let Some(msg) = self.selected_message() {
-                    if msg.sender == "you" && msg.poll_data.as_ref().is_some_and(|p| !p.closed) {
-                        let conv_id = self.active_conversation.clone()?;
-                        let is_group = self
-                            .store
-                            .conversations
-                            .get(&conv_id)
-                            .map(|c| c.is_group)
-                            .unwrap_or(false);
-                        let poll_timestamp = msg.timestamp_ms;
-                        // Optimistic close
-                        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-                            if let Some(idx) = conv.find_msg_idx(poll_timestamp) {
-                                if let Some(ref mut poll) = conv.messages[idx].poll_data {
-                                    poll.closed = true;
-                                }
-                            }
-                        }
-                        self.db_warn_visible(
-                            self.db.close_poll(&conv_id, poll_timestamp),
-                            "close_poll",
-                        );
-                        return Some(SendRequest::PollTerminate {
-                            recipient: conv_id,
-                            is_group,
-                            poll_timestamp,
-                        });
+                if let Some(msg) = self.selected_message()
+                    && msg.sender == "you"
+                    && msg.poll_data.as_ref().is_some_and(|p| !p.closed)
+                {
+                    let conv_id = self.active_conversation.clone()?;
+                    let is_group = self
+                        .store
+                        .conversations
+                        .get(&conv_id)
+                        .map(|c| c.is_group)
+                        .unwrap_or(false);
+                    let poll_timestamp = msg.timestamp_ms;
+                    // Optimistic close
+                    if let Some(conv) = self.store.conversations.get_mut(&conv_id)
+                        && let Some(idx) = conv.find_msg_idx(poll_timestamp)
+                        && let Some(ref mut poll) = conv.messages[idx].poll_data
+                    {
+                        poll.closed = true;
                     }
+                    self.db_warn_visible(
+                        self.db.close_poll(&conv_id, poll_timestamp),
+                        "close_poll",
+                    );
+                    return Some(SendRequest::PollTerminate {
+                        recipient: conv_id,
+                        is_group,
+                        poll_timestamp,
+                    });
                 }
                 None
             }
             "o" => {
                 // Open attachment
-                if let Some(msg) = self.selected_message() {
-                    if let Some(uri) = extract_file_uri(&msg.body) {
-                        self.open_file(&uri);
-                    }
+                if let Some(msg) = self.selected_message()
+                    && let Some(uri) = extract_file_uri(&msg.body)
+                {
+                    self.open_file(&uri);
                 }
                 None
             }
             "l" => {
                 // Open link
-                if let Some(msg) = self.selected_message() {
-                    if let Some(url) = extract_http_url(&msg.body) {
-                        self.open_url(&url);
-                    }
+                if let Some(msg) = self.selected_message()
+                    && let Some(url) = extract_http_url(&msg.body)
+                {
+                    self.open_url(&url);
                 }
                 None
             }
@@ -2895,10 +2898,10 @@ impl App {
                     } else {
                         None
                     };
-                    if let Some(p) = path_str {
-                        if Path::new(&p).exists() {
-                            msg.image_path = Some(p);
-                        }
+                    if let Some(p) = path_str
+                        && Path::new(&p).exists()
+                    {
+                        msg.image_path = Some(p);
                     }
                 }
             }
@@ -2994,10 +2997,10 @@ impl App {
                     } else {
                         None
                     };
-                    if let Some(p) = path_str {
-                        if Path::new(&p).exists() {
-                            msg.image_path = Some(p);
-                        }
+                    if let Some(p) = path_str
+                        && Path::new(&p).exists()
+                    {
+                        msg.image_path = Some(p);
                     }
                 }
                 msg
@@ -3014,10 +3017,10 @@ impl App {
         if let Some(read_idx) = self.store.last_read_index.get_mut(&conv_id) {
             *read_idx += prepend_count;
         }
-        if self.active_conversation.as_ref() == Some(&conv_id) {
-            if let Some(ref mut fi) = self.focused_msg_index {
-                *fi += prepend_count;
-            }
+        if self.active_conversation.as_ref() == Some(&conv_id)
+            && let Some(ref mut fi) = self.focused_msg_index
+        {
+            *fi += prepend_count;
         }
     }
 
@@ -3454,20 +3457,21 @@ impl App {
             match (prev, code) {
                 ('g', KeyCode::Char('g')) => {
                     // gg = scroll to top
-                    if let Some(ref id) = self.active_conversation {
-                        if let Some(conv) = self.store.conversations.get(id) {
-                            self.scroll_offset = conv.messages.len();
-                        }
+                    if let Some(ref id) = self.active_conversation
+                        && let Some(conv) = self.store.conversations.get(id)
+                    {
+                        self.scroll_offset = conv.messages.len();
                     }
                     self.focused_msg_index = None;
                     return None;
                 }
                 ('d', KeyCode::Char('d')) => {
                     // dd = delete message
-                    if let Some(msg) = self.selected_message() {
-                        if !msg.is_system && !msg.is_deleted {
-                            self.show_delete_confirm = true;
-                        }
+                    if let Some(msg) = self.selected_message()
+                        && !msg.is_system
+                        && !msg.is_deleted
+                    {
+                        self.show_delete_confirm = true;
                     }
                     return None;
                 }
@@ -3664,48 +3668,52 @@ impl App {
                 None
             }
             Some(KeyAction::Quote) => {
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        let author_phone = msg.sender_id.clone();
-                        let snippet: String = if msg.body.chars().count() > 50 {
-                            format!("{}…", msg.body.chars().take(50).collect::<String>())
-                        } else {
-                            msg.body.clone()
-                        };
-                        let ts = msg.timestamp_ms;
-                        let phone = if author_phone.is_empty() || author_phone == "you" {
-                            self.account.clone()
-                        } else {
-                            author_phone
-                        };
-                        self.reply_target = Some((phone, snippet, ts));
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    let author_phone = msg.sender_id.clone();
+                    let snippet: String = if msg.body.chars().count() > 50 {
+                        format!("{}…", msg.body.chars().take(50).collect::<String>())
+                    } else {
+                        msg.body.clone()
+                    };
+                    let ts = msg.timestamp_ms;
+                    let phone = if author_phone.is_empty() || author_phone == "you" {
+                        self.account.clone()
+                    } else {
+                        author_phone
+                    };
+                    self.reply_target = Some((phone, snippet, ts));
+                    self.mode = InputMode::Insert;
+                }
+                None
+            }
+            Some(KeyAction::EditMessage) => {
+                if let Some(msg) = self.selected_message()
+                    && msg.sender == "you"
+                    && !msg.is_deleted
+                    && !msg.is_system
+                {
+                    let ts = msg.timestamp_ms;
+                    let body = msg.body.clone();
+                    if let Some(ref conv_id) = self.active_conversation {
+                        let conv_id = conv_id.clone();
+                        self.editing_message = Some((ts, conv_id));
+                        self.input_buffer = body;
+                        self.input_cursor = self.input_buffer.len();
                         self.mode = InputMode::Insert;
                     }
                 }
                 None
             }
-            Some(KeyAction::EditMessage) => {
-                if let Some(msg) = self.selected_message() {
-                    if msg.sender == "you" && !msg.is_deleted && !msg.is_system {
-                        let ts = msg.timestamp_ms;
-                        let body = msg.body.clone();
-                        if let Some(ref conv_id) = self.active_conversation {
-                            let conv_id = conv_id.clone();
-                            self.editing_message = Some((ts, conv_id));
-                            self.input_buffer = body;
-                            self.input_cursor = self.input_buffer.len();
-                            self.mode = InputMode::Insert;
-                        }
-                    }
-                }
-                None
-            }
             Some(KeyAction::ForwardMessage) => {
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        self.forward.body = msg.body.clone();
-                        self.open_forward_picker();
-                    }
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    self.forward.body = msg.body.clone();
+                    self.open_forward_picker();
                 }
                 None
             }
@@ -3739,10 +3747,10 @@ impl App {
             }
             _ => {
                 // Handle prefix keys that aren't in the binding map
-                if let KeyCode::Char(c @ ('g' | 'd')) = code {
-                    if modifiers.is_empty() {
-                        self.pending_normal_key = Some(c);
-                    }
+                if let KeyCode::Char(c @ ('g' | 'd')) = code
+                    && modifiers.is_empty()
+                {
+                    self.pending_normal_key = Some(c);
                 }
                 None
             }
@@ -3859,54 +3867,59 @@ impl App {
                 None
             }
             Some(KeyAction::Quote) => {
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        let author_phone = msg.sender_id.clone();
-                        let snippet: String = if msg.body.chars().count() > 50 {
-                            format!("{}…", msg.body.chars().take(50).collect::<String>())
-                        } else {
-                            msg.body.clone()
-                        };
-                        let ts = msg.timestamp_ms;
-                        let phone = if author_phone.is_empty() || author_phone == "you" {
-                            self.account.clone()
-                        } else {
-                            author_phone
-                        };
-                        self.reply_target = Some((phone, snippet, ts));
-                    }
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    let author_phone = msg.sender_id.clone();
+                    let snippet: String = if msg.body.chars().count() > 50 {
+                        format!("{}…", msg.body.chars().take(50).collect::<String>())
+                    } else {
+                        msg.body.clone()
+                    };
+                    let ts = msg.timestamp_ms;
+                    let phone = if author_phone.is_empty() || author_phone == "you" {
+                        self.account.clone()
+                    } else {
+                        author_phone
+                    };
+                    self.reply_target = Some((phone, snippet, ts));
                 }
                 None
             }
             Some(KeyAction::EditMessage) => {
-                if let Some(msg) = self.selected_message() {
-                    if msg.sender == "you" && !msg.is_deleted && !msg.is_system {
-                        let ts = msg.timestamp_ms;
-                        let body = msg.body.clone();
-                        if let Some(ref conv_id) = self.active_conversation {
-                            let conv_id = conv_id.clone();
-                            self.editing_message = Some((ts, conv_id));
-                            self.input_buffer = body;
-                            self.input_cursor = self.input_buffer.len();
-                        }
+                if let Some(msg) = self.selected_message()
+                    && msg.sender == "you"
+                    && !msg.is_deleted
+                    && !msg.is_system
+                {
+                    let ts = msg.timestamp_ms;
+                    let body = msg.body.clone();
+                    if let Some(ref conv_id) = self.active_conversation {
+                        let conv_id = conv_id.clone();
+                        self.editing_message = Some((ts, conv_id));
+                        self.input_buffer = body;
+                        self.input_cursor = self.input_buffer.len();
                     }
                 }
                 None
             }
             Some(KeyAction::ForwardMessage) => {
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        self.forward.body = msg.body.clone();
-                        self.open_forward_picker();
-                    }
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    self.forward.body = msg.body.clone();
+                    self.open_forward_picker();
                 }
                 None
             }
             Some(KeyAction::DeleteMessage) => {
-                if let Some(msg) = self.selected_message() {
-                    if !msg.is_system && !msg.is_deleted {
-                        self.show_delete_confirm = true;
-                    }
+                if let Some(msg) = self.selected_message()
+                    && !msg.is_system
+                    && !msg.is_deleted
+                {
+                    self.show_delete_confirm = true;
                 }
                 None
             }
@@ -4215,13 +4228,13 @@ impl App {
                     .or_insert_with(|| name.clone());
             }
             // Populate UUID->name for @mention resolution
-            if let (Some(ref uuid), Some(ref name)) = (&msg.source_uuid, &msg.source_name) {
-                if !name.is_empty() {
-                    self.store
-                        .uuid_to_name
-                        .entry(uuid.clone())
-                        .or_insert_with(|| name.clone());
-                }
+            if let (Some(uuid), Some(name)) = (&msg.source_uuid, &msg.source_name)
+                && !name.is_empty()
+            {
+                self.store
+                    .uuid_to_name
+                    .entry(uuid.clone())
+                    .or_insert_with(|| name.clone());
             }
         }
 
@@ -4298,14 +4311,14 @@ impl App {
         };
 
         // Keep conversation's expiration_timer in sync with incoming messages
-        if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-            if conv.expiration_timer != msg_expires_in {
-                conv.expiration_timer = msg_expires_in;
-                db_warn(
-                    self.db.update_expiration_timer(&conv_id, msg_expires_in),
-                    "update_expiration_timer",
-                );
-            }
+        if let Some(conv) = self.store.conversations.get_mut(&conv_id)
+            && conv.expiration_timer != msg_expires_in
+        {
+            conv.expiration_timer = msg_expires_in;
+            db_warn(
+                self.db.update_expiration_timer(&conv_id, msg_expires_in),
+                "update_expiration_timer",
+            );
         }
 
         // Resolve @mentions before the push closure borrows self mutably
@@ -4403,10 +4416,10 @@ impl App {
                     },
                 );
                 // Bump last_read_index if we inserted before the read marker
-                if let Some(read_idx) = self.store.last_read_index.get_mut(&conv_id) {
-                    if pos <= *read_idx {
-                        *read_idx += 1;
-                    }
+                if let Some(read_idx) = self.store.last_read_index.get_mut(&conv_id)
+                    && pos <= *read_idx
+                {
+                    *read_idx += 1;
                 }
                 if msg_expires_in > 0 {
                     self.expiring_msg_count += 1;
@@ -4498,42 +4511,39 @@ impl App {
 
         // Persist raw body + mentions so the display body can be re-resolved
         // later when the contact list or group list fills in unknown UUIDs.
-        if had_mentions {
-            if let Some(ref raw) = msg.body {
-                db_warn(
-                    self.db
-                        .upsert_message_mentions(&conv_id, msg_ts_ms, raw, &msg.mentions),
-                    "upsert_message_mentions",
-                );
-            }
+        if had_mentions && let Some(ref raw) = msg.body {
+            db_warn(
+                self.db
+                    .upsert_message_mentions(&conv_id, msg_ts_ms, raw, &msg.mentions),
+                "upsert_message_mentions",
+            );
         }
 
         // Attach first link preview to the body message (not attachment messages)
         if let Some(preview) = msg.previews.into_iter().next() {
-            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-                if let Some(dm) = conv
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id)
+                && let Some(dm) = conv
                     .messages
                     .iter_mut()
                     .rev()
                     .find(|m| m.timestamp_ms == msg_ts_ms && !m.body.starts_with('['))
-                {
-                    let (img_lines, img_path) =
-                        if self.image.show_link_previews && self.image.image_mode != "none" {
-                            if let Some(ref p) = preview.image_path {
-                                (
-                                    image_render::render_image(Path::new(p), 30),
-                                    Some(p.clone()),
-                                )
-                            } else {
-                                (None, None)
-                            }
+            {
+                let (img_lines, img_path) =
+                    if self.image.show_link_previews && self.image.image_mode != "none" {
+                        if let Some(ref p) = preview.image_path {
+                            (
+                                image_render::render_image(Path::new(p), 30),
+                                Some(p.clone()),
+                            )
                         } else {
                             (None, None)
-                        };
-                    dm.preview = Some(preview.clone());
-                    dm.preview_image_lines = img_lines;
-                    dm.preview_image_path = img_path;
-                }
+                        }
+                    } else {
+                        (None, None)
+                    };
+                dm.preview = Some(preview.clone());
+                dm.preview_image_lines = img_lines;
+                dm.preview_image_path = img_path;
             }
             db_warn(
                 self.db.upsert_link_preview(&conv_id, msg_ts_ms, &preview),
@@ -4693,10 +4703,10 @@ impl App {
                 },
             );
             // Bump last_read_index if we inserted before the read marker
-            if let Some(read_idx) = self.store.last_read_index.get_mut(conv_id) {
-                if pos <= *read_idx {
-                    *read_idx += 1;
-                }
+            if let Some(read_idx) = self.store.last_read_index.get_mut(conv_id)
+                && pos <= *read_idx
+            {
+                *read_idx += 1;
             }
         }
         let ts_rfc3339 = timestamp.to_rfc3339();
@@ -4734,10 +4744,10 @@ impl App {
 
         // Clean up DB
         let removed = removed_count > 0;
-        if let Ok(n) = self.db.delete_expired_messages(now_ms) {
-            if n > 0 {
-                return true;
-            }
+        if let Ok(n) = self.db.delete_expired_messages(now_ms)
+            && n > 0
+        {
+            return true;
         }
 
         removed
@@ -4776,11 +4786,7 @@ impl App {
                     m.sender == target_author
                         || target_display.as_deref() == Some(m.sender.as_str())
                 };
-                if matches {
-                    Some(idx)
-                } else {
-                    None
-                }
+                if matches { Some(idx) } else { None }
             });
             if let Some(msg) = found.map(|idx| &mut conv.messages[idx]) {
                 if is_remove {
@@ -4888,11 +4894,11 @@ impl App {
     }
 
     fn handle_edit_received(&mut self, conv_id: &str, target_timestamp: i64, new_body: &str) {
-        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
-            if let Some(idx) = conv.find_msg_idx(target_timestamp) {
-                conv.messages[idx].body = new_body.to_string();
-                conv.messages[idx].is_edited = true;
-            }
+        if let Some(conv) = self.store.conversations.get_mut(conv_id)
+            && let Some(idx) = conv.find_msg_idx(target_timestamp)
+        {
+            conv.messages[idx].body = new_body.to_string();
+            conv.messages[idx].is_edited = true;
         }
         self.db_warn_visible(
             self.db
@@ -4902,12 +4908,12 @@ impl App {
     }
 
     fn handle_remote_delete(&mut self, conv_id: &str, target_timestamp: i64) {
-        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
-            if let Some(idx) = conv.find_msg_idx(target_timestamp) {
-                conv.messages[idx].is_deleted = true;
-                conv.messages[idx].body = "[deleted]".to_string();
-                conv.messages[idx].reactions.clear();
-            }
+        if let Some(conv) = self.store.conversations.get_mut(conv_id)
+            && let Some(idx) = conv.find_msg_idx(target_timestamp)
+        {
+            conv.messages[idx].is_deleted = true;
+            conv.messages[idx].body = "[deleted]".to_string();
+            conv.messages[idx].reactions.clear();
         }
         self.db_warn_visible(
             self.db.mark_message_deleted(conv_id, target_timestamp),
@@ -4922,10 +4928,10 @@ impl App {
         target_timestamp: i64,
         pinned: bool,
     ) {
-        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
-            if let Some(idx) = conv.find_msg_idx(target_timestamp) {
-                conv.messages[idx].is_pinned = pinned;
-            }
+        if let Some(conv) = self.store.conversations.get_mut(conv_id)
+            && let Some(idx) = conv.find_msg_idx(target_timestamp)
+        {
+            conv.messages[idx].is_pinned = pinned;
         }
         self.db_warn_visible(
             self.db
@@ -4977,22 +4983,22 @@ impl App {
         option_indexes: &[i64],
         vote_count: i64,
     ) {
-        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
-            if let Some(idx) = conv.find_msg_idx(target_timestamp) {
-                let msg = &mut conv.messages[idx];
-                // Upsert vote in memory
-                if let Some(existing) = msg.poll_votes.iter_mut().find(|v| v.voter == voter) {
-                    existing.option_indexes = option_indexes.to_vec();
-                    existing.vote_count = vote_count;
-                    existing.voter_name = voter_name.map(|s| s.to_string());
-                } else {
-                    msg.poll_votes.push(PollVote {
-                        voter: voter.to_string(),
-                        voter_name: voter_name.map(|s| s.to_string()),
-                        option_indexes: option_indexes.to_vec(),
-                        vote_count,
-                    });
-                }
+        if let Some(conv) = self.store.conversations.get_mut(conv_id)
+            && let Some(idx) = conv.find_msg_idx(target_timestamp)
+        {
+            let msg = &mut conv.messages[idx];
+            // Upsert vote in memory
+            if let Some(existing) = msg.poll_votes.iter_mut().find(|v| v.voter == voter) {
+                existing.option_indexes = option_indexes.to_vec();
+                existing.vote_count = vote_count;
+                existing.voter_name = voter_name.map(|s| s.to_string());
+            } else {
+                msg.poll_votes.push(PollVote {
+                    voter: voter.to_string(),
+                    voter_name: voter_name.map(|s| s.to_string()),
+                    option_indexes: option_indexes.to_vec(),
+                    vote_count,
+                });
             }
         }
         self.db_warn_visible(
@@ -5009,12 +5015,11 @@ impl App {
     }
 
     fn handle_poll_terminated(&mut self, conv_id: &str, target_timestamp: i64) {
-        if let Some(conv) = self.store.conversations.get_mut(conv_id) {
-            if let Some(idx) = conv.find_msg_idx(target_timestamp) {
-                if let Some(ref mut poll) = conv.messages[idx].poll_data {
-                    poll.closed = true;
-                }
-            }
+        if let Some(conv) = self.store.conversations.get_mut(conv_id)
+            && let Some(idx) = conv.find_msg_idx(target_timestamp)
+            && let Some(ref mut poll) = conv.messages[idx].poll_data
+        {
+            poll.closed = true;
         }
         self.db_warn_visible(self.db.close_poll(conv_id, target_timestamp), "close_poll");
     }
@@ -5043,10 +5048,10 @@ impl App {
 
         if was_pinned {
             // Unpin immediately — no duration needed
-            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-                if let Some(idx) = conv.find_msg_idx(target_timestamp) {
-                    conv.messages[idx].is_pinned = false;
-                }
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id)
+                && let Some(idx) = conv.find_msg_idx(target_timestamp)
+            {
+                conv.messages[idx].is_pinned = false;
             }
             self.db_warn_visible(
                 self.db
@@ -5098,10 +5103,10 @@ impl App {
                 let pending = self.pin_duration.pending.take()?;
 
                 // Optimistically pin
-                if let Some(conv) = self.store.conversations.get_mut(&pending.conv_id) {
-                    if let Some(idx) = conv.find_msg_idx(pending.target_timestamp) {
-                        conv.messages[idx].is_pinned = true;
-                    }
+                if let Some(conv) = self.store.conversations.get_mut(&pending.conv_id)
+                    && let Some(idx) = conv.find_msg_idx(pending.target_timestamp)
+                {
+                    conv.messages[idx].is_pinned = true;
                 }
                 self.db_warn_visible(
                     self.db
@@ -5234,7 +5239,7 @@ impl App {
                     .selections
                     .iter()
                     .enumerate()
-                    .filter(|(_, &sel)| sel)
+                    .filter(|&(_, &sel)| sel)
                     .map(|(i, _)| i as i64)
                     .collect();
                 if selected.is_empty() {
@@ -5352,36 +5357,36 @@ impl App {
         self.startup_status.clear();
         for contact in contacts {
             // Store name in lookup for future message resolution
-            if let Some(ref name) = contact.name {
-                if !name.is_empty() {
-                    self.store
-                        .contact_names
-                        .insert(contact.number.clone(), name.clone());
-                }
+            if let Some(ref name) = contact.name
+                && !name.is_empty()
+            {
+                self.store
+                    .contact_names
+                    .insert(contact.number.clone(), name.clone());
             }
             // Build UUID maps for @mention resolution
             if let Some(ref uuid) = contact.uuid {
-                if let Some(ref name) = contact.name {
-                    if !name.is_empty() {
-                        self.store.uuid_to_name.insert(uuid.clone(), name.clone());
-                    }
+                if let Some(ref name) = contact.name
+                    && !name.is_empty()
+                {
+                    self.store.uuid_to_name.insert(uuid.clone(), name.clone());
                 }
                 self.store
                     .number_to_uuid
                     .insert(contact.number.clone(), uuid.clone());
             }
             // Update name on existing conversations only — don't create new ones
-            if let Some(conv) = self.store.conversations.get_mut(&contact.number) {
-                if let Some(ref contact_name) = contact.name {
-                    if !contact_name.is_empty() && conv.name != *contact_name {
-                        conv.name = contact_name.clone();
-                        db_warn(
-                            self.db
-                                .upsert_conversation(&contact.number, contact_name, false),
-                            "upsert_conversation",
-                        );
-                    }
-                }
+            if let Some(conv) = self.store.conversations.get_mut(&contact.number)
+                && let Some(ref contact_name) = contact.name
+                && !contact_name.is_empty()
+                && conv.name != *contact_name
+            {
+                conv.name = contact_name.clone();
+                db_warn(
+                    self.db
+                        .upsert_conversation(&contact.number, contact_name, false),
+                    "upsert_conversation",
+                );
             }
         }
         // Auto-accept unaccepted 1:1 conversations whose sender is now a known contact
@@ -5427,13 +5432,13 @@ impl App {
             }
             // Populate UUID->name from group members (phone->uuid + phone->name)
             for (phone, uuid) in &group.member_uuids {
-                if let Some(name) = self.store.contact_names.get(phone) {
-                    if !name.is_empty() {
-                        self.store
-                            .uuid_to_name
-                            .entry(uuid.clone())
-                            .or_insert_with(|| name.clone());
-                    }
+                if let Some(name) = self.store.contact_names.get(phone)
+                    && !name.is_empty()
+                {
+                    self.store
+                        .uuid_to_name
+                        .entry(uuid.clone())
+                        .or_insert_with(|| name.clone());
                 }
             }
             // Store group for @mention member lookup
@@ -5467,42 +5472,41 @@ impl App {
             }
         }
         // If verify overlay is open, refresh the displayed identities
-        if self.verify.show {
-            if let Some(ref conv_id) = self.active_conversation {
-                let conv_id = conv_id.clone();
-                let is_group = self
-                    .store
-                    .conversations
-                    .get(&conv_id)
-                    .map(|c| c.is_group)
-                    .unwrap_or(false);
-                if is_group {
-                    if let Some(group) = self.store.groups.get(&conv_id) {
-                        let members: HashSet<&str> =
-                            group.members.iter().map(|s| s.as_str()).collect();
-                        self.verify.identities = identities
-                            .iter()
-                            .filter(|id| {
-                                id.number
-                                    .as_ref()
-                                    .is_some_and(|n| members.contains(n.as_str()))
-                            })
-                            .cloned()
-                            .collect();
-                    }
-                } else {
+        if self.verify.show
+            && let Some(ref conv_id) = self.active_conversation
+        {
+            let conv_id = conv_id.clone();
+            let is_group = self
+                .store
+                .conversations
+                .get(&conv_id)
+                .map(|c| c.is_group)
+                .unwrap_or(false);
+            if is_group {
+                if let Some(group) = self.store.groups.get(&conv_id) {
+                    let members: HashSet<&str> = group.members.iter().map(|s| s.as_str()).collect();
                     self.verify.identities = identities
                         .iter()
-                        .filter(|id| id.number.as_deref() == Some(conv_id.as_str()))
+                        .filter(|id| {
+                            id.number
+                                .as_ref()
+                                .is_some_and(|n| members.contains(n.as_str()))
+                        })
                         .cloned()
                         .collect();
                 }
-                // Clamp index
-                if !self.verify.identities.is_empty()
-                    && self.verify.index >= self.verify.identities.len()
-                {
-                    self.verify.index = self.verify.identities.len() - 1;
-                }
+            } else {
+                self.verify.identities = identities
+                    .iter()
+                    .filter(|id| id.number.as_deref() == Some(conv_id.as_str()))
+                    .cloned()
+                    .collect();
+            }
+            // Clamp index
+            if !self.verify.identities.is_empty()
+                && self.verify.index >= self.verify.identities.len()
+            {
+                self.verify.index = self.verify.identities.len() - 1;
             }
         }
     }
@@ -5522,10 +5526,10 @@ impl App {
         let mut found: Vec<(usize, usize, String)> = Vec::new(); // (byte_start, byte_end, uuid)
         for (name, uuid) in &self.autocomplete.pending_mentions {
             let pattern = format!("@{name}");
-            if let Some(uuid) = uuid {
-                if let Some(pos) = wire.find(&pattern) {
-                    found.push((pos, pos + pattern.len(), uuid.clone()));
-                }
+            if let Some(uuid) = uuid
+                && let Some(pos) = wire.find(&pattern)
+            {
+                found.push((pos, pos + pattern.len(), uuid.clone()));
             }
         }
         found.sort_by_key(|b| std::cmp::Reverse(b.0)); // reverse order
@@ -5608,14 +5612,13 @@ impl App {
         }
         if let Some((conv_id, local_ts)) = self.pending_sends.remove(rpc_id) {
             let mut found = false;
-            if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-                if let Some(idx) = conv
+            if let Some(conv) = self.store.conversations.get_mut(&conv_id)
+                && let Some(idx) = conv
                     .find_msg_idx(local_ts)
                     .filter(|&idx| conv.messages[idx].sender == "you")
-                {
-                    conv.messages[idx].status = Some(MessageStatus::Failed);
-                    found = true;
-                }
+            {
+                conv.messages[idx].status = Some(MessageStatus::Failed);
+                found = true;
             }
             if found {
                 self.db_warn_visible(
@@ -5643,14 +5646,14 @@ impl App {
             .find_msg_idx(ts)
             .filter(|&idx| conv.messages[idx].sender == "you")
         {
-            if let Some(current) = conv.messages[idx].status {
-                if new_status > current {
-                    conv.messages[idx].status = Some(new_status);
-                    db_warn(
-                        db.update_message_status(conv_id, ts, new_status.to_i32()),
-                        "update_message_status",
-                    );
-                }
+            if let Some(current) = conv.messages[idx].status
+                && new_status > current
+            {
+                conv.messages[idx].status = Some(new_status);
+                db_warn(
+                    db.update_message_status(conv_id, ts, new_status.to_i32()),
+                    "update_message_status",
+                );
             }
             return true;
         }
@@ -6464,61 +6467,60 @@ impl App {
         }
 
         // Try @mention autocomplete
-        if let Some(ref conv_id) = self.active_conversation {
-            if let Some(conv) = self.store.conversations.get(conv_id) {
-                if let Some(trigger_pos) = self.find_mention_trigger() {
-                    let after_at = &self.input_buffer[trigger_pos + 1..self.input_cursor];
-                    let filter_lower = after_at.to_lowercase();
+        if let Some(ref conv_id) = self.active_conversation
+            && let Some(conv) = self.store.conversations.get(conv_id)
+            && let Some(trigger_pos) = self.find_mention_trigger()
+        {
+            let after_at = &self.input_buffer[trigger_pos + 1..self.input_cursor];
+            let filter_lower = after_at.to_lowercase();
 
-                    let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
-                    if conv.is_group {
-                        // Group: offer all group members
-                        if let Some(group) = self.store.groups.get(conv_id) {
-                            for member_phone in &group.members {
-                                let name = self
-                                    .store
-                                    .contact_names
-                                    .get(member_phone)
-                                    .cloned()
-                                    .unwrap_or_else(|| member_phone.clone());
-                                let uuid = self.store.number_to_uuid.get(member_phone).cloned();
-                                if filter_lower.is_empty()
-                                    || name.to_lowercase().contains(&filter_lower)
-                                    || member_phone.contains(&filter_lower)
-                                {
-                                    candidates.push((member_phone.clone(), name, uuid));
-                                }
-                            }
-                        }
-                    } else {
-                        // 1:1 chat: offer the contact as a mention candidate
+            let mut candidates: Vec<(String, String, Option<String>)> = Vec::new();
+            if conv.is_group {
+                // Group: offer all group members
+                if let Some(group) = self.store.groups.get(conv_id) {
+                    for member_phone in &group.members {
                         let name = self
                             .store
                             .contact_names
-                            .get(conv_id)
+                            .get(member_phone)
                             .cloned()
-                            .unwrap_or_else(|| conv_id.clone());
-                        let uuid = self.store.number_to_uuid.get(conv_id).cloned();
+                            .unwrap_or_else(|| member_phone.clone());
+                        let uuid = self.store.number_to_uuid.get(member_phone).cloned();
                         if filter_lower.is_empty()
                             || name.to_lowercase().contains(&filter_lower)
-                            || conv_id.contains(&filter_lower)
+                            || member_phone.contains(&filter_lower)
                         {
-                            candidates.push((conv_id.clone(), name, uuid));
+                            candidates.push((member_phone.clone(), name, uuid));
                         }
-                    }
-                    candidates.sort_by_key(|a| a.1.to_lowercase());
-
-                    if !candidates.is_empty() {
-                        self.autocomplete.visible = true;
-                        self.autocomplete.mode = AutocompleteMode::Mention;
-                        self.autocomplete.mention_candidates = candidates;
-                        self.autocomplete.mention_trigger_pos = trigger_pos;
-                        if self.autocomplete.index >= self.autocomplete.mention_candidates.len() {
-                            self.autocomplete.index = 0;
-                        }
-                        return;
                     }
                 }
+            } else {
+                // 1:1 chat: offer the contact as a mention candidate
+                let name = self
+                    .store
+                    .contact_names
+                    .get(conv_id)
+                    .cloned()
+                    .unwrap_or_else(|| conv_id.clone());
+                let uuid = self.store.number_to_uuid.get(conv_id).cloned();
+                if filter_lower.is_empty()
+                    || name.to_lowercase().contains(&filter_lower)
+                    || conv_id.contains(&filter_lower)
+                {
+                    candidates.push((conv_id.clone(), name, uuid));
+                }
+            }
+            candidates.sort_by_key(|a| a.1.to_lowercase());
+
+            if !candidates.is_empty() {
+                self.autocomplete.visible = true;
+                self.autocomplete.mode = AutocompleteMode::Mention;
+                self.autocomplete.mention_candidates = candidates;
+                self.autocomplete.mention_trigger_pos = trigger_pos;
+                if self.autocomplete.index >= self.autocomplete.mention_candidates.len() {
+                    self.autocomplete.index = 0;
+                }
+                return;
             }
         }
 
@@ -7154,12 +7156,12 @@ impl App {
 
     /// Clear the clipboard if auto-clear timer has expired.
     pub fn check_clipboard_clear(&mut self) {
-        if let Some(set_at) = self.notifications.clipboard_set_at {
-            if set_at.elapsed().as_secs() >= self.notifications.clipboard_clear_seconds {
-                self.notifications.clipboard_set_at = None;
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text("");
-                }
+        if let Some(set_at) = self.notifications.clipboard_set_at
+            && set_at.elapsed().as_secs() >= self.notifications.clipboard_clear_seconds
+        {
+            self.notifications.clipboard_set_at = None;
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text("");
             }
         }
     }
@@ -7254,22 +7256,21 @@ impl App {
         }
 
         // 2. Sidebar click — switch conversation
-        if let Some(inner) = self.mouse_sidebar_inner {
-            if is_in_rect(col, row, inner) {
-                let index = (row - inner.y) as usize;
-                let sidebar_list =
-                    if self.sidebar_filter_active && !self.sidebar_filtered.is_empty() {
-                        &self.sidebar_filtered
-                    } else {
-                        &self.store.conversation_order
-                    };
-                if index < sidebar_list.len() {
-                    let conv_id = sidebar_list[index].clone();
-                    self.clear_sidebar_filter();
-                    self.join_conversation(&conv_id);
-                }
-                return;
+        if let Some(inner) = self.mouse_sidebar_inner
+            && is_in_rect(col, row, inner)
+        {
+            let index = (row - inner.y) as usize;
+            let sidebar_list = if self.sidebar_filter_active && !self.sidebar_filtered.is_empty() {
+                &self.sidebar_filtered
+            } else {
+                &self.store.conversation_order
+            };
+            if index < sidebar_list.len() {
+                let conv_id = sidebar_list[index].clone();
+                self.clear_sidebar_filter();
+                self.join_conversation(&conv_id);
             }
+            return;
         }
 
         // 3. Input area click — position cursor and enter Insert mode
@@ -7465,10 +7466,10 @@ fn extract_file_uri(body: &str) -> Option<String> {
 fn extract_http_url(body: &str) -> Option<String> {
     let mut best: Option<(usize, &str)> = None;
     for scheme in &["https://", "http://"] {
-        if let Some(pos) = body.find(scheme) {
-            if best.is_none() || pos < best.unwrap().0 {
-                best = Some((pos, scheme));
-            }
+        if let Some(pos) = body.find(scheme)
+            && (best.is_none() || pos < best.unwrap().0)
+        {
+            best = Some((pos, scheme));
         }
     }
     let (pos, _) = best?;
@@ -7663,7 +7664,11 @@ impl App {
         );
         bob_reply.status = Some(MessageStatus::Read);
 
-        let bob_thanks = dm("Bob", ts(10, 15), "Thanks! I'll address those. Also the migration is backwards-compatible so no rush on deploy");
+        let bob_thanks = dm(
+            "Bob",
+            ts(10, 15),
+            "Thanks! I'll address those. Also the migration is backwards-compatible so no rush on deploy",
+        );
 
         // Quote reply: Bob quotes the review comment
         let mut bob_followup = dm("Bob", ts(10, 20), "Fixed those error handling bits, PTAL");
@@ -11171,10 +11176,11 @@ mod tests {
         }];
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         let conv = &app.store.conversations["+1"];
-        assert!(conv
-            .messages
-            .iter()
-            .any(|m| m.body.contains("[image: photo.jpg]")));
+        assert!(
+            conv.messages
+                .iter()
+                .any(|m| m.body.contains("[image: photo.jpg]"))
+        );
     }
 
     #[rstest]
@@ -11188,10 +11194,11 @@ mod tests {
         }];
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         let conv = &app.store.conversations["+1"];
-        assert!(conv
-            .messages
-            .iter()
-            .any(|m| m.body.contains("[attachment: doc.pdf]")));
+        assert!(
+            conv.messages
+                .iter()
+                .any(|m| m.body.contains("[attachment: doc.pdf]"))
+        );
     }
 
     #[rstest]
@@ -11222,10 +11229,11 @@ mod tests {
         }];
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         let conv = &app.store.conversations["+1"];
-        assert!(conv
-            .messages
-            .iter()
-            .any(|m| m.body.contains("[attachment: audio/ogg]")));
+        assert!(
+            conv.messages
+                .iter()
+                .any(|m| m.body.contains("[attachment: audio/ogg]"))
+        );
     }
 
     // --- Bell / notification tests ---

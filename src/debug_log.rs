@@ -6,8 +6,8 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static REDACT: AtomicBool = AtomicBool::new(true);
@@ -34,13 +34,12 @@ fn setup_file() {
         }
     }
     // Rotate if existing log exceeds size limit
-    if path.exists() {
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if meta.len() > MAX_LOG_SIZE {
-                let backup = path.with_extension("log.old");
-                let _ = std::fs::rename(&path, &backup);
-            }
-        }
+    if path.exists()
+        && let Ok(meta) = std::fs::metadata(&path)
+        && meta.len() > MAX_LOG_SIZE
+    {
+        let backup = path.with_extension("log.old");
+        let _ = std::fs::rename(&path, &backup);
     }
     if let Ok(f) = OpenOptions::new().create(true).append(true).open(&path) {
         #[cfg(unix)]
@@ -105,11 +104,11 @@ pub fn log(msg: &str) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    if let Ok(mut guard) = FILE.lock() {
-        if let Some(ref mut f) = *guard {
-            let now = chrono::Local::now().format("%H:%M:%S%.3f");
-            let _ = writeln!(f, "[{now}] {msg}");
-        }
+    if let Ok(mut guard) = FILE.lock()
+        && let Some(ref mut f) = *guard
+    {
+        let now = chrono::Local::now().format("%H:%M:%S%.3f");
+        let _ = writeln!(f, "[{now}] {msg}");
     }
 }
 

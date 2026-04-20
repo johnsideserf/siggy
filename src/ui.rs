@@ -1,4 +1,5 @@
 use ratatui::{
+    Frame,
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
@@ -7,16 +8,15 @@ use ratatui::{
         Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Scrollbar,
         ScrollbarOrientation, ScrollbarState, Wrap,
     },
-    Frame,
 };
 
 use crate::app::{
-    App, AutocompleteMode, GroupMenuState, InputMode, SettingDef, VisibleImage, PIN_DURATIONS,
-    QUICK_REACTIONS, SETTINGS,
+    App, AutocompleteMode, GroupMenuState, InputMode, PIN_DURATIONS, QUICK_REACTIONS, SETTINGS,
+    SettingDef, VisibleImage,
 };
 use crate::domain::CATEGORIES;
 use crate::image_render::{self, ImageProtocol};
-use crate::input::{format_compact_duration, COMMANDS};
+use crate::input::{COMMANDS, format_compact_duration};
 use crate::keybindings::{self, BindingMode, KeyAction};
 use crate::list_overlay;
 use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction, StyleType, TrustLevel};
@@ -708,10 +708,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Resolve hidden URLs for attachment links (display text has no URI scheme)
     for link in &mut app.image.link_regions {
-        if !link.url.contains("://") {
-            if let Some(url) = app.image.link_url_map.get(&link.text) {
-                link.url = url.clone();
-            }
+        if !link.url.contains("://")
+            && let Some(url) = app.image.link_url_map.get(&link.text)
+        {
+            link.url = url.clone();
         }
     }
 }
@@ -899,23 +899,23 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             // Trust level indicator (1:1 only)
-            if !conv.is_group {
-                if let Some(trust) = app.identity_trust.get(id) {
-                    match trust {
-                        TrustLevel::TrustedVerified => {
-                            spans.push(Span::styled(
-                                "\u{2713} verified ",
-                                Style::default().fg(theme.accent),
-                            ));
-                        }
-                        TrustLevel::Untrusted => {
-                            spans.push(Span::styled(
-                                "\u{26A0} untrusted ",
-                                Style::default().fg(theme.warning),
-                            ));
-                        }
-                        TrustLevel::TrustedUnverified => {} // normal state, no indicator
+            if !conv.is_group
+                && let Some(trust) = app.identity_trust.get(id)
+            {
+                match trust {
+                    TrustLevel::TrustedVerified => {
+                        spans.push(Span::styled(
+                            "\u{2713} verified ",
+                            Style::default().fg(theme.accent),
+                        ));
                     }
+                    TrustLevel::Untrusted => {
+                        spans.push(Span::styled(
+                            "\u{26A0} untrusted ",
+                            Style::default().fg(theme.warning),
+                        ));
+                    }
+                    TrustLevel::TrustedUnverified => {} // normal state, no indicator
                 }
             }
 
@@ -985,16 +985,16 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         (None, full_inner)
     };
 
-    if let Some(ref pin_text) = pinned_banner_text {
-        if let Some(banner) = banner_area {
-            let pin_line = Line::from(Span::styled(
-                truncate(pin_text, banner.width as usize),
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            frame.render_widget(Paragraph::new(pin_line), banner);
-        }
+    if let Some(ref pin_text) = pinned_banner_text
+        && let Some(banner) = banner_area
+    {
+        let pin_line = Line::from(Span::styled(
+            truncate(pin_text, banner.width as usize),
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+        frame.render_widget(Paragraph::new(pin_line), banner);
     }
 
     app.mouse_messages_area = inner;
@@ -1125,12 +1125,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut spans = Vec::new();
 
             // Status symbol for outgoing messages (before timestamp)
-            if app.show_receipts {
-                if let Some(status) = msg.status {
-                    let (sym, color) =
-                        status_symbol(status, app.nerd_fonts, app.color_receipts, theme);
-                    spans.push(Span::styled(format!("{sym} "), Style::default().fg(color)));
-                }
+            if app.show_receipts
+                && let Some(status) = msg.status
+            {
+                let (sym, color) = status_symbol(status, app.nerd_fonts, app.color_receipts, theme);
+                spans.push(Span::styled(format!("{sym} "), Style::default().fg(color)));
             }
 
             if msg.expires_in_seconds > 0 {
@@ -1224,83 +1223,81 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             // Render inline image preview if available (skip for deleted, skip if images disabled)
-            if !msg.is_deleted && app.image.image_mode != "none" {
-                if let Some(ref image_lines) = msg.image_lines {
-                    let first_idx = lines.len();
-                    let count = image_lines.len();
-                    for line in image_lines {
-                        lines.push(line.clone());
-                        line_msg_idx.push(Some(msg_index));
-                    }
-                    // Record for native protocol overlay
-                    if use_native {
-                        if let Some(ref path) = msg.image_path {
-                            image_records.push((first_idx, count, path.clone()));
-                        }
-                    }
+            if !msg.is_deleted
+                && app.image.image_mode != "none"
+                && let Some(ref image_lines) = msg.image_lines
+            {
+                let first_idx = lines.len();
+                let count = image_lines.len();
+                for line in image_lines {
+                    lines.push(line.clone());
+                    line_msg_idx.push(Some(msg_index));
+                }
+                // Record for native protocol overlay
+                if use_native && let Some(ref path) = msg.image_path {
+                    image_records.push((first_idx, count, path.clone()));
                 }
             }
 
             // Render link preview block
-            if !msg.is_deleted && app.image.show_link_previews {
-                if let Some(ref preview) = msg.preview {
-                    if let Some(ref title) = preview.title {
-                        lines.push(Line::from(vec![
-                            Span::styled("  \u{251C} ", Style::default().fg(theme.link)),
-                            Span::styled(
-                                truncate(title, 60),
-                                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
-                            ),
-                        ]));
-                        line_msg_idx.push(Some(msg_index));
-                    }
-                    if let Some(ref desc) = preview.description {
-                        // Description is a middle line; URL always follows
-                        lines.push(Line::from(vec![
-                            Span::styled("  \u{251C} ", Style::default().fg(theme.link)),
-                            Span::styled(truncate(desc, 60), Style::default().fg(theme.fg_muted)),
-                        ]));
-                        line_msg_idx.push(Some(msg_index));
-                    }
+            if !msg.is_deleted
+                && app.image.show_link_previews
+                && let Some(ref preview) = msg.preview
+            {
+                if let Some(ref title) = preview.title {
                     lines.push(Line::from(vec![
-                        Span::styled("  \u{2570} ", Style::default().fg(theme.link)),
+                        Span::styled("  \u{251C} ", Style::default().fg(theme.link)),
                         Span::styled(
-                            truncate(&preview.url, 60),
-                            Style::default()
-                                .fg(theme.link)
-                                .add_modifier(Modifier::UNDERLINED),
+                            truncate(title, 60),
+                            Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
                         ),
                     ]));
                     line_msg_idx.push(Some(msg_index));
+                }
+                if let Some(ref desc) = preview.description {
+                    // Description is a middle line; URL always follows
+                    lines.push(Line::from(vec![
+                        Span::styled("  \u{251C} ", Style::default().fg(theme.link)),
+                        Span::styled(truncate(desc, 60), Style::default().fg(theme.fg_muted)),
+                    ]));
+                    line_msg_idx.push(Some(msg_index));
+                }
+                lines.push(Line::from(vec![
+                    Span::styled("  \u{2570} ", Style::default().fg(theme.link)),
+                    Span::styled(
+                        truncate(&preview.url, 60),
+                        Style::default()
+                            .fg(theme.link)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                ]));
+                line_msg_idx.push(Some(msg_index));
 
-                    // Render link preview thumbnail (only when images enabled)
-                    if app.image.image_mode != "none" {
-                        if let Some(ref img_lines) = msg.preview_image_lines {
-                            let first_idx = lines.len();
-                            let count = img_lines.len();
-                            for line in img_lines {
-                                lines.push(line.clone());
-                                line_msg_idx.push(Some(msg_index));
-                            }
-                            if use_native {
-                                if let Some(ref path) = msg.preview_image_path {
-                                    image_records.push((first_idx, count, path.clone()));
-                                }
-                            }
-                        }
+                // Render link preview thumbnail (only when images enabled)
+                if app.image.image_mode != "none"
+                    && let Some(ref img_lines) = msg.preview_image_lines
+                {
+                    let first_idx = lines.len();
+                    let count = img_lines.len();
+                    for line in img_lines {
+                        lines.push(line.clone());
+                        line_msg_idx.push(Some(msg_index));
+                    }
+                    if use_native && let Some(ref path) = msg.preview_image_path {
+                        image_records.push((first_idx, count, path.clone()));
                     }
                 }
             }
 
             // Render inline poll display
-            if !msg.is_deleted {
-                if let Some(ref poll_data) = msg.poll_data {
-                    let poll_lines =
-                        build_poll_display(poll_data, &msg.poll_votes, &app.account, theme);
-                    for line in poll_lines {
-                        lines.push(line);
-                        line_msg_idx.push(Some(msg_index));
-                    }
+            if !msg.is_deleted
+                && let Some(ref poll_data) = msg.poll_data
+            {
+                let poll_lines =
+                    build_poll_display(poll_data, &msg.poll_votes, &app.account, theme);
+                for line in poll_lines {
+                    lines.push(line);
+                    line_msg_idx.push(Some(msg_index));
                 }
             }
 
@@ -4926,7 +4923,7 @@ mod snapshot_tests {
     use crate::domain::EmojiPickerSource;
     use crate::image_render::ImageProtocol;
     use chrono::NaiveDate;
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{Terminal, backend::TestBackend};
 
     /// Fixed date for deterministic timestamps in snapshots.
     fn fixed_date() -> NaiveDate {

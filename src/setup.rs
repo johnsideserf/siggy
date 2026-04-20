@@ -4,12 +4,12 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Flex, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
-    Terminal,
 };
 use tokio::process::Command;
 
@@ -91,56 +91,56 @@ pub async fn run_setup(
                 }
 
                 // Wait for user input
-                if event::poll(Duration::from_millis(50))? {
-                    if let Event::Key(key) = event::read()? {
-                        if key.kind != KeyEventKind::Press {
-                            continue;
+                if event::poll(Duration::from_millis(50))?
+                    && let Event::Key(key) = event::read()?
+                {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                            return Ok(SetupResult::Cancelled);
                         }
-                        match (key.modifiers, key.code) {
-                            (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                                return Ok(SetupResult::Cancelled);
-                            }
-                            (_, KeyCode::Esc) if custom_path_mode => {
-                                custom_path_mode = false;
-                            }
-                            (_, KeyCode::Esc) => {
-                                return Ok(SetupResult::Cancelled);
-                            }
-                            _ if custom_path_mode => match key.code {
-                                KeyCode::Enter if !custom_path_input.is_empty() => {
-                                    signal_cli_path = custom_path_input.clone();
-                                    signal_cli_found = false;
-                                    custom_path_mode = false;
-                                    // Will re-check on next loop
-                                }
-                                KeyCode::Backspace if custom_path_cursor > 0 => {
-                                    custom_path_cursor -= 1;
-                                    custom_path_input.remove(custom_path_cursor);
-                                }
-                                KeyCode::Left => {
-                                    custom_path_cursor = custom_path_cursor.saturating_sub(1);
-                                }
-                                KeyCode::Right if custom_path_cursor < custom_path_input.len() => {
-                                    custom_path_cursor += 1;
-                                }
-                                KeyCode::Char(c) => {
-                                    custom_path_input.insert(custom_path_cursor, c);
-                                    custom_path_cursor += 1;
-                                }
-                                _ => {}
-                            },
-                            (_, KeyCode::Enter) => {
-                                // Retry check
+                        (_, KeyCode::Esc) if custom_path_mode => {
+                            custom_path_mode = false;
+                        }
+                        (_, KeyCode::Esc) => {
+                            return Ok(SetupResult::Cancelled);
+                        }
+                        _ if custom_path_mode => match key.code {
+                            KeyCode::Enter if !custom_path_input.is_empty() => {
+                                signal_cli_path = custom_path_input.clone();
                                 signal_cli_found = false;
+                                custom_path_mode = false;
+                                // Will re-check on next loop
                             }
-                            (_, KeyCode::Char('p')) => {
-                                // Enter custom path mode
-                                custom_path_mode = true;
-                                custom_path_input.clear();
-                                custom_path_cursor = 0;
+                            KeyCode::Backspace if custom_path_cursor > 0 => {
+                                custom_path_cursor -= 1;
+                                custom_path_input.remove(custom_path_cursor);
+                            }
+                            KeyCode::Left => {
+                                custom_path_cursor = custom_path_cursor.saturating_sub(1);
+                            }
+                            KeyCode::Right if custom_path_cursor < custom_path_input.len() => {
+                                custom_path_cursor += 1;
+                            }
+                            KeyCode::Char(c) => {
+                                custom_path_input.insert(custom_path_cursor, c);
+                                custom_path_cursor += 1;
                             }
                             _ => {}
+                        },
+                        (_, KeyCode::Enter) => {
+                            // Retry check
+                            signal_cli_found = false;
                         }
+                        (_, KeyCode::Char('p')) => {
+                            // Enter custom path mode
+                            custom_path_mode = true;
+                            custom_path_input.clear();
+                            custom_path_cursor = 0;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -150,53 +150,53 @@ pub async fn run_setup(
                     draw_account_step(frame, &phone_input, phone_cursor, phone_error.as_deref());
                 })?;
 
-                if event::poll(Duration::from_millis(50))? {
-                    if let Event::Key(key) = event::read()? {
-                        if key.kind != KeyEventKind::Press {
-                            continue;
+                if event::poll(Duration::from_millis(50))?
+                    && let Event::Key(key) = event::read()?
+                {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                            return Ok(SetupResult::Cancelled);
                         }
-                        match (key.modifiers, key.code) {
-                            (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                                return Ok(SetupResult::Cancelled);
-                            }
-                            (_, KeyCode::Esc) => {
-                                step = Step::SignalCli;
-                                signal_cli_found = false;
-                                custom_path_mode = false;
-                                phone_input.clear();
-                                phone_cursor = 0;
-                                phone_error = None;
-                            }
-                            (_, KeyCode::Enter) => match validate_phone(&phone_input) {
-                                Ok(()) => {
-                                    working_config.account = phone_input.clone();
-                                    phone_error = None;
-                                    step = Step::Linking;
-                                }
-                                Err(msg) => {
-                                    phone_error = Some(msg);
-                                }
-                            },
-                            (_, KeyCode::Backspace) => {
-                                if phone_cursor > 0 {
-                                    phone_cursor -= 1;
-                                    phone_input.remove(phone_cursor);
-                                }
-                                phone_error = None;
-                            }
-                            (_, KeyCode::Left) => {
-                                phone_cursor = phone_cursor.saturating_sub(1);
-                            }
-                            (_, KeyCode::Right) if phone_cursor < phone_input.len() => {
-                                phone_cursor += 1;
-                            }
-                            (_, KeyCode::Char(c)) => {
-                                phone_input.insert(phone_cursor, c);
-                                phone_cursor += 1;
-                                phone_error = None;
-                            }
-                            _ => {}
+                        (_, KeyCode::Esc) => {
+                            step = Step::SignalCli;
+                            signal_cli_found = false;
+                            custom_path_mode = false;
+                            phone_input.clear();
+                            phone_cursor = 0;
+                            phone_error = None;
                         }
+                        (_, KeyCode::Enter) => match validate_phone(&phone_input) {
+                            Ok(()) => {
+                                working_config.account = phone_input.clone();
+                                phone_error = None;
+                                step = Step::Linking;
+                            }
+                            Err(msg) => {
+                                phone_error = Some(msg);
+                            }
+                        },
+                        (_, KeyCode::Backspace) => {
+                            if phone_cursor > 0 {
+                                phone_cursor -= 1;
+                                phone_input.remove(phone_cursor);
+                            }
+                            phone_error = None;
+                        }
+                        (_, KeyCode::Left) => {
+                            phone_cursor = phone_cursor.saturating_sub(1);
+                        }
+                        (_, KeyCode::Right) if phone_cursor < phone_input.len() => {
+                            phone_cursor += 1;
+                        }
+                        (_, KeyCode::Char(c)) => {
+                            phone_input.insert(phone_cursor, c);
+                            phone_cursor += 1;
+                            phone_error = None;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -232,22 +232,22 @@ pub async fn run_setup(
                                 draw_link_error(frame, &msg);
                             })?;
                             loop {
-                                if event::poll(Duration::from_millis(50))? {
-                                    if let Event::Key(key) = event::read()? {
-                                        if key.kind != KeyEventKind::Press {
-                                            continue;
+                                if event::poll(Duration::from_millis(50))?
+                                    && let Event::Key(key) = event::read()?
+                                {
+                                    if key.kind != KeyEventKind::Press {
+                                        continue;
+                                    }
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            // Retry linking
+                                            break;
                                         }
-                                        match key.code {
-                                            KeyCode::Enter => {
-                                                // Retry linking
-                                                break;
-                                            }
-                                            KeyCode::Esc => {
-                                                step = Step::Account;
-                                                break;
-                                            }
-                                            _ => {}
+                                        KeyCode::Esc => {
+                                            step = Step::Account;
+                                            break;
                                         }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -261,30 +261,30 @@ pub async fn run_setup(
                     draw_preferences_step(frame, &working_config);
                 })?;
 
-                if event::poll(Duration::from_millis(50))? {
-                    if let Event::Key(key) = event::read()? {
-                        if key.kind != KeyEventKind::Press {
-                            continue;
+                if event::poll(Duration::from_millis(50))?
+                    && let Event::Key(key) = event::read()?
+                {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                            return Ok(SetupResult::Cancelled);
                         }
-                        match (key.modifiers, key.code) {
-                            (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                                return Ok(SetupResult::Cancelled);
-                            }
-                            (_, KeyCode::Char('1')) => {
-                                working_config.notify_direct = !working_config.notify_direct;
-                            }
-                            (_, KeyCode::Char('2')) => {
-                                working_config.notify_group = !working_config.notify_group;
-                            }
-                            (_, KeyCode::Enter) => {
-                                step = Step::Done;
-                            }
-                            (_, KeyCode::Esc) => {
-                                // Skip preferences and proceed with defaults
-                                step = Step::Done;
-                            }
-                            _ => {}
+                        (_, KeyCode::Char('1')) => {
+                            working_config.notify_direct = !working_config.notify_direct;
                         }
+                        (_, KeyCode::Char('2')) => {
+                            working_config.notify_group = !working_config.notify_group;
+                        }
+                        (_, KeyCode::Enter) => {
+                            step = Step::Done;
+                        }
+                        (_, KeyCode::Esc) => {
+                            // Skip preferences and proceed with defaults
+                            step = Step::Done;
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -345,17 +345,16 @@ async fn check_signal_cli(path: &str) -> (bool, String, String) {
         .stderr(std::process::Stdio::null())
         .output()
         .await
+        && output.status.success()
     {
-        if output.status.success() {
-            let raw = String::from_utf8_lossy(&output.stdout);
-            for candidate in raw.lines() {
-                let candidate = candidate.trim();
-                if candidate.is_empty() {
-                    continue;
-                }
-                if let Some(display) = try_spawn_version(candidate).await {
-                    return (true, display, candidate.to_string());
-                }
+        let raw = String::from_utf8_lossy(&output.stdout);
+        for candidate in raw.lines() {
+            let candidate = candidate.trim();
+            if candidate.is_empty() {
+                continue;
+            }
+            if let Some(display) = try_spawn_version(candidate).await {
+                return (true, display, candidate.to_string());
             }
         }
     }

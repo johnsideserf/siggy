@@ -189,25 +189,25 @@ impl KeyBindings {
         // Conflicts only exist when global + mode overlap.
         let mut result = Vec::new();
         for (combo, &global_action) in &self.global {
-            if let Some(&normal_action) = self.normal.get(combo) {
-                if global_action != normal_action {
-                    result.push((
-                        BindingMode::Normal,
-                        combo.clone(),
-                        global_action,
-                        normal_action,
-                    ));
-                }
+            if let Some(&normal_action) = self.normal.get(combo)
+                && global_action != normal_action
+            {
+                result.push((
+                    BindingMode::Normal,
+                    combo.clone(),
+                    global_action,
+                    normal_action,
+                ));
             }
-            if let Some(&insert_action) = self.insert.get(combo) {
-                if global_action != insert_action {
-                    result.push((
-                        BindingMode::Insert,
-                        combo.clone(),
-                        global_action,
-                        insert_action,
-                    ));
-                }
+            if let Some(&insert_action) = self.insert.get(combo)
+                && global_action != insert_action
+            {
+                result.push((
+                    BindingMode::Insert,
+                    combo.clone(),
+                    global_action,
+                    insert_action,
+                ));
             }
         }
         result

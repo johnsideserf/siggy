@@ -419,12 +419,11 @@ pub fn replace_shortcodes(input: &str) -> String {
                 && candidate
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '+')
+                && let Some(emoji) = emojis::get_by_shortcode(candidate)
             {
-                if let Some(emoji) = emojis::get_by_shortcode(candidate) {
-                    result.push_str(emoji.as_str());
-                    rest = &after_colon[end + 1..];
-                    continue;
-                }
+                result.push_str(emoji.as_str());
+                rest = &after_colon[end + 1..];
+                continue;
             }
             // Not a valid shortcode — emit the colon and continue
             result.push(':');

@@ -123,10 +123,10 @@ impl EmojiPickerState {
             }
 
             // Category filter
-            if let Some(ref g) = group {
-                if emoji.group() != *g {
-                    continue;
-                }
+            if let Some(ref g) = group
+                && emoji.group() != *g
+            {
+                continue;
             }
 
             // Text filter (match against name and shortcode)
@@ -285,10 +285,12 @@ mod tests {
         state.refresh_filter();
 
         // Should find smiley emojis even though category is Flags
-        assert!(state
-            .filtered
-            .iter()
-            .any(|e| e.name.to_lowercase().contains("smile")));
+        assert!(
+            state
+                .filtered
+                .iter()
+                .any(|e| e.name.to_lowercase().contains("smile"))
+        );
     }
 
     #[test]

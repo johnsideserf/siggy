@@ -85,10 +85,13 @@ pub fn encode_native_png(
 /// Falls back to a platform-specific default: 10×20 for Windows Terminal
 /// (typical Cascadia Code at default DPI), 8×16 elsewhere.
 pub fn detect_cell_pixel_size() -> (u16, u16) {
-    if let Ok(ws) = crossterm::terminal::window_size() {
-        if ws.width > 0 && ws.height > 0 && ws.columns > 0 && ws.rows > 0 {
-            return (ws.width / ws.columns, ws.height / ws.rows);
-        }
+    if let Ok(ws) = crossterm::terminal::window_size()
+        && ws.width > 0
+        && ws.height > 0
+        && ws.columns > 0
+        && ws.rows > 0
+    {
+        return (ws.width / ws.columns, ws.height / ws.rows);
     }
     if std::env::var("WT_SESSION").is_ok() {
         (10, 20) // Windows Terminal with Cascadia Code at typical DPI

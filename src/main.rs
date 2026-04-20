@@ -30,17 +30,17 @@ use crossterm::{
     execute, queue,
     style::{Print, ResetColor, SetForegroundColor},
     terminal::{
-        disable_raw_mode, enable_raw_mode, BeginSynchronizedUpdate, EndSynchronizedUpdate,
-        EnterAlternateScreen, LeaveAlternateScreen,
+        BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode,
     },
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Flex, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
-    Terminal,
 };
 
 use app::{App, InputMode, SendRequest};
@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
     // key event in raw mode, so the OS handler just causes a noisy exit code.
     #[cfg(windows)]
     unsafe {
-        extern "system" {
+        unsafe extern "system" {
             fn SetConsoleCtrlHandler(handler: usize, add: i32) -> i32;
         }
         SetConsoleCtrlHandler(0, 1);
@@ -437,12 +437,11 @@ async fn show_error_screen(
             frame.render_widget(paragraph, inner);
         })?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    return Ok(());
-                }
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            return Ok(());
         }
     }
 }
@@ -873,72 +872,83 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 );
             }
         }
-        SendRequest::CreateGroup { name } => {
-            if let Err(e) = signal_client.create_group(&name, &[]).await {
+        SendRequest::CreateGroup { name } => match signal_client.create_group(&name, &[]).await {
+            Err(e) => {
                 app.status_message = format!("create group error: {e}");
-            } else {
+            }
+            _ => {
                 app.status_message = format!("Created group \"{}\"", name);
                 let _ = signal_client.list_groups().await;
             }
-        }
+        },
         SendRequest::AddGroupMembers { group_id, members } => {
-            if let Err(e) = signal_client.add_group_members(&group_id, &members).await {
-                app.status_message = format!("add member error: {e}");
-            } else {
-                let names: Vec<String> = members
-                    .iter()
-                    .map(|m| {
-                        app.store
-                            .contact_names
-                            .get(m)
-                            .cloned()
-                            .unwrap_or_else(|| m.clone())
-                    })
-                    .collect();
-                app.status_message = format!("Added {}", names.join(", "));
-                let _ = signal_client.list_groups().await;
+            match signal_client.add_group_members(&group_id, &members).await {
+                Err(e) => {
+                    app.status_message = format!("add member error: {e}");
+                }
+                _ => {
+                    let names: Vec<String> = members
+                        .iter()
+                        .map(|m| {
+                            app.store
+                                .contact_names
+                                .get(m)
+                                .cloned()
+                                .unwrap_or_else(|| m.clone())
+                        })
+                        .collect();
+                    app.status_message = format!("Added {}", names.join(", "));
+                    let _ = signal_client.list_groups().await;
+                }
             }
         }
         SendRequest::RemoveGroupMembers { group_id, members } => {
-            if let Err(e) = signal_client
+            match signal_client
                 .remove_group_members(&group_id, &members)
                 .await
             {
-                app.status_message = format!("remove member error: {e}");
-            } else {
-                let names: Vec<String> = members
-                    .iter()
-                    .map(|m| {
-                        app.store
-                            .contact_names
-                            .get(m)
-                            .cloned()
-                            .unwrap_or_else(|| m.clone())
-                    })
-                    .collect();
-                app.status_message = format!("Removed {}", names.join(", "));
-                let _ = signal_client.list_groups().await;
+                Err(e) => {
+                    app.status_message = format!("remove member error: {e}");
+                }
+                _ => {
+                    let names: Vec<String> = members
+                        .iter()
+                        .map(|m| {
+                            app.store
+                                .contact_names
+                                .get(m)
+                                .cloned()
+                                .unwrap_or_else(|| m.clone())
+                        })
+                        .collect();
+                    app.status_message = format!("Removed {}", names.join(", "));
+                    let _ = signal_client.list_groups().await;
+                }
             }
         }
         SendRequest::RenameGroup { group_id, name } => {
-            if let Err(e) = signal_client.rename_group(&group_id, &name).await {
-                app.status_message = format!("rename group error: {e}");
-            } else {
-                // Update locally for instant visual feedback
-                if let Some(conv) = app.store.conversations.get_mut(&group_id) {
-                    conv.name = name.clone();
+            match signal_client.rename_group(&group_id, &name).await {
+                Err(e) => {
+                    app.status_message = format!("rename group error: {e}");
                 }
-                app.store
-                    .contact_names
-                    .insert(group_id.clone(), name.clone());
-                app.status_message = format!("Renamed group to \"{}\"", name);
-                let _ = signal_client.list_groups().await;
+                _ => {
+                    // Update locally for instant visual feedback
+                    if let Some(conv) = app.store.conversations.get_mut(&group_id) {
+                        conv.name = name.clone();
+                    }
+                    app.store
+                        .contact_names
+                        .insert(group_id.clone(), name.clone());
+                    app.status_message = format!("Renamed group to \"{}\"", name);
+                    let _ = signal_client.list_groups().await;
+                }
             }
         }
-        SendRequest::LeaveGroup { group_id } => {
-            if let Err(e) = signal_client.quit_group(&group_id).await {
+        SendRequest::LeaveGroup { group_id } => match signal_client.quit_group(&group_id).await {
+            Err(e) => {
                 app.status_message = format!("leave group error: {e}");
-            } else {
+            }
+            _ => {
                 let name = app
                     .store
                     .conversations
@@ -953,7 +963,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 }
                 app.status_message = format!("Left group \"{}\"", name);
             }
-        }
+        },
         SendRequest::Block {
             recipient,
             is_group,
@@ -1062,17 +1072,20 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             is_group,
             response_type,
         } => {
-            if let Err(e) = signal_client
+            match signal_client
                 .send_message_request_response(&recipient, is_group, &response_type)
                 .await
             {
-                app.status_message = format!("message request error: {e}");
-            } else {
-                app.status_message = match response_type.as_str() {
-                    "accept" => "Message request accepted".to_string(),
-                    "delete" => "Message request deleted".to_string(),
-                    _ => String::new(),
-                };
+                Err(e) => {
+                    app.status_message = format!("message request error: {e}");
+                }
+                _ => {
+                    app.status_message = match response_type.as_str() {
+                        "accept" => "Message request accepted".to_string(),
+                        "delete" => "Message request deleted".to_string(),
+                        _ => String::new(),
+                    };
+                }
             }
         }
         SendRequest::ListIdentities => {
@@ -1082,21 +1095,24 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             recipient,
             safety_number,
         } => {
-            if let Err(e) = signal_client
+            match signal_client
                 .trust_identity(&recipient, &safety_number)
                 .await
             {
-                app.status_message = format!("trust error: {e}");
-            } else {
-                app.status_message = format!(
-                    "Verified {}",
-                    app.store
-                        .contact_names
-                        .get(&recipient)
-                        .unwrap_or(&recipient)
-                );
-                // Re-fetch identities to update trust levels
-                let _ = signal_client.list_identities().await;
+                Err(e) => {
+                    app.status_message = format!("trust error: {e}");
+                }
+                _ => {
+                    app.status_message = format!(
+                        "Verified {}",
+                        app.store
+                            .contact_names
+                            .get(&recipient)
+                            .unwrap_or(&recipient)
+                    );
+                    // Re-fetch identities to update trust levels
+                    let _ = signal_client.list_identities().await;
+                }
             }
         }
         SendRequest::UpdateProfile {
@@ -1105,13 +1121,16 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             about,
             about_emoji,
         } => {
-            if let Err(e) = signal_client
+            match signal_client
                 .update_profile(&given_name, &family_name, &about, &about_emoji)
                 .await
             {
-                app.status_message = format!("profile error: {e}");
-            } else {
-                app.status_message = "Profile updated".to_string();
+                Err(e) => {
+                    app.status_message = format!("profile error: {e}");
+                }
+                _ => {
+                    app.status_message = "Profile updated".to_string();
+                }
             }
         }
     }

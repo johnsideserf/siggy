@@ -115,10 +115,10 @@ impl SignalClient {
                             }
                         }
 
-                        if let Some(event) = event {
-                            if event_tx.send(event).await.is_err() {
-                                break;
-                            }
+                        if let Some(event) = event
+                            && event_tx.send(event).await.is_err()
+                        {
+                            break;
                         }
                     }
                     Err(e) => {
