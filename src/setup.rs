@@ -60,9 +60,15 @@ pub async fn run_setup(
             Step::SignalCli => {
                 // Check for signal-cli
                 if !signal_cli_found {
-                    let (found, location) = check_signal_cli(&signal_cli_path).await;
+                    let (found, location, resolved) = check_signal_cli(&signal_cli_path).await;
                     signal_cli_found = found;
                     signal_cli_location = location;
+                    if found {
+                        // Persist the invocation that actually worked — `where`/`which`
+                        // may have resolved a .bat/.cmd that Rust's Command couldn't
+                        // find by bare name.
+                        signal_cli_path = resolved;
+                    }
                 }
 
                 terminal.draw(|frame| {
@@ -298,52 +304,79 @@ pub async fn run_setup(
     }
 }
 
-async fn check_signal_cli(path: &str) -> (bool, String) {
-    // Try running the command to see if it exists
-    let which_cmd = if cfg!(windows) { "where" } else { "which" };
+/// Check whether signal-cli can be invoked at `path`.
+///
+/// Returns `(found, display_location, resolved_path)`:
+/// - `found`: whether a working invocation was discovered
+/// - `display_location`: a pretty string for the wizard UI
+/// - `resolved_path`: the invocation the caller should store in config
+///
+/// On Windows, `Command::new("foo")` only searches for `foo.exe` in PATH, while
+/// `where foo` also matches `.bat`/`.cmd`/`.ps1` via PATHEXT. That asymmetry used
+/// to let the wizard report success via the `where` fallback and then fail at the
+/// linking step when it re-tried the unspawnable bare name. We now verify that
+/// whatever path we return can actually be spawned.
+async fn check_signal_cli(path: &str) -> (bool, String, String) {
+    // Try the path as given.
+    if let Some(display) = try_spawn_version(path).await {
+        return (true, display, path.to_string());
+    }
 
-    match Command::new(path)
-        .arg("--version")
+    // Windows: try common scripting extensions before falling back to `where`.
+    // Scoop / manual installs commonly place `signal-cli.bat` in PATH without a
+    // matching `.exe`, so `Command::new("signal-cli")` fails but the bat file is
+    // right there.
+    #[cfg(windows)]
+    for ext in [".bat", ".cmd", ".ps1", ".exe"] {
+        let candidate = format!("{path}{ext}");
+        if let Some(display) = try_spawn_version(&candidate).await {
+            return (true, display, candidate);
+        }
+    }
+
+    // Fallback: use `where`/`which` to resolve a full path, then verify it works.
+    let which_cmd = if cfg!(windows) { "where" } else { "which" };
+    if let Ok(output) = Command::new(which_cmd)
+        .arg(path)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .output()
         .await
     {
-        Ok(output) => {
-            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if output.status.success() && !version.is_empty() {
-                (true, format!("{path} ({version})"))
-            } else {
-                // Command exists but no version info — resolve full path
-                let location = Command::new(which_cmd)
-                    .arg(path)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null())
-                    .output()
-                    .await
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    .unwrap_or_else(|| path.to_string());
-                (true, location)
-            }
-        }
-        Err(_) => {
-            // Command failed to run — try `which` / `where` to find it
-            match Command::new(which_cmd)
-                .arg(path)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output()
-                .await
-            {
-                Ok(output) if output.status.success() => {
-                    let location = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    (true, location)
+        if output.status.success() {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            for candidate in raw.lines() {
+                let candidate = candidate.trim();
+                if candidate.is_empty() {
+                    continue;
                 }
-                _ => (false, String::new()),
+                if let Some(display) = try_spawn_version(candidate).await {
+                    return (true, display, candidate.to_string());
+                }
             }
         }
+    }
+
+    (false, String::new(), path.to_string())
+}
+
+/// Try to run `<path> --version`. Returns a pretty display string on success.
+async fn try_spawn_version(path: &str) -> Option<String> {
+    let output = Command::new(path)
+        .arg("--version")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if version.is_empty() {
+        Some(path.to_string())
+    } else {
+        Some(format!("{path} ({version})"))
     }
 }
 
@@ -795,4 +828,50 @@ fn draw_done_screen(frame: &mut ratatui::Frame) {
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn check_signal_cli_detects_known_command() {
+        // `cargo` is always available in our Rust test environment and supports `--version`.
+        let (found, location, resolved) = check_signal_cli("cargo").await;
+        assert!(found, "expected cargo to be detected");
+        assert!(
+            location.contains("cargo"),
+            "display location should mention the binary, got: {location}"
+        );
+        assert_eq!(
+            resolved, "cargo",
+            "resolved path should equal input when the direct spawn works"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_signal_cli_reports_missing_for_fake_command() {
+        let (found, location, resolved) =
+            check_signal_cli("siggy-fake-binary-does-not-exist-xyz-9999").await;
+        assert!(!found, "fake command must not be detected");
+        assert!(location.is_empty());
+        assert_eq!(resolved, "siggy-fake-binary-does-not-exist-xyz-9999");
+    }
+
+    #[tokio::test]
+    async fn try_spawn_version_returns_none_for_missing_binary() {
+        assert!(
+            try_spawn_version("siggy-fake-binary-does-not-exist-xyz-9999")
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn try_spawn_version_returns_some_for_working_binary() {
+        let display = try_spawn_version("cargo").await;
+        assert!(display.is_some());
+        let display = display.unwrap();
+        assert!(display.starts_with("cargo"));
+    }
 }
