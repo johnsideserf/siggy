@@ -11101,6 +11101,16 @@ mod tests {
 
     #[rstest]
     fn active_overlay_covers_every_variant(mut app: App) {
+        // Tripwire: `toggle_overlay`'s match is compiler-enforced exhaustive,
+        // but `ALL_OVERLAYS` is a hand-maintained slice. Adding a variant
+        // without extending this slice would silently skip it; the length
+        // check turns that into a loud test failure.
+        assert_eq!(
+            ALL_OVERLAYS.len(),
+            23,
+            "ALL_OVERLAYS is out of sync with OverlayKind - update when adding or removing a variant"
+        );
+
         assert_eq!(app.active_overlay(), None);
         assert!(!app.has_overlay());
 
