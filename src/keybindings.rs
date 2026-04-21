@@ -166,53 +166,6 @@ impl KeyBindings {
         }
     }
 
-    /// All bindings as a flat list for UI display.
-    #[allow(dead_code)]
-    pub fn all_bindings(&self) -> Vec<(BindingMode, KeyCombo, KeyAction)> {
-        let mut result = Vec::new();
-        for (combo, &action) in &self.global {
-            result.push((BindingMode::Global, combo.clone(), action));
-        }
-        for (combo, &action) in &self.normal {
-            result.push((BindingMode::Normal, combo.clone(), action));
-        }
-        for (combo, &action) in &self.insert {
-            result.push((BindingMode::Insert, combo.clone(), action));
-        }
-        result
-    }
-
-    /// Return pairs of conflicting bindings (same key bound to two actions in same mode).
-    #[allow(dead_code)]
-    pub fn conflicts(&self) -> Vec<(BindingMode, KeyCombo, KeyAction, KeyAction)> {
-        // Each mode map is a HashMap so there can't be duplicates.
-        // Conflicts only exist when global + mode overlap.
-        let mut result = Vec::new();
-        for (combo, &global_action) in &self.global {
-            if let Some(&normal_action) = self.normal.get(combo)
-                && global_action != normal_action
-            {
-                result.push((
-                    BindingMode::Normal,
-                    combo.clone(),
-                    global_action,
-                    normal_action,
-                ));
-            }
-            if let Some(&insert_action) = self.insert.get(combo)
-                && global_action != insert_action
-            {
-                result.push((
-                    BindingMode::Insert,
-                    combo.clone(),
-                    global_action,
-                    insert_action,
-                ));
-            }
-        }
-        result
-    }
-
     /// Apply user overrides on top of the current bindings.
     pub fn apply_overrides(&mut self, overrides: &KeyBindingOverrides) {
         for (action, combos) in &overrides.global {
@@ -322,22 +275,6 @@ impl KeyBindings {
             normal: diff_mode(&self.normal, &defaults.normal),
             insert: diff_mode(&self.insert, &defaults.insert),
         }
-    }
-
-    /// Get the binding map for a specific mode.
-    #[allow(dead_code)]
-    fn map_for_mode(&self, mode: BindingMode) -> &HashMap<KeyCombo, KeyAction> {
-        match mode {
-            BindingMode::Global => &self.global,
-            BindingMode::Normal => &self.normal,
-            BindingMode::Insert => &self.insert,
-        }
-    }
-
-    /// Check what action a specific combo is bound to in a specific mode.
-    #[allow(dead_code)]
-    pub fn action_for_combo(&self, mode: BindingMode, combo: &KeyCombo) -> Option<KeyAction> {
-        self.map_for_mode(mode).get(combo).copied()
     }
 }
 

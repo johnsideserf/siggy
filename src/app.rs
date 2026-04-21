@@ -406,7 +406,6 @@ pub struct App {
     /// Pending quit confirmation (unsent text in input buffer)
     pub quit_confirm: bool,
     /// Our own account number for identifying outgoing messages
-    #[allow(dead_code)]
     pub account: String,
     /// Resizable sidebar width (min 14, max 40)
     pub sidebar_width: u16,
