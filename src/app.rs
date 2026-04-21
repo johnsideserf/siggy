@@ -4215,13 +4215,8 @@ impl App {
                 is_typing,
                 group_id,
             } => {
-                // Store name in contact lookup if we learned it from this event
-                if let Some(ref name) = sender_name {
-                    self.store
-                        .contact_names
-                        .entry(sender.clone())
-                        .or_insert_with(|| name.clone());
-                }
+                self.store
+                    .remember_contact_name(&sender, sender_name.as_deref());
                 // Key by group ID for group messages, sender phone for 1:1
                 let conv_key = group_id.as_ref().unwrap_or(&sender).clone();
                 if is_typing {
@@ -4246,12 +4241,8 @@ impl App {
                 target_timestamp,
                 is_remove,
             } => {
-                if let Some(ref name) = sender_name {
-                    self.store
-                        .contact_names
-                        .entry(sender.clone())
-                        .or_insert_with(|| name.clone());
-                }
+                self.store
+                    .remember_contact_name(&sender, sender_name.as_deref());
                 self.handle_reaction(
                     &conv_id,
                     &emoji,
@@ -4263,13 +4254,15 @@ impl App {
             }
             SignalEvent::EditReceived {
                 conv_id,
-                sender: _,
-                sender_name: _,
+                sender,
+                sender_name,
                 target_timestamp,
                 new_body,
                 new_timestamp: _,
                 is_outgoing: _,
             } => {
+                self.store
+                    .remember_contact_name(&sender, sender_name.as_deref());
                 self.handle_edit_received(&conv_id, target_timestamp, &new_body);
             }
             SignalEvent::RemoteDeleteReceived {
@@ -4286,12 +4279,8 @@ impl App {
                 target_author: _,
                 target_timestamp,
             } => {
-                if let Some(ref name) = sender_name {
-                    self.store
-                        .contact_names
-                        .entry(sender.clone())
-                        .or_insert_with(|| name.clone());
-                }
+                self.store
+                    .remember_contact_name(&sender, sender_name.as_deref());
                 self.handle_pin_received(&conv_id, &sender, target_timestamp, true);
             }
             SignalEvent::UnpinReceived {
@@ -4301,12 +4290,8 @@ impl App {
                 target_author: _,
                 target_timestamp,
             } => {
-                if let Some(ref name) = sender_name {
-                    self.store
-                        .contact_names
-                        .entry(sender.clone())
-                        .or_insert_with(|| name.clone());
-                }
+                self.store
+                    .remember_contact_name(&sender, sender_name.as_deref());
                 self.handle_pin_received(&conv_id, &sender, target_timestamp, false);
             }
             SignalEvent::PollCreated {
@@ -4324,12 +4309,8 @@ impl App {
                 option_indexes,
                 vote_count,
             } => {
-                if let Some(ref name) = voter_name {
-                    self.store
-                        .contact_names
-                        .entry(voter.clone())
-                        .or_insert_with(|| name.clone());
-                }
+                self.store
+                    .remember_contact_name(&voter, voter_name.as_deref());
                 self.handle_poll_vote(
                     &conv_id,
                     target_timestamp,
@@ -4427,12 +4408,8 @@ impl App {
 
         // Store source_name in contact lookup for future resolution (typing indicators, etc.)
         if !msg.is_outgoing {
-            if let Some(ref name) = msg.source_name {
-                self.store
-                    .contact_names
-                    .entry(msg.source.clone())
-                    .or_insert_with(|| name.clone());
-            }
+            self.store
+                .remember_contact_name(&msg.source, msg.source_name.as_deref());
             // Populate UUID->name for @mention resolution
             if let (Some(uuid), Some(name)) = (&msg.source_uuid, &msg.source_name)
                 && !name.is_empty()

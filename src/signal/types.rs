@@ -137,9 +137,7 @@ pub enum SignalEvent {
     },
     EditReceived {
         conv_id: String,
-        #[allow(dead_code)]
         sender: String,
-        #[allow(dead_code)]
         sender_name: Option<String>,
         target_timestamp: i64,
         new_body: String,
