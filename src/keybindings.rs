@@ -276,7 +276,6 @@ impl KeyBindings {
             insert: diff_mode(&self.insert, &defaults.insert),
         }
     }
-
 }
 
 /// User overrides loaded from / saved to `keybindings.toml`.
