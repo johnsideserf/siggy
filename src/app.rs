@@ -11919,7 +11919,7 @@ mod tests {
     }
 
     #[rstest]
-    fn action_menu_respects_focused_msg_index(mut app: App) {
+    fn action_menu_respects_focused_index(mut app: App) {
         // Message 0: has a URL
         let msg1 = make_msg("+1", Some("check https://example.com"), None, false);
         app.handle_signal_event(SignalEvent::MessageReceived(msg1));
@@ -12004,7 +12004,7 @@ mod tests {
     }
 
     #[rstest]
-    fn sync_stabilizes_scroll_offset(mut app: App) {
+    fn sync_stabilizes_scroll(mut app: App) {
         assert!(app.sync.active);
         app.store
             .get_or_create_conversation("+1", "Alice", false, &app.db);

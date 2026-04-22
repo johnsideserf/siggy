@@ -1414,7 +1414,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         && (app.scroll.offset > 0 || app.scroll.focused_index.is_some())
     {
         if let Some(fi) = app.scroll.focused_index {
-            // J/K already set focused_msg_index — ensure it's visible by adjusting scroll.
+            // J/K already set scroll.focused_index — ensure it's visible by adjusting scroll.
             let mut msg_start: Option<usize> = None;
             let mut msg_end = 0usize;
             let mut cumul = 0usize;

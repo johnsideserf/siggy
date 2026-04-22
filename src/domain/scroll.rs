@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 pub struct ScrollState {
     /// Scroll offset for messages (`0` = bottom of conversation).
     pub offset: usize,
-    /// Saved scroll positions per conversation: `(scroll_offset, focused_msg_index)`.
+    /// Saved scroll positions per conversation: `(offset, focused_index)`.
     pub positions: HashMap<String, (usize, Option<usize>)>,
     /// Set by the renderer when the active conversation is scrolled to the top
     /// and there are more messages above (the "load more" hint).
