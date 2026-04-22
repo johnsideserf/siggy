@@ -738,7 +738,8 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                         "send: to={} ts={local_ts_ms}",
                         debug_log::mask_phone(&recipient)
                     ));
-                    app.pending_sends
+                    app.pending
+                        .sends
                         .insert(rpc_id.clone(), (recipient.to_string(), local_ts_ms));
                     // Register any paste temp file for deferred deletion. The actual delete is
                     // triggered after send confirmation; this sentinel keeps it alive until then.
@@ -817,7 +818,8 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                         "edit: to={} ts={edit_timestamp}",
                         debug_log::mask_phone(&recipient)
                     ));
-                    app.pending_sends
+                    app.pending
+                        .sends
                         .insert(rpc_id, (recipient.to_string(), local_ts_ms));
                 }
                 Err(e) => {
@@ -1034,7 +1036,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 .await
             {
                 Ok(rpc_id) => {
-                    app.pending_sends.insert(rpc_id, (recipient, local_ts_ms));
+                    app.pending.sends.insert(rpc_id, (recipient, local_ts_ms));
                 }
                 Err(e) => {
                     app.status_message = format!("poll error: {e}");
@@ -1429,7 +1431,7 @@ async fn run_app(
         }
 
         // Dispatch queued read receipts
-        for (recipient, timestamps) in std::mem::take(&mut app.pending_read_receipts) {
+        for (recipient, timestamps) in std::mem::take(&mut app.pending.read_receipts) {
             backend
                 .dispatch(
                     &mut app,
@@ -1451,7 +1453,7 @@ async fn run_app(
             backend.dispatch(&mut app, typing_stop).await;
         }
         // Drain pending typing stop from conversation switches
-        if let Some(typing_stop) = app.pending_typing_stop.take() {
+        if let Some(typing_stop) = app.pending.typing_stop.take() {
             backend.dispatch(&mut app, typing_stop).await;
         }
 

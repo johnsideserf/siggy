@@ -23,9 +23,9 @@ use crate::db::Database;
 use crate::domain::{
     ActionMenuState, ContactsOverlayState, EmojiPickerAction, EmojiPickerSource, EmojiPickerState,
     FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, InputState,
-    KeybindingsOverlayState, NotificationState, PinDurationOverlayState, PollVoteOverlayState,
-    ProfileOverlayState, ReactionState, SearchAction, SearchState, SettingsProfileOverlayState,
-    ThemePickerState, TypingState, VerifyOverlayState,
+    KeybindingsOverlayState, NotificationState, PendingState, PinDurationOverlayState,
+    PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState,
+    SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState,
 };
 use crate::image_render;
 use crate::image_render::ImageProtocol;
@@ -468,14 +468,9 @@ pub struct App {
     pub color_receipts: bool,
     /// Use Nerd Font glyphs for status symbols
     pub nerd_fonts: bool,
-    /// Pending send RPCs: rpc_id → (conv_id, local_timestamp_ms).
-    /// Populated: dispatch_send() on message send. Entries removed on SendTimestamp (success)
-    /// or SendFailed (error). Used to correlate signal-cli responses with local messages.
-    pub pending_sends: HashMap<String, (String, i64)>,
-    /// Receipts that arrived before their matching SendTimestamp.
-    /// Populated: handle_receipt() when no matching pending_send exists yet.
-    /// Drained: replayed immediately after each SendTimestamp event confirms a send.
-    pub pending_receipts: Vec<(String, String, Vec<i64>)>,
+    /// In-flight signal-cli work awaiting confirmation or dispatch:
+    /// pending sends, out-of-order receipts, queued typing-stop, and queued read receipts.
+    pub pending: PendingState,
     /// Timestamp of the message at the scroll cursor (set during draw, cleared at scroll_offset=0)
     pub focused_message_time: Option<DateTime<Utc>>,
     /// Index of the focused message in the active conversation (set during draw)
@@ -506,12 +501,8 @@ pub struct App {
     pub editing_message: Option<(i64, String)>,
     /// Search overlay state
     pub search: SearchState,
-    /// Queued typing-stop request from conversation switches (drained by main loop)
-    pub pending_typing_stop: Option<SendRequest>,
     /// Send read receipts to message senders when viewing conversations
     pub send_read_receipts: bool,
-    /// Queued read receipts to dispatch: (recipient_phone, timestamps)
-    pub pending_read_receipts: Vec<(String, Vec<i64>)>,
     /// Action menu overlay state
     pub action_menu: ActionMenuState,
     /// Forward message picker overlay state
@@ -2957,8 +2948,7 @@ impl App {
             show_receipts: true,
             color_receipts: true,
             nerd_fonts: false,
-            pending_sends: HashMap::new(),
-            pending_receipts: Vec::new(),
+            pending: PendingState::default(),
             focused_message_time: None,
             focused_msg_index: None,
             pending_normal_key: None,
@@ -2988,9 +2978,7 @@ impl App {
             reply_target: None,
             editing_message: None,
             search: SearchState::default(),
-            pending_typing_stop: None,
             send_read_receipts: true,
-            pending_read_receipts: Vec::new(),
             action_menu: ActionMenuState::default(),
             forward: ForwardOverlayState::default(),
             group_menu: GroupMenuOverlayState::default(),
@@ -3317,7 +3305,7 @@ impl App {
 
     /// Queue read receipts for unread incoming messages in a conversation.
     /// Messages from `start_index` onward are considered unread.
-    /// Groups timestamps by sender and appends to `pending_read_receipts`.
+    /// Groups timestamps by sender and appends to `pending.read_receipts`.
     fn queue_read_receipts_for_conv(&mut self, conv_id: &str, start_index: usize) {
         if !self.send_read_receipts {
             return;
@@ -3350,7 +3338,7 @@ impl App {
         }
         for (recipient, timestamps) in by_sender {
             if !timestamps.is_empty() {
-                self.pending_read_receipts.push((recipient, timestamps));
+                self.pending.read_receipts.push((recipient, timestamps));
             }
         }
     }
@@ -3363,7 +3351,8 @@ impl App {
         if sender_id.is_empty() || sender_id == self.account {
             return;
         }
-        self.pending_read_receipts
+        self.pending
+            .read_receipts
             .push((sender_id.to_string(), vec![timestamp_ms]));
     }
 
@@ -3420,7 +3409,7 @@ impl App {
     /// Call this before switching conversations.
     fn reset_typing_with_stop(&mut self) {
         if self.typing.reset() {
-            self.pending_typing_stop = self.build_typing_request(true);
+            self.pending.typing_stop = self.build_typing_request(true);
         }
     }
 
@@ -5749,7 +5738,7 @@ impl App {
                 ),
             );
         }
-        if let Some((conv_id, local_ts)) = self.pending_sends.remove(rpc_id) {
+        if let Some((conv_id, local_ts)) = self.pending.sends.remove(rpc_id) {
             crate::debug_log::logf(format_args!(
                 "send confirmed: conv={} local_ts={local_ts} server_ts={server_ts}",
                 crate::debug_log::mask_phone(&conv_id)
@@ -5781,8 +5770,8 @@ impl App {
             }
 
             // Replay any buffered receipts that may have arrived before this SendTimestamp
-            if !self.pending_receipts.is_empty() {
-                let receipts = std::mem::take(&mut self.pending_receipts);
+            if !self.pending.receipts.is_empty() {
+                let receipts = std::mem::take(&mut self.pending.receipts);
                 for (sender, receipt_type, timestamps) in receipts {
                     self.handle_receipt(&sender, &receipt_type, &timestamps);
                 }
@@ -5801,7 +5790,7 @@ impl App {
                 ),
             );
         }
-        if let Some((conv_id, local_ts)) = self.pending_sends.remove(rpc_id) {
+        if let Some((conv_id, local_ts)) = self.pending.sends.remove(rpc_id) {
             let mut found = false;
             if let Some(conv) = self.store.conversations.get_mut(&conv_id)
                 && let Some(idx) = conv
@@ -5892,7 +5881,7 @@ impl App {
                 "receipt: buffering {receipt_type} from {} (no matching ts)",
                 crate::debug_log::mask_phone(sender)
             ));
-            self.pending_receipts.push((
+            self.pending.receipts.push((
                 sender.to_string(),
                 receipt_type.to_string(),
                 timestamps.to_vec(),
@@ -9271,7 +9260,8 @@ mod tests {
         }
 
         // Register pending send
-        app.pending_sends
+        app.pending
+            .sends
             .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
 
         app.handle_signal_event(SignalEvent::SendTimestamp {
@@ -9321,7 +9311,8 @@ mod tests {
             });
         }
 
-        app.pending_sends
+        app.pending
+            .sends
             .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
 
         app.handle_signal_event(SignalEvent::SendFailed {
@@ -9489,7 +9480,8 @@ mod tests {
             });
         }
 
-        app.pending_sends
+        app.pending
+            .sends
             .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
 
         // Receipt arrives BEFORE SendTimestamp (references server_ts which we don't know yet)
@@ -9504,7 +9496,7 @@ mod tests {
             app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Sending)
         );
-        assert_eq!(app.pending_receipts.len(), 1);
+        assert_eq!(app.pending.receipts.len(), 1);
 
         // Now SendTimestamp arrives — updates timestamp_ms and replays buffered receipts
         app.handle_signal_event(SignalEvent::SendTimestamp {
@@ -9517,7 +9509,7 @@ mod tests {
             app.store.conversations[conv_id].messages[0].status,
             Some(MessageStatus::Delivered)
         );
-        assert!(app.pending_receipts.is_empty());
+        assert!(app.pending.receipts.is_empty());
     }
 
     // --- Reaction tests ---
@@ -10936,7 +10928,7 @@ mod tests {
         app.send_read_receipts = true;
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
         app.queue_read_receipts_for_conv("+1", 0);
-        assert!(app.pending_read_receipts.is_empty());
+        assert!(app.pending.read_receipts.is_empty());
     }
 
     #[rstest]
@@ -10950,7 +10942,7 @@ mod tests {
         app.blocked_conversations.insert("+1".to_string());
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
         app.queue_read_receipts_for_conv("+1", 0);
-        assert!(app.pending_read_receipts.is_empty());
+        assert!(app.pending.read_receipts.is_empty());
     }
 
     // --- Block / Unblock tests ---
@@ -11564,10 +11556,10 @@ mod tests {
         let msg = make_msg("+1", Some("hey"), None, false);
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         assert!(
-            !app.pending_read_receipts.is_empty(),
+            !app.pending.read_receipts.is_empty(),
             "expected read receipt to be queued"
         );
-        let (recipient, _) = &app.pending_read_receipts[0];
+        let (recipient, _) = &app.pending.read_receipts[0];
         assert_eq!(recipient, "+1");
     }
 
