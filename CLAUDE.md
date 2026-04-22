@@ -73,6 +73,12 @@ Use prefixed names: `feature/`, `fix/`, `refactor/`, `docs/` (e.g. `feature/dark
 
 Trivial docs-only changes (CLAUDE.md tweaks, typo fixes) may be committed directly to master. All code changes must go through a PR.
 
+## App field-count ratchet
+
+`scripts/check-app-field-count.sh` runs in CI and fails PRs that grow the `App` struct beyond its committed baseline. To add a new field to `App`, first extract an existing one into `src/domain/` so the net count stays flat. See issue #352 for the current extraction roadmap.
+
+If an addition is genuinely unavoidable (rare), bump `BASELINE` in the script and justify the increase in the PR body.
+
 ## Toolchain
 
 The Rust toolchain is pinned in `rust-toolchain.toml` to keep CI deterministic - a new stable Rust release cannot break CI without a PR.
