@@ -1222,7 +1222,7 @@ async fn run_app(
     app.reactions.show_reactions = config.show_reactions;
     app.reactions.verbose = config.reaction_verbose;
     app.send_read_receipts = config.send_read_receipts;
-    app.mouse_enabled = config.mouse_enabled;
+    app.mouse.enabled = config.mouse_enabled;
     app.sidebar_on_right = config.sidebar_on_right;
     app.sidebar_width = config.sidebar_width.clamp(14, 40);
     if config.cell_pixel_width > 0 && config.cell_pixel_height > 0 {
@@ -1478,7 +1478,7 @@ async fn run_app(
         app.cleanup_paste_files();
 
         // Dynamic mouse capture toggle from settings
-        if let Some(enabled) = app.pending_mouse_toggle.take() {
+        if let Some(enabled) = app.mouse.pending_toggle.take() {
             if enabled {
                 execute!(terminal.backend_mut(), EnableMouseCapture)?;
             } else {

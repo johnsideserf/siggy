@@ -229,7 +229,7 @@ impl SettingsProfile {
             nerd_fonts: app.nerd_fonts,
             reaction_verbose: app.reactions.verbose,
             send_read_receipts: app.send_read_receipts,
-            mouse_enabled: app.mouse_enabled,
+            mouse_enabled: app.mouse.enabled,
             sidebar_on_right: app.sidebar_on_right,
         }
     }
@@ -247,7 +247,7 @@ impl SettingsProfile {
         app.nerd_fonts = self.nerd_fonts;
         app.reactions.verbose = self.reaction_verbose;
         app.send_read_receipts = self.send_read_receipts;
-        app.mouse_enabled = self.mouse_enabled;
+        app.mouse.enabled = self.mouse_enabled;
         app.sidebar_on_right = self.sidebar_on_right;
     }
 
@@ -264,7 +264,7 @@ impl SettingsProfile {
             && self.nerd_fonts == app.nerd_fonts
             && self.reaction_verbose == app.reactions.verbose
             && self.send_read_receipts == app.send_read_receipts
-            && self.mouse_enabled == app.mouse_enabled
+            && self.mouse_enabled == app.mouse.enabled
             && self.sidebar_on_right == app.sidebar_on_right
     }
 }

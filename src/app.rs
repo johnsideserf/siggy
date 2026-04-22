@@ -23,7 +23,7 @@ use crate::db::Database;
 use crate::domain::{
     ActionMenuState, ContactsOverlayState, EmojiPickerAction, EmojiPickerSource, EmojiPickerState,
     FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, InputState,
-    KeybindingsOverlayState, NotificationState, PendingState, PinDurationOverlayState,
+    KeybindingsOverlayState, MouseState, NotificationState, PendingState, PinDurationOverlayState,
     PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState,
     SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState,
 };
@@ -509,18 +509,8 @@ pub struct App {
     pub forward: ForwardOverlayState,
     /// Group management menu overlay state
     pub group_menu: GroupMenuOverlayState,
-    /// Inner area of sidebar List widget (None when sidebar is hidden)
-    pub mouse_sidebar_inner: Option<Rect>,
-    /// Inner area of messages block
-    pub mouse_messages_area: Rect,
-    /// Outer area of input box (includes borders)
-    pub mouse_input_area: Rect,
-    /// Badge + "> " length in the input box
-    pub mouse_input_prefix_len: u16,
-    /// Enable mouse support (click sidebar, scroll messages, click links)
-    pub mouse_enabled: bool,
-    /// Pending mouse capture toggle — set by settings on_toggle, drained by main loop
-    pub pending_mouse_toggle: Option<bool>,
+    /// Mouse hit-test areas, capture flag, and queued capture toggle.
+    pub mouse: MouseState,
     /// Active color theme
     pub theme: Theme,
     /// Theme picker overlay state
@@ -842,11 +832,11 @@ pub const SETTINGS: &[SettingDef] = &[
     SettingDef {
         label: "Mouse support",
         hint: "Enable mouse click and scroll support",
-        get: |a| a.mouse_enabled,
-        set: |a, v| a.mouse_enabled = v,
+        get: |a| a.mouse.enabled,
+        set: |a, v| a.mouse.enabled = v,
         save: Some(|c, v| c.mouse_enabled = v),
         on_toggle: Some(|a| {
-            a.pending_mouse_toggle = Some(a.mouse_enabled);
+            a.mouse.pending_toggle = Some(a.mouse.enabled);
         }),
     },
     SettingDef {
@@ -1151,8 +1141,8 @@ impl App {
 
     /// Fire on_toggle hooks only for settings that changed since the overlay opened.
     fn fire_deferred_settings_hooks(&mut self) {
-        if self.mouse_enabled != self.settings_mouse_snapshot {
-            self.pending_mouse_toggle = Some(self.mouse_enabled);
+        if self.mouse.enabled != self.settings_mouse_snapshot {
+            self.mouse.pending_toggle = Some(self.mouse.enabled);
         }
     }
 
@@ -2982,12 +2972,10 @@ impl App {
             action_menu: ActionMenuState::default(),
             forward: ForwardOverlayState::default(),
             group_menu: GroupMenuOverlayState::default(),
-            mouse_sidebar_inner: None,
-            mouse_messages_area: Rect::default(),
-            mouse_input_area: Rect::default(),
-            mouse_input_prefix_len: 0,
-            mouse_enabled: true,
-            pending_mouse_toggle: None,
+            mouse: MouseState {
+                enabled: true,
+                ..MouseState::default()
+            },
             theme: theme::default_theme(),
             theme_picker: ThemePickerState {
                 available_themes: theme::all_themes(),
@@ -6285,7 +6273,7 @@ impl App {
             InputAction::Settings => {
                 self.open_overlay(OverlayKind::Settings);
                 self.settings_index = 0;
-                self.settings_mouse_snapshot = self.mouse_enabled;
+                self.settings_mouse_snapshot = self.mouse.enabled;
             }
             InputAction::Attach => {
                 self.open_file_browser();
@@ -7359,7 +7347,7 @@ impl App {
 
     /// Handle a mouse event. Returns an optional SendRequest (currently unused but future-proof).
     pub fn handle_mouse_event(&mut self, event: MouseEvent) -> Option<SendRequest> {
-        if !self.mouse_enabled {
+        if !self.mouse.enabled {
             return None;
         }
 
@@ -7378,14 +7366,14 @@ impl App {
                 self.handle_left_click(event.column, event.row);
             }
             MouseEventKind::ScrollUp
-                if is_in_rect(event.column, event.row, self.mouse_messages_area) =>
+                if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
             {
                 self.sync.user_scrolled = true;
                 self.scroll_offset = self.scroll_offset.saturating_add(3);
                 self.focused_msg_index = None;
             }
             MouseEventKind::ScrollDown
-                if is_in_rect(event.column, event.row, self.mouse_messages_area) =>
+                if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
             {
                 self.sync.user_scrolled = true;
                 self.scroll_offset = self.scroll_offset.saturating_sub(3);
@@ -7407,7 +7395,7 @@ impl App {
         }
 
         // 2. Sidebar click — switch conversation
-        if let Some(inner) = self.mouse_sidebar_inner
+        if let Some(inner) = self.mouse.sidebar_inner
             && is_in_rect(col, row, inner)
         {
             let index = (row - inner.y) as usize;
@@ -7427,13 +7415,13 @@ impl App {
         }
 
         // 3. Input area click — position cursor and enter Insert mode
-        if is_in_rect(col, row, self.mouse_input_area) {
+        if is_in_rect(col, row, self.mouse.input_area) {
             self.mode = InputMode::Insert;
             // Content starts after left border (1) + prefix
-            let content_start_col = self.mouse_input_area.x + 1 + self.mouse_input_prefix_len;
+            let content_start_col = self.mouse.input_area.x + 1 + self.mouse.input_prefix_len;
             if col >= content_start_col {
-                let text_width = (self.mouse_input_area.width.saturating_sub(2)) as usize
-                    - self.mouse_input_prefix_len as usize;
+                let text_width = (self.mouse.input_area.width.saturating_sub(2)) as usize
+                    - self.mouse.input_prefix_len as usize;
                 let input_scroll = floor_char_boundary(
                     &self.input.buffer,
                     self.input.cursor.saturating_sub(text_width),
@@ -11042,8 +11030,8 @@ mod tests {
 
     #[rstest]
     fn mouse_disabled_ignores_events(mut app: App) {
-        app.mouse_enabled = false;
-        app.mouse_messages_area = Rect::new(0, 0, 80, 20);
+        app.mouse.enabled = false;
+        app.mouse.messages_area = Rect::new(0, 0, 80, 20);
         let result = app.handle_mouse_event(mouse_scroll_up(10, 10));
         assert!(result.is_none());
         assert_eq!(app.scroll_offset, 0);
@@ -11053,7 +11041,7 @@ mod tests {
     fn mouse_overlay_scroll_navigates_list(mut app: App) {
         app.open_overlay(OverlayKind::Settings);
         app.settings_index = 0;
-        app.mouse_messages_area = Rect::new(0, 0, 80, 20);
+        app.mouse.messages_area = Rect::new(0, 0, 80, 20);
         // Scroll down in overlay should navigate settings list (j), not scroll messages
         app.handle_mouse_event(mouse_scroll_down(10, 10));
         assert_eq!(app.settings_index, 1);
@@ -11070,7 +11058,7 @@ mod tests {
         #[case] scroll_up: bool,
         #[case] expected_offset: usize,
     ) {
-        app.mouse_messages_area = Rect::new(0, 0, 80, 20);
+        app.mouse.messages_area = Rect::new(0, 0, 80, 20);
         app.scroll_offset = initial_offset;
         let event = if scroll_up {
             mouse_scroll_up(10, 10)
@@ -11091,7 +11079,7 @@ mod tests {
         app.active_conversation = Some("+1".to_string());
 
         // Sidebar inner starts at row 0, so clicking row 1 selects the second conv
-        app.mouse_sidebar_inner = Some(Rect::new(0, 0, 20, 10));
+        app.mouse.sidebar_inner = Some(Rect::new(0, 0, 20, 10));
         app.handle_mouse_event(mouse_down(5, 1));
         assert_eq!(app.active_conversation.as_deref(), Some("+2"));
     }
@@ -11102,8 +11090,8 @@ mod tests {
         app.input.buffer = "hello world".to_string();
         app.input.cursor = 0;
         // Input area with borders: x=10, y=20, w=40, h=3
-        app.mouse_input_area = Rect::new(10, 20, 40, 3);
-        app.mouse_input_prefix_len = 2; // "> "
+        app.mouse.input_area = Rect::new(10, 20, 40, 3);
+        app.mouse.input_prefix_len = 2; // "> "
 
         // Click at column 18 (inside input area)
         // content_start_col = 10 + 1 + 2 = 13, so click_offset = 18 - 13 = 5
@@ -11117,8 +11105,8 @@ mod tests {
         app.mode = InputMode::Normal;
         app.input.buffer = "caf\u{e9} ok".to_string(); // "café ok" — é is 2 bytes
         app.input.cursor = 0;
-        app.mouse_input_area = Rect::new(0, 0, 40, 3);
-        app.mouse_input_prefix_len = 2;
+        app.mouse.input_area = Rect::new(0, 0, 40, 3);
+        app.mouse.input_prefix_len = 2;
 
         // Click at column 7: content_start = 0+1+2 = 3, target_col = 7-3 = 4
         // Characters: c(1) a(1) f(1) é(2bytes,1col) → 4 chars = 5 bytes
