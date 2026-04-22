@@ -24,8 +24,8 @@ use crate::domain::{
     ActionMenuState, ContactsOverlayState, EmojiPickerAction, EmojiPickerSource, EmojiPickerState,
     FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, InputState,
     KeybindingsOverlayState, MouseState, NotificationState, PendingState, PinDurationOverlayState,
-    PollVoteOverlayState, ProfileOverlayState, ReactionState, SearchAction, SearchState,
-    SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState,
+    PollVoteOverlayState, ProfileOverlayState, ReactionState, ScrollState, SearchAction,
+    SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState,
 };
 use crate::image_render;
 use crate::image_render::ImageProtocol;
@@ -396,10 +396,9 @@ pub struct App {
     pub input: InputState,
     /// Whether sidebar is visible
     pub sidebar_visible: bool,
-    /// Scroll offset for messages (0 = bottom)
-    pub scroll_offset: usize,
-    /// Saved scroll positions per conversation (scroll_offset, focused_msg_index)
-    pub scroll_positions: HashMap<String, (usize, Option<usize>)>,
+    /// Messages-pane scroll viewport, focus cursor, jump stack, and per-conversation
+    /// saved positions.
+    pub scroll: ScrollState,
     /// Status bar message
     pub status_message: String,
     /// Whether the app should quit
@@ -458,8 +457,6 @@ pub struct App {
     pub prev_active_conversation: Option<String>,
     /// Incognito mode — in-memory DB, no local persistence
     pub incognito: bool,
-    /// Set by the renderer when the active conversation is scrolled to the top and has more
-    pub at_scroll_top: bool,
     /// Show date separator lines between messages from different days
     pub date_separators: bool,
     /// Show delivery/read receipt status symbols on outgoing messages
@@ -471,14 +468,8 @@ pub struct App {
     /// In-flight signal-cli work awaiting confirmation or dispatch:
     /// pending sends, out-of-order receipts, queued typing-stop, and queued read receipts.
     pub pending: PendingState,
-    /// Timestamp of the message at the scroll cursor (set during draw, cleared at scroll_offset=0)
-    pub focused_message_time: Option<DateTime<Utc>>,
-    /// Index of the focused message in the active conversation (set during draw)
-    pub focused_msg_index: Option<usize>,
     /// Pending normal-mode prefix key (e.g. first `g` of `gg`, first `d` of `dd`)
     pub pending_normal_key: Option<char>,
-    /// Jump-back stack: saved (scroll_offset, focused_msg_index) before quote jumps
-    pub jump_stack: Vec<(usize, Option<usize>)>,
     /// Reaction display preferences and picker overlay state
     pub reactions: ReactionState,
     /// Emoji picker overlay state
@@ -945,7 +936,7 @@ impl App {
             return drained;
         }
         let end = len
-            .saturating_sub(self.scroll_offset.saturating_sub(5))
+            .saturating_sub(self.scroll.offset.saturating_sub(5))
             .min(len);
         let start = end.saturating_sub(60);
 
@@ -2055,7 +2046,7 @@ impl App {
                     .unwrap_or(false);
                 self.store.conversations.remove(&conv_id);
                 self.store.conversation_order.retain(|id| id != &conv_id);
-                self.scroll_positions.remove(&conv_id);
+                self.scroll.positions.remove(&conv_id);
                 self.db_warn_visible(self.db.delete_conversation(&conv_id), "delete_conversation");
                 self.close_overlay();
                 self.active_conversation = None;
@@ -2131,7 +2122,8 @@ impl App {
         let is_group = conv.is_group;
 
         let index = self
-            .focused_msg_index
+            .scroll
+            .focused_index
             .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
         let msg = conv.messages.get(index)?;
 
@@ -2720,7 +2712,7 @@ impl App {
     }
 
     /// Jump to a message by its timestamp_ms in the active conversation.
-    /// Sets scroll_offset so the message is visible, and focused_msg_index.
+    /// Sets scroll.offset so the message is visible, and scroll.focused_index.
     fn jump_to_message_timestamp(&mut self, target_ts: i64) {
         let conv_id = match self.active_conversation.as_ref() {
             Some(id) => id.clone(),
@@ -2738,10 +2730,10 @@ impl App {
         // Find the message index matching this timestamp
         let idx = conv.find_msg_idx(target_ts);
         if let Some(i) = idx {
-            // Set scroll_offset so the message is visible (roughly centered)
+            // Set scroll.offset so the message is visible (roughly centered)
             let from_bottom = total.saturating_sub(i + 1);
-            self.scroll_offset = from_bottom;
-            self.focused_msg_index = Some(i);
+            self.scroll.offset = from_bottom;
+            self.scroll.focused_index = Some(i);
             self.mode = InputMode::Normal;
         }
     }
@@ -2761,8 +2753,9 @@ impl App {
         };
 
         // Save current position for jump-back
-        self.jump_stack
-            .push((self.scroll_offset, self.focused_msg_index));
+        self.scroll
+            .jump_stack
+            .push((self.scroll.offset, self.scroll.focused_index));
 
         // Try to find the quoted message
         let conv_id = match self.active_conversation.as_ref() {
@@ -2780,16 +2773,16 @@ impl App {
             self.jump_to_message_timestamp(quote_ts);
         } else {
             // Pop the saved position since we didn't actually jump
-            self.jump_stack.pop();
+            self.scroll.jump_stack.pop();
             self.status_message = "Quoted message not in loaded history".to_string();
         }
     }
 
     /// Jump back to the position before the last quote jump.
     fn jump_back(&mut self) {
-        if let Some((offset, index)) = self.jump_stack.pop() {
-            self.scroll_offset = offset;
-            self.focused_msg_index = index;
+        if let Some((offset, index)) = self.scroll.jump_stack.pop() {
+            self.scroll.offset = offset;
+            self.scroll.focused_index = index;
         }
     }
 
@@ -2903,8 +2896,7 @@ impl App {
             active_conversation: None,
             input: InputState::default(),
             sidebar_visible: true,
-            scroll_offset: 0,
-            scroll_positions: HashMap::new(),
+            scroll: ScrollState::default(),
             status_message: "connecting...".to_string(),
             should_quit: false,
             quit_confirm: false,
@@ -2933,16 +2925,12 @@ impl App {
             image: ImageState::new(image_render_tx, image_render_rx),
             prev_active_conversation: None,
             incognito: false,
-            at_scroll_top: false,
             date_separators: true,
             show_receipts: true,
             color_receipts: true,
             nerd_fonts: false,
             pending: PendingState::default(),
-            focused_message_time: None,
-            focused_msg_index: None,
             pending_normal_key: None,
-            jump_stack: Vec::new(),
             reactions: ReactionState::new(),
             emoji_picker: EmojiPickerState::default(),
             is_demo: false,
@@ -3084,7 +3072,7 @@ impl App {
 
     /// Load older messages for the active conversation when scrolled to the top.
     pub fn load_more_messages(&mut self) {
-        self.at_scroll_top = false;
+        self.scroll.at_top = false;
         let conv_id = match self.active_conversation.as_ref() {
             Some(id) if self.store.has_more_messages.contains(id) => id.clone(),
             _ => return,
@@ -3152,7 +3140,7 @@ impl App {
             *read_idx += prepend_count;
         }
         if self.active_conversation.as_ref() == Some(&conv_id)
-            && let Some(ref mut fi) = self.focused_msg_index
+            && let Some(ref mut fi) = self.scroll.focused_index
         {
             *fi += prepend_count;
         }
@@ -3251,7 +3239,7 @@ impl App {
 
         // Snap viewport to newest messages (unless user manually scrolled)
         if !self.sync.user_scrolled {
-            self.scroll_offset = 0;
+            self.scroll.offset = 0;
         }
 
         // Fire summary notification if any were suppressed
@@ -3438,14 +3426,14 @@ impl App {
             }
             Some(KeyAction::PageScrollUp) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_add(5);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_add(5);
+                self.scroll.focused_index = None;
                 true
             }
             Some(KeyAction::PageScrollDown) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_sub(5);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_sub(5);
+                self.scroll.focused_index = None;
                 true
             }
             Some(KeyAction::SidebarSearch) => {
@@ -3638,9 +3626,9 @@ impl App {
                     if let Some(ref id) = self.active_conversation
                         && let Some(conv) = self.store.conversations.get(id)
                     {
-                        self.scroll_offset = conv.messages.len();
+                        self.scroll.offset = conv.messages.len();
                     }
-                    self.focused_msg_index = None;
+                    self.scroll.focused_index = None;
                     return None;
                 }
                 ('d', KeyCode::Char('d')) => {
@@ -3670,14 +3658,14 @@ impl App {
             // Scroll
             Some(KeyAction::ScrollDown) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_sub(1);
+                self.scroll.focused_index = None;
                 None
             }
             Some(KeyAction::ScrollUp) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_add(1);
+                self.scroll.focused_index = None;
                 None
             }
             Some(KeyAction::FocusNextMessage) => {
@@ -3692,20 +3680,20 @@ impl App {
             }
             Some(KeyAction::HalfPageDown) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_sub(10);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_sub(10);
+                self.scroll.focused_index = None;
                 None
             }
             Some(KeyAction::HalfPageUp) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_add(10);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_add(10);
+                self.scroll.focused_index = None;
                 None
             }
             Some(KeyAction::ScrollToBottom) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = 0;
-                self.focused_msg_index = None;
+                self.scroll.offset = 0;
+                self.scroll.focused_index = None;
                 None
             }
             // Edit/mode-switch
@@ -3992,14 +3980,14 @@ impl App {
             // Actions that alternative profiles (Emacs/Minimal) may bind in Insert mode
             Some(KeyAction::ScrollDown) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_sub(1);
+                self.scroll.focused_index = None;
                 None
             }
             Some(KeyAction::ScrollUp) => {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_add(1);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_add(1);
+                self.scroll.focused_index = None;
                 None
             }
             Some(KeyAction::CursorLeft) => {
@@ -4745,7 +4733,7 @@ impl App {
             && !self.sync.user_scrolled
             && self.active_conversation.as_ref() == Some(&conv_id)
         {
-            self.scroll_offset = self.scroll_offset.saturating_add(1);
+            self.scroll.offset = self.scroll.offset.saturating_add(1);
         }
 
         // Active conversation: send read receipt and advance read marker
@@ -5004,7 +4992,8 @@ impl App {
                 let conv = self.store.conversations.get(&conv_id)?;
                 let is_group = conv.is_group;
                 let index = self
-                    .focused_msg_index
+                    .scroll
+                    .focused_index
                     .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
                 let msg = conv.messages.get(index)?;
                 let is_outgoing = msg.sender == "you";
@@ -5037,7 +5026,8 @@ impl App {
                 let conv_id = self.active_conversation.clone()?;
                 let conv = self.store.conversations.get(&conv_id)?;
                 let index = self
-                    .focused_msg_index
+                    .scroll
+                    .focused_index
                     .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
                 let msg = conv.messages.get(index)?;
                 let target_timestamp = msg.timestamp_ms;
@@ -5226,8 +5216,8 @@ impl App {
                     .set_message_pinned(&conv_id, target_timestamp, false),
                 "set_message_pinned",
             );
-            self.scroll_offset = 0;
-            self.focused_msg_index = None;
+            self.scroll.offset = 0;
+            self.scroll.focused_index = None;
             let body = "you unpinned a message";
             let now = Utc::now();
             let now_ms = now.timestamp_millis();
@@ -5281,8 +5271,8 @@ impl App {
                         .set_message_pinned(&pending.conv_id, pending.target_timestamp, true),
                     "set_message_pinned",
                 );
-                self.scroll_offset = 0;
-                self.focused_msg_index = None;
+                self.scroll.offset = 0;
+                self.scroll.focused_index = None;
                 let body = "you pinned a message";
                 let now = Utc::now();
                 let now_ms = now.timestamp_millis();
@@ -6095,8 +6085,8 @@ impl App {
                         },
                         false,
                     );
-                    self.scroll_offset = 0;
-                    self.focused_msg_index = None;
+                    self.scroll.offset = 0;
+                    self.scroll.focused_index = None;
                     self.reply_target = None;
                     return Some(SendRequest::Message {
                         recipient: conv_id,
@@ -6120,8 +6110,8 @@ impl App {
             InputAction::Part => {
                 self.save_scroll_position();
                 self.active_conversation = None;
-                self.scroll_offset = 0;
-                self.focused_msg_index = None;
+                self.scroll.offset = 0;
+                self.scroll.focused_index = None;
                 self.pending_attachment = None;
                 self.reset_typing_with_stop();
                 self.update_status();
@@ -6482,7 +6472,7 @@ impl App {
                         "upsert_poll_data",
                     );
 
-                    self.scroll_offset = 0;
+                    self.scroll.offset = 0;
                     return Some(SendRequest::PollCreate {
                         recipient: conv_id,
                         is_group,
@@ -7035,18 +7025,19 @@ impl App {
 
     fn save_scroll_position(&mut self) {
         if let Some(ref id) = self.active_conversation {
-            self.scroll_positions
-                .insert(id.clone(), (self.scroll_offset, self.focused_msg_index));
+            self.scroll
+                .positions
+                .insert(id.clone(), (self.scroll.offset, self.scroll.focused_index));
         }
     }
 
     fn restore_scroll_position(&mut self, conv_id: &str) {
-        if let Some(&(offset, focus)) = self.scroll_positions.get(conv_id) {
-            self.scroll_offset = offset;
-            self.focused_msg_index = focus;
+        if let Some(&(offset, focus)) = self.scroll.positions.get(conv_id) {
+            self.scroll.offset = offset;
+            self.scroll.focused_index = focus;
         } else {
-            self.scroll_offset = 0;
-            self.focused_msg_index = None;
+            self.scroll.offset = 0;
+            self.scroll.focused_index = None;
         }
     }
 
@@ -7098,8 +7089,8 @@ impl App {
             self.store
                 .get_or_create_conversation(target, target, false, &self.db);
             self.active_conversation = Some(target.to_string());
-            self.scroll_offset = 0;
-            self.focused_msg_index = None;
+            self.scroll.offset = 0;
+            self.scroll.focused_index = None;
             self.update_status();
         } else {
             self.status_message = format!("Conversation not found: {target}");
@@ -7213,12 +7204,13 @@ impl App {
 
     /// Get the message at the current scroll position.
     /// Returns the message at the bottom of the visible viewport.
-    /// scroll_offset=0 means the newest message; higher values go older.
+    /// scroll.offset=0 means the newest message; higher values go older.
     pub fn selected_message(&self) -> Option<&DisplayMessage> {
         let conv_id = self.active_conversation.as_ref()?;
         let conv = self.store.conversations.get(conv_id)?;
         let index = self
-            .focused_msg_index
+            .scroll
+            .focused_index
             .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
         conv.messages.get(index)
     }
@@ -7241,14 +7233,14 @@ impl App {
 
         // Bootstrap: if no message is focused yet, pick the last non-system message
         // and enter scroll mode so the highlight becomes visible.
-        let current = match self.focused_msg_index {
+        let current = match self.scroll.focused_index {
             Some(i) => i,
             None => {
                 let start = (0..total).rev().find(|&i| !conv.messages[i].is_system);
                 if let Some(s) = start {
-                    self.focused_msg_index = Some(s);
-                    if self.scroll_offset == 0 {
-                        self.scroll_offset = 1;
+                    self.scroll.focused_index = Some(s);
+                    if self.scroll.offset == 0 {
+                        self.scroll.offset = 1;
                     }
                 }
                 return;
@@ -7262,8 +7254,8 @@ impl App {
         };
 
         if let Some(t) = target {
-            self.focused_msg_index = Some(t);
-            // scroll_offset is adjusted by the renderer to keep the focused message visible
+            self.scroll.focused_index = Some(t);
+            // scroll.offset is adjusted by the renderer to keep the focused message visible
         }
     }
 
@@ -7369,15 +7361,15 @@ impl App {
                 if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
             {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_add(3);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_add(3);
+                self.scroll.focused_index = None;
             }
             MouseEventKind::ScrollDown
                 if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
             {
                 self.sync.user_scrolled = true;
-                self.scroll_offset = self.scroll_offset.saturating_sub(3);
-                self.focused_msg_index = None;
+                self.scroll.offset = self.scroll.offset.saturating_sub(3);
+                self.scroll.focused_index = None;
             }
             _ => {}
         }
@@ -9076,9 +9068,9 @@ mod tests {
         assert_eq!(app.store.conversations[conv_id].messages[0].body, "msg50");
         assert_eq!(app.store.conversations[conv_id].messages[99].body, "msg149");
 
-        // Set last_read_index and focused_msg_index to verify they shift
+        // Set last_read_index and scroll.focused_index to verify they shift
         app.store.last_read_index.insert(conv_id.to_string(), 90);
-        app.focused_msg_index = Some(95);
+        app.scroll.focused_index = Some(95);
 
         // Trigger load_more
         app.load_more_messages();
@@ -9093,7 +9085,7 @@ mod tests {
 
         // Indexes should have shifted by 50 (the prepend count)
         assert_eq!(app.store.last_read_index[conv_id], 140);
-        assert_eq!(app.focused_msg_index, Some(145));
+        assert_eq!(app.scroll.focused_index, Some(145));
 
         // No more messages to load
         assert!(!app.store.has_more_messages.contains(conv_id));
@@ -11034,7 +11026,7 @@ mod tests {
         app.mouse.messages_area = Rect::new(0, 0, 80, 20);
         let result = app.handle_mouse_event(mouse_scroll_up(10, 10));
         assert!(result.is_none());
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.scroll.offset, 0);
     }
 
     #[rstest]
@@ -11045,7 +11037,7 @@ mod tests {
         // Scroll down in overlay should navigate settings list (j), not scroll messages
         app.handle_mouse_event(mouse_scroll_down(10, 10));
         assert_eq!(app.settings_index, 1);
-        assert_eq!(app.scroll_offset, 0); // messages not scrolled
+        assert_eq!(app.scroll.offset, 0); // messages not scrolled
     }
 
     #[rstest]
@@ -11059,14 +11051,14 @@ mod tests {
         #[case] expected_offset: usize,
     ) {
         app.mouse.messages_area = Rect::new(0, 0, 80, 20);
-        app.scroll_offset = initial_offset;
+        app.scroll.offset = initial_offset;
         let event = if scroll_up {
             mouse_scroll_up(10, 10)
         } else {
             mouse_scroll_down(10, 10)
         };
         app.handle_mouse_event(event);
-        assert_eq!(app.scroll_offset, expected_offset);
+        assert_eq!(app.scroll.offset, expected_offset);
     }
 
     #[rstest]
@@ -11196,7 +11188,7 @@ mod tests {
             app.handle_signal_event(SignalEvent::MessageReceived(msg));
         }
         app.active_conversation = Some("+1".to_string());
-        app.scroll_offset = 0;
+        app.scroll.offset = 0;
         app.mode = InputMode::Normal;
 
         // First g sets pending
@@ -11206,7 +11198,7 @@ mod tests {
         // Second g scrolls to top
         app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
         assert_eq!(app.pending_normal_key, None);
-        assert_eq!(app.scroll_offset, 20);
+        assert_eq!(app.scroll.offset, 20);
     }
 
     #[rstest]
@@ -11276,7 +11268,7 @@ mod tests {
 
         // k (FocusPrevMessage) should invoke jump_to_adjacent_message
         app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('k'));
-        assert!(app.focused_msg_index.is_some());
+        assert!(app.scroll.focused_index.is_some());
     }
 
     #[rstest]
@@ -11301,13 +11293,13 @@ mod tests {
         }
         app.active_conversation = Some("+1".to_string());
         app.mode = InputMode::Normal;
-        app.scroll_offset = 5;
-        app.focused_msg_index = Some(10);
+        app.scroll.offset = 5;
+        app.scroll.focused_index = Some(10);
 
         // Ctrl-E (ScrollDown) should scroll viewport and clear focus
         app.handle_normal_key(KeyModifiers::CONTROL, KeyCode::Char('e'));
-        assert_eq!(app.scroll_offset, 4);
-        assert_eq!(app.focused_msg_index, None);
+        assert_eq!(app.scroll.offset, 4);
+        assert_eq!(app.scroll.focused_index, None);
     }
 
     // --- Helper for building a SignalMessage ---
@@ -11895,14 +11887,14 @@ mod tests {
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         app.active_conversation = Some("+1".to_string());
         // Index 0 is the body message ("see https://example.com")
-        app.focused_msg_index = Some(0);
+        app.scroll.focused_index = Some(0);
         let items_body = app.action_menu_items();
         assert!(
             items_body.iter().any(|a| a.label == "Open link"),
             "expected Open link for body message"
         );
         // Index 1 is the attachment message ("[image: photo.png](file:///tmp/photo.png)")
-        app.focused_msg_index = Some(1);
+        app.scroll.focused_index = Some(1);
         let items_att = app.action_menu_items();
         assert!(
             items_att.iter().any(|a| a.label == "Open attachment"),
@@ -11927,7 +11919,7 @@ mod tests {
     }
 
     #[rstest]
-    fn action_menu_respects_focused_msg_index(mut app: App) {
+    fn action_menu_respects_focused_index(mut app: App) {
         // Message 0: has a URL
         let msg1 = make_msg("+1", Some("check https://example.com"), None, false);
         app.handle_signal_event(SignalEvent::MessageReceived(msg1));
@@ -11944,7 +11936,7 @@ mod tests {
         );
 
         // Focus the first message (the one with a URL)
-        app.focused_msg_index = Some(0);
+        app.scroll.focused_index = Some(0);
         let items = app.action_menu_items();
         assert!(
             items.iter().any(|a| a.label == "Open link"),
@@ -12012,17 +12004,17 @@ mod tests {
     }
 
     #[rstest]
-    fn sync_stabilizes_scroll_offset(mut app: App) {
+    fn sync_stabilizes_scroll(mut app: App) {
         assert!(app.sync.active);
         app.store
             .get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
-        app.scroll_offset = 0;
+        app.scroll.offset = 0;
         let msg = make_msg("+1", Some("hello from sync"), None, false);
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
         assert!(
-            app.scroll_offset > 0,
-            "scroll_offset should increase during sync"
+            app.scroll.offset > 0,
+            "scroll.offset should increase during sync"
         );
     }
 
@@ -12032,11 +12024,11 @@ mod tests {
         app.store
             .get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
-        app.scroll_offset = 0;
+        app.scroll.offset = 0;
         app.sync.user_scrolled = true;
         let msg = make_msg("+1", Some("hello"), None, false);
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.scroll.offset, 0);
     }
 
     #[rstest]
@@ -12059,7 +12051,7 @@ mod tests {
     fn end_sync_snaps_to_bottom_and_fires_bell(mut app: App) {
         app.sync.active = true;
         app.sync.message_count = 50;
-        app.scroll_offset = 30;
+        app.scroll.offset = 30;
         app.sync
             .suppressed_notifications
             .insert("+1".to_string(), 10);
@@ -12068,7 +12060,7 @@ mod tests {
             .insert("+2".to_string(), 5);
         app.end_sync();
         assert!(!app.sync.active);
-        assert_eq!(app.scroll_offset, 0);
+        assert_eq!(app.scroll.offset, 0);
         assert!(app.notifications.pending_bell);
         assert!(app.sync.suppressed_notifications.is_empty());
     }
@@ -12076,11 +12068,11 @@ mod tests {
     #[rstest]
     fn end_sync_respects_user_scroll(mut app: App) {
         app.sync.active = true;
-        app.scroll_offset = 15;
+        app.scroll.offset = 15;
         app.sync.user_scrolled = true;
         app.end_sync();
         assert!(!app.sync.active);
-        assert_eq!(app.scroll_offset, 15);
+        assert_eq!(app.scroll.offset, 15);
     }
 
     #[rstest]

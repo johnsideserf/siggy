@@ -13,7 +13,7 @@
 #
 set -euo pipefail
 
-BASELINE=71
+BASELINE=66
 
 count=$(awk '
   /^pub struct App \{/ { inside=1; next }

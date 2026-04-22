@@ -940,8 +940,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             }
 
             // Scroll indicator in title
-            let right = if app.scroll_offset > 0 {
-                format!(" \u{2191} {} more ", app.scroll_offset)
+            let right = if app.scroll.offset > 0 {
+                format!(" \u{2191} {} more ", app.scroll.offset)
             } else {
                 String::new()
             };
@@ -1024,15 +1024,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             if let Some(conv) = app.store.conversations.get(id) {
                 &conv.messages
             } else {
-                app.focused_message_time = None;
-                app.focused_msg_index = None;
+                app.scroll.focused_time = None;
+                app.scroll.focused_index = None;
                 return;
             }
         }
         None => {
             draw_welcome(frame, app, inner);
-            app.focused_message_time = None;
-            app.focused_msg_index = None;
+            app.scroll.focused_time = None;
+            app.scroll.focused_index = None;
             return;
         }
     };
@@ -1041,7 +1041,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let total = messages.len();
 
     // Build lines from a fixed window of recent messages.
-    // scroll_offset is NOT included here — it controls the Paragraph scroll position instead.
+    // app.scroll.offset is NOT included here; it controls the Paragraph scroll position instead.
     // Including it would expand the window by 1 message per scroll increment, growing
     // content_height and base_scroll in lockstep, keeping scroll_y constant (viewport stuck).
     let start = total.saturating_sub(available_height * MSG_WINDOW_MULTIPLIER);
@@ -1389,13 +1389,13 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let content_height: usize = line_heights.iter().sum();
 
-    // Bottom-align by default; scroll_offset shifts the view upward
+    // Bottom-align by default; app.scroll.offset shifts the view upward
     let base_scroll = content_height.saturating_sub(available_height);
-    app.scroll_offset = app.scroll_offset.min(base_scroll);
-    let mut scroll_y = base_scroll - app.scroll_offset;
+    app.scroll.offset = app.scroll.offset.min(base_scroll);
+    let mut scroll_y = base_scroll - app.scroll.offset;
 
     // Signal when user has scrolled to the top of loaded content
-    app.at_scroll_top = app.scroll_offset >= base_scroll
+    app.scroll.at_top = app.scroll.offset >= base_scroll
         && base_scroll > 0
         && app
             .active_conversation
@@ -1403,16 +1403,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .is_some_and(|id| app.store.has_more_messages.contains(id));
 
     // Determine the focused message for highlight and full-timestamp display in Normal mode.
-    // Check focused_msg_index too so J/K navigation works even when content fits the viewport
-    // (base_scroll == 0 clamps scroll_offset to 0, but J/K focus should persist).
+    // Check scroll.focused_index too so J/K navigation works even when content fits the viewport
+    // (base_scroll == 0 clamps scroll.offset to 0, but J/K focus should persist).
     //
-    // `render_focus` is used for highlighting; it may differ from app.focused_msg_index when
+    // `render_focus` is used for highlighting; it may differ from app.scroll.focused_index when
     // j/k line-scrolling (where we derive focus for display but don't persist it, to avoid
     // the "ensure visible" logic snapping the viewport back on the next frame).
     let render_focus;
-    if app.mode == InputMode::Normal && (app.scroll_offset > 0 || app.focused_msg_index.is_some()) {
-        if let Some(fi) = app.focused_msg_index {
-            // J/K already set focused_msg_index — ensure it's visible by adjusting scroll.
+    if app.mode == InputMode::Normal
+        && (app.scroll.offset > 0 || app.scroll.focused_index.is_some())
+    {
+        if let Some(fi) = app.scroll.focused_index {
+            // J/K already set scroll.focused_index — ensure it's visible by adjusting scroll.
             let mut msg_start: Option<usize> = None;
             let mut msg_end = 0usize;
             let mut cumul = 0usize;
@@ -1428,24 +1430,24 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             if let Some(start) = msg_start {
                 if start < scroll_y {
                     // Message is above viewport — scroll up
-                    app.scroll_offset = base_scroll.saturating_sub(start);
-                    scroll_y = base_scroll - app.scroll_offset;
+                    app.scroll.offset = base_scroll.saturating_sub(start);
+                    scroll_y = base_scroll - app.scroll.offset;
                 } else if msg_end > scroll_y + available_height {
                     // Message is below viewport — scroll down
                     let new_scroll_y = msg_end.saturating_sub(available_height);
-                    app.scroll_offset = base_scroll.saturating_sub(new_scroll_y);
-                    scroll_y = base_scroll - app.scroll_offset;
+                    app.scroll.offset = base_scroll.saturating_sub(new_scroll_y);
+                    scroll_y = base_scroll - app.scroll.offset;
                 }
             }
-            app.focused_message_time = messages.get(fi).map(|m| m.timestamp);
+            app.scroll.focused_time = messages.get(fi).map(|m| m.timestamp);
             render_focus = Some(fi);
         } else {
             // Viewport-only scroll (Ctrl-E/Y, Ctrl-D/U) — no highlight without explicit focus.
             render_focus = None;
         }
     } else {
-        app.focused_msg_index = None;
-        app.focused_message_time = None;
+        app.scroll.focused_index = None;
+        app.scroll.focused_time = None;
         render_focus = None;
     };
 
@@ -2621,13 +2623,13 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_auto_hidden
     }
 
     // Scroll offset indicator + focused message timestamp
-    if app.scroll_offset > 0 {
+    if app.scroll.offset > 0 {
         segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
         segments.push(Span::styled(
-            format!("↑{}", app.scroll_offset),
+            format!("↑{}", app.scroll.offset),
             Style::default().fg(theme.warning),
         ));
-        if let Some(ref ts) = app.focused_message_time {
+        if let Some(ref ts) = app.scroll.focused_time {
             let local = ts.with_timezone(&chrono::Local);
             segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
             segments.push(Span::styled(
@@ -5227,7 +5229,7 @@ mod snapshot_tests {
         let mut app = demo_app();
         app.open_overlay(OverlayKind::ActionMenu);
         app.action_menu.index = 0;
-        app.focused_msg_index = Some(0);
+        app.scroll.focused_index = Some(0);
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }

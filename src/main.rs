@@ -1304,8 +1304,8 @@ async fn run_app(
             // buffer, then after EndSync our Sixel overlays at the new positions.
             // Without this, stale Sixel pixels persist at old image positions
             // because ratatui's diff only sends changed cells.
-            if sixel_mode && app.scroll_offset != app.image.sixel_prev_scroll {
-                app.image.sixel_prev_scroll = app.scroll_offset;
+            if sixel_mode && app.scroll.offset != app.image.sixel_prev_scroll {
+                app.image.sixel_prev_scroll = app.scroll.offset;
                 app.image.prev_visible_images.clear();
                 terminal.clear()?;
             }
@@ -1354,7 +1354,7 @@ async fn run_app(
         }
 
         // Load older messages when scrolled to the top
-        if app.at_scroll_top {
+        if app.scroll.at_top {
             app.load_more_messages();
             needs_redraw = true;
         }
