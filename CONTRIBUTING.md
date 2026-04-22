@@ -57,6 +57,10 @@ Use the [bug report template](https://github.com/johnsideserf/siggy/issues/new?t
 
 Use the [feature request template](https://github.com/johnsideserf/siggy/issues/new?template=feature_request.yml). Describe the problem you're trying to solve.
 
+## Translating
+
+If you want to contribute a README translation, see [TRANSLATING.md](TRANSLATING.md). Translations do not require Rust knowledge and are a great way to help if you are a native speaker of a language siggy does not yet support.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under [GPL-3.0](LICENSE).
