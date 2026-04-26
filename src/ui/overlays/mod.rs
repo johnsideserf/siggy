@@ -1,15 +1,16 @@
 //! Modal overlays rendered on top of the main UI.
 //!
-//! One submodule per `OverlayKind`, each exporting a `draw_*`
-//! function. All overlays share `centered_popup` (defined in
-//! `ui/mod.rs`) for the standard "clear area + bordered popup"
-//! frame, plus per-overlay popup-width constants for sizing.
+//! Most submodules correspond 1:1 with an `OverlayKind` variant and
+//! export a `draw_*` function. Two helpers ride along on a host file:
+//! `draw_customize` lives in `settings.rs` (Settings is its only
+//! caller) and `draw_delete_confirm` lives in `action_menu.rs` (the
+//! action menu's "delete" choice is its only entry point). All
+//! overlays share `centered_popup` (defined in `ui/mod.rs`) for the
+//! standard "clear area + bordered popup" frame.
 
 pub(super) mod about;
 pub(super) mod action_menu;
 pub(super) mod contacts;
-pub(super) mod customize;
-pub(super) mod delete_confirm;
 pub(super) mod emoji_picker;
 pub(super) mod file_browser;
 pub(super) mod forward;

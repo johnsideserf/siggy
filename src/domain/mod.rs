@@ -1,52 +1,37 @@
 //! Domain state structs extracted from [`crate::app::App`].
 //!
 //! Each submodule owns the fields and helpers for one logical concern
-//! (file picker, search, typing indicators, individual overlays). Keeping
-//! these grouped reduces merge conflicts and makes the App struct easier
-//! to navigate.
+//! (file picker, search, typing indicators, image cache). The simpler
+//! cursor/filter/temp-buffer overlays live together in `overlays`
+//! since each was ~10-30 lines of pure-data struct and the per-file
+//! split added navigation cost without payoff.
 
-mod action_menu;
-mod contacts_overlay;
 mod emoji_picker;
 mod file_picker;
-mod forward_overlay;
-mod group_menu_overlay;
 mod image;
 mod input;
-mod keybindings_overlay;
 mod mouse;
 mod notification;
+mod overlays;
 mod pending;
-mod pin_duration_overlay;
-mod poll_vote_overlay;
-mod profile_overlay;
 mod reaction;
 mod scroll;
 mod search;
-mod settings_profile_overlay;
-mod theme_picker;
 mod typing;
-mod verify_overlay;
 
-pub use action_menu::ActionMenuState;
-pub use contacts_overlay::ContactsOverlayState;
 pub use emoji_picker::{CATEGORIES, EmojiPickerAction, EmojiPickerSource, EmojiPickerState};
 pub use file_picker::{FilePickerOutcome, FilePickerState};
-pub use forward_overlay::ForwardOverlayState;
-pub use group_menu_overlay::GroupMenuOverlayState;
 pub use image::ImageState;
 pub use input::InputState;
-pub use keybindings_overlay::KeybindingsOverlayState;
 pub use mouse::MouseState;
 pub use notification::NotificationState;
+pub use overlays::{
+    ActionMenuState, ContactsOverlayState, ForwardOverlayState, GroupMenuOverlayState,
+    KeybindingsOverlayState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState,
+    SettingsProfileOverlayState, ThemePickerState, VerifyOverlayState,
+};
 pub use pending::PendingState;
-pub use pin_duration_overlay::PinDurationOverlayState;
-pub use poll_vote_overlay::PollVoteOverlayState;
-pub use profile_overlay::ProfileOverlayState;
 pub use reaction::ReactionState;
 pub use scroll::ScrollState;
 pub use search::{SearchAction, SearchState};
-pub use settings_profile_overlay::SettingsProfileOverlayState;
-pub use theme_picker::ThemePickerState;
 pub use typing::TypingState;
-pub use verify_overlay::VerifyOverlayState;

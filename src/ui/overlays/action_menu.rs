@@ -1,8 +1,14 @@
-//! Per-message action menu overlay.
+//! Per-message action menu overlay + delete confirmation prompt.
 //!
 //! Lists the actions available on the focused message (reply, react,
 //! edit, delete, copy, forward, etc.) with a highlighted cursor row,
 //! Nerd Font icons when enabled, and right-aligned key hints.
+//!
+//! `draw_delete_confirm` is the y/l/n confirmation prompt the action
+//! menu's "delete" choice spawns. It lives here rather than in its
+//! own file because the action menu is its only entry point. Outgoing
+//! messages get the full y/l/n prompt; incoming messages can only be
+//! deleted locally so the prompt collapses to y/n.
 
 use ratatui::{
     Frame,
@@ -75,4 +81,28 @@ pub(in crate::ui) fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) 
 
     let popup = Paragraph::new(lines);
     frame.render_widget(popup, inner);
+}
+
+pub(in crate::ui) fn draw_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let msg = app.selected_message();
+    let is_outgoing = msg.is_some_and(|m| m.sender == "you");
+
+    let (popup_area, block) = centered_popup(frame, area, 44, 5, " Delete Message ", theme);
+
+    let prompt = if is_outgoing {
+        "Delete for everyone? (y)es / (l)ocal / (n)o"
+    } else {
+        "Delete locally? (y)es / (n)o"
+    };
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {prompt}"),
+            Style::default().fg(theme.fg),
+        )),
+    ];
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
 }

@@ -12,6 +12,7 @@ mod conversation_store;
 mod db;
 mod debug_log;
 mod domain;
+mod fs_migrate;
 mod image_render;
 mod input;
 mod keybindings;
@@ -276,12 +277,12 @@ async fn run_main_flow(
         let data_root = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
         let db_dir = data_root.join("siggy");
         let old_db_dir = data_root.join("signal-tui");
-        db::migrate_data_dir(&old_db_dir, &db_dir);
+        fs_migrate::migrate_path(&old_db_dir, &db_dir);
 
         std::fs::create_dir_all(&db_dir)?;
         set_dir_permissions(&db_dir);
         let db_path = db_dir.join("siggy.db");
-        db::migrate_db_file(&db_dir.join("signal-tui.db"), &db_path);
+        fs_migrate::migrate_path(&db_dir.join("signal-tui.db"), &db_path);
         set_file_permissions(&db_path);
         db::Database::open(&db_path)?
     };

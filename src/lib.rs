@@ -7,6 +7,7 @@
 pub mod config;
 #[allow(dead_code)]
 mod debug_log;
+pub mod fs_migrate;
 pub mod input;
 pub mod keybindings;
 pub mod signal;

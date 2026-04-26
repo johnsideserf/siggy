@@ -1,10 +1,15 @@
-//! Main settings overlay.
+//! Main settings overlay + the Customize sub-overlay it spawns.
 //!
 //! Section-grouped (Notifications / Display / Messages / Interface)
 //! list of toggles plus three "special" rows: notification preview
 //! mode, image protocol mode, and the entry into the Customize
 //! sub-overlay. Each row reads its current value from `App` and
 //! shows a one-line hint for the focused setting at the bottom.
+//!
+//! `draw_customize` is the three-row launcher (Theme / Keybindings /
+//! Settings profile) reached from the Settings overlay's
+//! "Customize..." row. It lives here rather than in its own file
+//! because Settings is its only caller.
 
 use ratatui::{
     Frame,
@@ -157,6 +162,29 @@ pub(in crate::ui) fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
             .fg(theme.fg_muted)
             .add_modifier(Modifier::ITALIC),
     )));
+
+    let popup = Paragraph::new(lines).block(block);
+    frame.render_widget(popup, popup_area);
+}
+
+pub(in crate::ui) fn draw_customize(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let items = ["Theme", "Keybindings", "Settings profile"];
+    let (popup_area, block) = centered_popup(frame, area, 30, 5, " Customize ", theme);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, label) in items.iter().enumerate() {
+        let is_selected = i == app.customize_index;
+        let style = if is_selected {
+            Style::default()
+                .bg(theme.bg_selected)
+                .fg(theme.fg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.fg_secondary)
+        };
+        lines.push(Line::from(Span::styled(format!("  {label}"), style)));
+    }
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
