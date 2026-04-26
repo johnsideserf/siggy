@@ -12,6 +12,7 @@ mod status_bar;
 
 use composer::draw_input;
 use overlays::about::draw_about;
+use overlays::delete_confirm::draw_delete_confirm;
 use sidebar::draw_sidebar;
 use status_bar::draw_status_bar;
 
@@ -2090,30 +2091,6 @@ fn draw_emoji_picker(frame: &mut Frame, app: &App, area: Rect) {
 
     let popup = Paragraph::new(lines);
     frame.render_widget(popup, inner);
-}
-
-fn draw_delete_confirm(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let msg = app.selected_message();
-    let is_outgoing = msg.is_some_and(|m| m.sender == "you");
-
-    let (popup_area, block) = centered_popup(frame, area, 44, 5, " Delete Message ", theme);
-
-    let prompt = if is_outgoing {
-        "Delete for everyone? (y)es / (l)ocal / (n)o"
-    } else {
-        "Delete locally? (y)es / (n)o"
-    };
-
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("  {prompt}"),
-            Style::default().fg(theme.fg),
-        )),
-    ];
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
 }
 
 /// Render the welcome/empty-state screen when no conversation is active.

@@ -6,3 +6,4 @@
 //! frame, plus per-overlay popup-width constants for sizing.
 
 pub(super) mod about;
+pub(super) mod delete_confirm;
