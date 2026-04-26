@@ -1,3 +1,11 @@
+//! Poll vote overlay and pending poll-data buffer.
+//!
+//! `index` and `selections` drive the multi-select cursor for the open
+//! vote dialog; `pending` carries the in-flight `PollVotePending`
+//! context. `pending_polls` buffers `PollData` keyed by
+//! `(conv_id, timestamp)` so a poll that arrives before its parent
+//! message is preserved until the message is rendered.
+
 use std::collections::HashMap;
 
 use crate::app::PollVotePending;

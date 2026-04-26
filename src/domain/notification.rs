@@ -1,3 +1,11 @@
+//! Notification preferences and clipboard auto-clear timer.
+//!
+//! Holds the per-frame `pending_bell` flag plus user preferences for
+//! direct/group terminal bells, OS desktop notifications, and the
+//! `notification_preview` level. Also tracks the clipboard auto-clear
+//! window (`clipboard_clear_seconds`) and the `clipboard_set_at`
+//! timestamp used to scrub copied data after it expires.
+
 /// State for notification preferences and clipboard auto-clear.
 #[derive(Default)]
 pub struct NotificationState {

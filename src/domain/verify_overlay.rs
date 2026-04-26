@@ -1,3 +1,10 @@
+//! Identity verification overlay state.
+//!
+//! `identities` is the filtered `IdentityInfo` list shown in the
+//! overlay (one entry for a 1:1 chat, or one per group member);
+//! `index` is the cursor; `confirming` gates the destructive
+//! "verify identity" action behind a confirmation prompt.
+
 use crate::signal::types::IdentityInfo;
 
 /// State for the identity verification overlay.

@@ -1,3 +1,9 @@
+//! Contacts browser overlay state.
+//!
+//! Backs the `/contacts` overlay: tracks the cursor `index`, the
+//! type-to-`filter` query, and the `filtered` `(phone, display_name)`
+//! list rebuilt as the user types.
+
 /// State for the contacts list overlay.
 #[derive(Default)]
 pub struct ContactsOverlayState {

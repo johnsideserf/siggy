@@ -1,3 +1,12 @@
+//! Emoji picker overlay: state, key handling, and category filtering.
+//!
+//! The picker can be opened from two contexts (`EmojiPickerSource`):
+//! `Input` to insert an emoji into the composer, or `Reaction` to apply
+//! one to the focused message. Navigation is grid-based using the
+//! configured `cols`; type-to-filter searches across name and shortcode
+//! and ignores the active category. Skin-tone variants are skipped to
+//! keep the grid manageable.
+
 use crossterm::event::KeyCode;
 
 /// Context the emoji picker was opened from.

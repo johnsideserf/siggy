@@ -1,3 +1,11 @@
+//! File browser overlay used to pick attachments.
+//!
+//! Opens at the user's home directory and walks the filesystem with a
+//! sorted directory-first listing. Type-to-filter narrows the visible
+//! entries; Enter descends into a directory or selects a file (returned
+//! as `FilePickerOutcome::Selected`). Backspace pops the filter or
+//! navigates up when the filter is empty.
+
 use std::path::PathBuf;
 
 use crossterm::event::KeyCode;

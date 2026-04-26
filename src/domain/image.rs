@@ -1,3 +1,14 @@
+//! Image rendering, caching, and link-region tracking.
+//!
+//! Cross-cuts every supported terminal image protocol (`image_protocol`):
+//! Kitty graphics (`kitty_*`), iTerm2 inline (`iterm2_crop_cache`),
+//! Sixel (`sixel_*`), and a Unicode halfblock fallback. Caches resized
+//! PNGs (`native_image_cache`), tracks frame-to-frame visibility for
+//! redraw skipping (`prev_visible_images`), and routes background
+//! decode work through `image_render_tx` / `image_render_rx`. Also
+//! holds the `LinkRegion` list and `link_url_map` used by the
+//! post-render OSC 8 hyperlink injector.
+
 use std::collections::{HashMap, HashSet};
 
 use std::sync::mpsc;

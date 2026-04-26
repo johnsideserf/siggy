@@ -1,3 +1,11 @@
+//! Keybindings configuration overlay state.
+//!
+//! Drives the binding editor: cursor (`index`), in-progress key capture
+//! (`capturing`) with conflict detection (`conflict`), and a nested
+//! profile sub-picker (`profile_picker`, `profile_index`,
+//! `available_profiles`) for switching between named keybinding profiles
+//! without leaving the overlay.
+
 use crate::keybindings::{KeyAction, KeyCombo};
 
 /// State for the keybindings configuration overlay.

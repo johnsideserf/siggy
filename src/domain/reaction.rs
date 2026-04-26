@@ -1,3 +1,11 @@
+//! Reaction display preferences and reaction picker state.
+//!
+//! `picker_index` tracks the cursor in the reaction picker overlay.
+//! The remaining flags shape rendering: `show_reactions` toggles the
+//! reaction badge entirely, `verbose` swaps counts for usernames, and
+//! `emoji_to_text` rewrites emoji as text shortcodes for terminals
+//! that render emoji poorly.
+
 /// State for reaction display preferences and the reaction picker overlay.
 #[derive(Default)]
 pub struct ReactionState {

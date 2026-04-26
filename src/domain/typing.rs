@@ -1,3 +1,11 @@
+//! Typing indicator state: inbound display and outbound throttling.
+//!
+//! `indicators` maps `conv_id` to a `sender_phone` -> last-seen
+//! `Instant` map; entries older than 5s are pruned each tick by
+//! `cleanup`. `sent` and `last_keypress` track our outgoing typing
+//! signal so we throttle start events and emit a stop after 5s of
+//! inactivity (`check_timeout`) or on conversation switch (`reset`).
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 

@@ -1,3 +1,13 @@
+//! Message search overlay: query state, results, and navigation.
+//!
+//! `query` is the live filter text, `results` is the rolling 50-row
+//! match list pulled from SQLite (per-conversation when an active
+//! conversation is set, otherwise across all conversations), and
+//! `index` is the cursor over results. `handle_key` returns a
+//! `SearchAction` for the App to dispatch (jump, status, cancel).
+//! `jump_to_result` powers `n`/`N` traversal within the active
+//! conversation with wrap-around.
+
 use crossterm::event::KeyCode;
 
 use crate::db::Database;

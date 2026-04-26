@@ -13,3 +13,4 @@ signal-tui-debug.log
 .claude/settings.local.json
 screenshots/
 .worktrees/
+.context/

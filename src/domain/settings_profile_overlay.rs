@@ -1,3 +1,10 @@
+//! Settings profile manager overlay state.
+//!
+//! Tracks the currently active profile `name`, the cursor `index`
+//! over the `available` profiles, and the "save as" sub-flow
+//! (`save_as` flag + `save_as_input` text buffer) used to capture a
+//! new profile name without touching the main composer.
+
 use crate::settings_profile::SettingsProfile;
 
 /// State for the settings profile manager overlay.
