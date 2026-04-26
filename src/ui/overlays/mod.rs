@@ -13,6 +13,7 @@ pub(super) mod delete_confirm;
 pub(super) mod emoji_picker;
 pub(super) mod file_browser;
 pub(super) mod forward;
+pub(super) mod group_menu;
 pub(super) mod help;
 pub(super) mod keybindings;
 pub(super) mod message_request;
