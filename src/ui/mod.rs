@@ -6,10 +6,12 @@
 //! to dodge ratatui width calculation bugs (see [`LinkRegion`]).
 
 mod composer;
+mod overlays;
 mod sidebar;
 mod status_bar;
 
 use composer::draw_input;
+use overlays::about::draw_about;
 use sidebar::draw_sidebar;
 use status_bar::draw_status_bar;
 
@@ -53,7 +55,7 @@ const SEARCH_POPUP_WIDTH: u16 = 60;
 const SEARCH_MAX_VISIBLE: usize = 15;
 const GROUP_MENU_POPUP_WIDTH: u16 = 40;
 const GROUP_MEMBER_MAX_VISIBLE: usize = 15;
-const ABOUT_POPUP_WIDTH: u16 = 50;
+pub(super) const ABOUT_POPUP_WIDTH: u16 = 50;
 const PROFILE_POPUP_WIDTH: u16 = 50;
 const EMOJI_POPUP_WIDTH: u16 = 52;
 const EMOJI_POPUP_HEIGHT: u16 = 20;
@@ -185,7 +187,7 @@ pub(crate) fn build_separator(label: &str, width: usize, style: Style) -> Line<'
 
 /// Create a centered popup overlay: clears the area, returns the Rect and a styled Block.
 /// Preferred width/height are clamped to fit within the terminal.
-fn centered_popup(
+pub(super) fn centered_popup(
     frame: &mut Frame,
     area: Rect,
     pref_width: u16,
@@ -3993,57 +3995,6 @@ fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
         format!(" {mode_hint}  Enter: submit  Esc"),
         Style::default().fg(theme.fg_muted),
     )));
-
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
-}
-
-fn draw_about(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let version = env!("CARGO_PKG_VERSION");
-
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("  siggy v{version}"),
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  A terminal Signal messenger client",
-            Style::default().fg(theme.fg),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Created by John Sideserf",
-            Style::default().fg(theme.fg_secondary),
-        )),
-        Line::from(Span::styled(
-            "  License: GPL-3.0",
-            Style::default().fg(theme.fg_secondary),
-        )),
-        Line::from(Span::styled(
-            "  github.com/johnsideserf/siggy",
-            Style::default().fg(theme.link),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Press any key to close",
-            Style::default().fg(theme.fg_muted),
-        )),
-    ];
-
-    let pref_height = lines.len() as u16 + 2; // +2 for borders
-    let (popup_area, block) = centered_popup(
-        frame,
-        area,
-        ABOUT_POPUP_WIDTH,
-        pref_height,
-        " About ",
-        theme,
-    );
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
