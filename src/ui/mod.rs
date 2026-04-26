@@ -15,7 +15,10 @@ use overlays::about::draw_about;
 use overlays::action_menu::draw_action_menu;
 use overlays::delete_confirm::draw_delete_confirm;
 use overlays::message_request::draw_message_request;
+use overlays::pin_duration::draw_pin_duration_picker;
+use overlays::poll_vote::draw_poll_vote_overlay;
 use overlays::reaction_picker::draw_reaction_picker;
+use overlays::theme_picker::draw_theme_picker;
 use sidebar::draw_sidebar;
 use status_bar::draw_status_bar;
 
@@ -32,8 +35,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, AutocompleteMode, GroupMenuState, InputMode, OverlayKind, PIN_DURATIONS, SETTINGS,
-    SettingDef, VisibleImage,
+    App, AutocompleteMode, GroupMenuState, InputMode, OverlayKind, SETTINGS, SettingDef,
+    VisibleImage,
 };
 use crate::domain::CATEGORIES;
 use crate::image_render::{self, ImageProtocol};
@@ -3225,95 +3228,6 @@ fn draw_file_browser(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(popup, popup_area);
 }
 
-fn draw_theme_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let max_visible = 12usize.min(app.theme_picker.available_themes.len());
-    let pref_height = max_visible as u16 + 5; // border + title + footer
-
-    let (popup_area, block) = centered_popup(frame, area, 50, pref_height, " Theme ", theme);
-
-    let inner_height = popup_area.height.saturating_sub(2) as usize;
-    let (visible_rows, scroll_offset) =
-        list_overlay::scroll_layout(inner_height, 2, app.theme_picker.index);
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    let end = (scroll_offset + visible_rows).min(app.theme_picker.available_themes.len());
-    for (i, t) in app.theme_picker.available_themes[scroll_offset..end]
-        .iter()
-        .enumerate()
-    {
-        let actual_index = scroll_offset + i;
-        let is_selected = actual_index == app.theme_picker.index;
-        let is_active = t.name == app.theme.name;
-
-        let marker = if is_active { "[*]" } else { "[ ]" };
-        let row_style = if is_selected {
-            list_overlay::selection_style(theme.bg_selected, theme.fg)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-        let marker_style = if is_selected {
-            Style::default().bg(theme.bg_selected).fg(if is_active {
-                theme.success
-            } else {
-                theme.fg_muted
-            })
-        } else {
-            Style::default().fg(if is_active {
-                theme.success
-            } else {
-                theme.fg_muted
-            })
-        };
-
-        // Color swatches: show accent, success, error as colored blocks
-        let swatch_bg = if is_selected {
-            theme.bg_selected
-        } else {
-            theme.bg
-        };
-        let swatch_accent = Span::styled(
-            "\u{2588}\u{2588}",
-            Style::default().fg(t.accent).bg(swatch_bg),
-        );
-        let swatch_success = Span::styled(
-            "\u{2588}\u{2588}",
-            Style::default().fg(t.success).bg(swatch_bg),
-        );
-        let swatch_error = Span::styled(
-            "\u{2588}\u{2588}",
-            Style::default().fg(t.error).bg(swatch_bg),
-        );
-
-        // Pad name to align swatches
-        let name_width = 28;
-        let display_name = truncate(&t.name, name_width);
-        let padded_name = format!("{display_name:width$}", width = name_width);
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {marker} "), marker_style),
-            Span::styled(padded_name, row_style),
-            Span::raw(" "),
-            swatch_accent,
-            Span::raw(" "),
-            swatch_success,
-            Span::raw(" "),
-            swatch_error,
-        ]));
-    }
-
-    list_overlay::append_footer(
-        &mut lines,
-        visible_rows,
-        "  j/k navigate  |  Enter apply  |  Esc cancel",
-        theme.fg_muted,
-    );
-
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
-}
-
 fn draw_keybindings(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
 
@@ -3642,39 +3556,6 @@ fn draw_settings_profile_save_as(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(popup, popup_area);
 }
 
-fn draw_pin_duration_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let item_count = PIN_DURATIONS.len();
-    let popup_height = item_count as u16 + 4; // borders + footer
-
-    let (popup_area, block) =
-        centered_popup(frame, area, 24, popup_height, " Pin Duration ", theme);
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    for (i, (_seconds, label)) in PIN_DURATIONS.iter().enumerate() {
-        let style = if i == app.pin_duration.index {
-            list_overlay::selection_style(theme.bg_selected, theme.fg)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-        let marker = if i == app.pin_duration.index {
-            ">"
-        } else {
-            " "
-        };
-        lines.push(Line::from(Span::styled(
-            format!(" {marker} {label}"),
-            style,
-        )));
-    }
-
-    list_overlay::append_footer(&mut lines, item_count, " j/k  Enter  Esc", theme.fg_muted);
-
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
-}
-
 pub(crate) fn build_poll_display(
     poll: &PollData,
     votes: &[PollVote],
@@ -3751,63 +3632,6 @@ pub(crate) fn build_poll_display(
     )));
 
     lines
-}
-
-fn draw_poll_vote_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let pending = match &app.poll_vote.pending {
-        Some(p) => p,
-        None => return,
-    };
-
-    let option_count = pending.options.len();
-    let max_text_len = pending
-        .options
-        .iter()
-        .map(|o| o.text.len())
-        .max()
-        .unwrap_or(8);
-    let popup_width = (max_text_len as u16 + 12)
-        .max(24)
-        .min(area.width.saturating_sub(4));
-    let popup_height = option_count as u16 + 5;
-
-    let (popup_area, block) =
-        centered_popup(frame, area, popup_width, popup_height, " Vote ", theme);
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    for (i, opt) in pending.options.iter().enumerate() {
-        let selected = app.poll_vote.selections.get(i).copied().unwrap_or(false);
-        let marker = if i == app.poll_vote.index { ">" } else { " " };
-        let checkbox = if selected { "[x]" } else { "[ ]" };
-        let style = if i == app.poll_vote.index {
-            Style::default()
-                .bg(theme.bg_selected)
-                .fg(theme.fg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-        lines.push(Line::from(Span::styled(
-            format!(" {marker} {checkbox} {}", opt.text),
-            style,
-        )));
-    }
-
-    lines.push(Line::from(""));
-    let mode_hint = if pending.allow_multiple {
-        "Space: toggle"
-    } else {
-        "Space: select"
-    };
-    lines.push(Line::from(Span::styled(
-        format!(" {mode_hint}  Enter: submit  Esc"),
-        Style::default().fg(theme.fg_muted),
-    )));
-
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
 }
 
 fn draw_profile(frame: &mut Frame, app: &App, area: Rect) {

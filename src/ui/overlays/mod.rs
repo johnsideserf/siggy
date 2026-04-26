@@ -9,4 +9,7 @@ pub(super) mod about;
 pub(super) mod action_menu;
 pub(super) mod delete_confirm;
 pub(super) mod message_request;
+pub(super) mod pin_duration;
+pub(super) mod poll_vote;
 pub(super) mod reaction_picker;
+pub(super) mod theme_picker;
