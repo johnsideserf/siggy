@@ -42,3 +42,29 @@ jobs:
 
       - name: Test
         run: cargo test
+
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_command_parse, fuzz_input_edit, fuzz_json_rpc, fuzz_key_combo]
+    env:
+      # cargo-fuzz needs nightly. RUSTUP_TOOLCHAIN overrides
+      # rust-toolchain.toml's stable pin for this job only.
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run ${{ matrix.target }}
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
