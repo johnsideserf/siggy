@@ -7098,6 +7098,18 @@ impl App {
         }
     }
 
+    /// Whether the startup spinner should advance this event-loop tick.
+    ///
+    /// Pauses during the initial sync burst (`sync.active`). The event loop
+    /// polls every 50ms, and ticking the spinner unconditionally on every
+    /// iteration sets `needs_redraw = true`, which bypasses the 500ms sync
+    /// redraw throttle in `drain_events`. The status bar already shows
+    /// "Syncing... (N messages received)" during sync, so the spinner adds
+    /// no information; pausing it lets the throttle actually take effect.
+    pub fn should_tick_spinner(&self) -> bool {
+        self.loading && !self.sync.active
+    }
+
     pub fn next_conversation(&mut self) {
         if self.store.conversation_order.is_empty() {
             return;
@@ -10183,6 +10195,38 @@ mod tests {
             vec!["earlier".to_string()],
             "session history must be preserved across switches"
         );
+    }
+
+    #[rstest]
+    fn spinner_pauses_during_sync(app: App) {
+        // Default state on a fresh App: loading=true AND sync.active=true
+        // (SyncState::new initializes active=true). The fix for #326 requires
+        // the spinner to pause in this overlap window so its 50ms tick rate
+        // doesn't bypass the 500ms sync redraw throttle in main's event loop.
+        assert!(app.loading);
+        assert!(app.sync.active);
+        assert!(
+            !app.should_tick_spinner(),
+            "spinner must not tick while sync is active"
+        );
+    }
+
+    #[rstest]
+    fn spinner_ticks_after_sync_ends_but_loading_continues(mut app: App) {
+        // Sync ended (no more incoming burst) but contact list hasn't arrived
+        // yet, so loading is still true. Spinner should resume so the user
+        // sees the "Loading contacts..." status animate.
+        app.sync.active = false;
+        assert!(app.loading);
+        assert!(app.should_tick_spinner());
+    }
+
+    #[rstest]
+    fn spinner_does_not_tick_when_loading_is_false(mut app: App) {
+        // Steady-state app: nothing to spin for.
+        app.loading = false;
+        app.sync.active = false;
+        assert!(!app.should_tick_spinner());
     }
 
     #[rstest]

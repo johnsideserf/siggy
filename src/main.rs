@@ -1331,8 +1331,10 @@ async fn run_app(
             needs_redraw = true;
         }
 
-        // Animate the loading spinner
-        if app.loading {
+        // Animate the loading spinner. Skipped during sync.active so the
+        // 50ms event-loop tick rate doesn't bypass the 500ms sync redraw
+        // throttle below; see App::should_tick_spinner for context.
+        if app.should_tick_spinner() {
             app.spinner_tick = app.spinner_tick.wrapping_add(1);
             needs_redraw = true;
         }
