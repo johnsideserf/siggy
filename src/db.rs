@@ -1036,6 +1036,30 @@ impl Database {
     }
 }
 
+/// Move the legacy `signal-tui` data directory into place at `new_dir` if
+/// `new_dir` doesn't already exist and `old_dir` does. Silently no-ops on
+/// rename errors -- on first launch we'll fall back to creating an empty
+/// data dir.
+pub fn migrate_data_dir(old_dir: &Path, new_dir: &Path) {
+    if new_dir.exists() || !old_dir.exists() {
+        return;
+    }
+    if let Some(parent) = new_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::rename(old_dir, new_dir);
+}
+
+/// Move the legacy `signal-tui.db` file to the new `siggy.db` filename if
+/// the new file doesn't already exist and the old one does. Silently no-ops
+/// on rename errors -- a fresh DB will be initialized at the new path.
+pub fn migrate_db_file(old_path: &Path, new_path: &Path) {
+    if new_path.exists() || !old_path.exists() {
+        return;
+    }
+    let _ = std::fs::rename(old_path, new_path);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1619,5 +1643,86 @@ mod tests {
         // Most recent first
         assert_eq!(results[0].3, "+2"); // Bob's conversation
         assert_eq!(results[1].3, "+1"); // Alice's conversation
+    }
+
+    // --- migrate_data_dir / migrate_db_file ---
+
+    #[test]
+    fn migrate_data_dir_renames_when_only_old_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui");
+        let new = tmp.path().join("siggy");
+
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("siggy.db"), b"payload").unwrap();
+
+        migrate_data_dir(&old, &new);
+
+        assert!(!old.exists(), "old dir should be gone after rename");
+        assert!(new.exists(), "new dir should exist after rename");
+        assert_eq!(
+            std::fs::read(new.join("siggy.db")).unwrap(),
+            b"payload",
+            "DB content should survive the rename"
+        );
+    }
+
+    #[test]
+    fn migrate_data_dir_noops_when_new_already_exists() {
+        // Reproduces the Windows-rename-over-existing-dir failure mode:
+        // we should not even attempt the rename when the new dir is present.
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui");
+        let new = tmp.path().join("siggy");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("marker"), b"old").unwrap();
+        std::fs::create_dir(&new).unwrap();
+        std::fs::write(new.join("marker"), b"new").unwrap();
+
+        migrate_data_dir(&old, &new);
+
+        assert!(old.exists(), "old dir should be left alone");
+        assert!(new.exists(), "new dir should be left alone");
+        assert_eq!(std::fs::read(new.join("marker")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn migrate_data_dir_noops_when_old_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui");
+        let new = tmp.path().join("siggy");
+
+        migrate_data_dir(&old, &new);
+
+        assert!(!old.exists());
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn migrate_db_file_renames_when_only_old_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui.db");
+        let new = tmp.path().join("siggy.db");
+        std::fs::write(&old, b"sqlite-bytes").unwrap();
+
+        migrate_db_file(&old, &new);
+
+        assert!(!old.exists());
+        assert!(new.exists());
+        assert_eq!(std::fs::read(&new).unwrap(), b"sqlite-bytes");
+    }
+
+    #[test]
+    fn migrate_db_file_noops_when_new_already_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui.db");
+        let new = tmp.path().join("siggy.db");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+
+        migrate_db_file(&old, &new);
+
+        assert_eq!(std::fs::read(&old).unwrap(), b"old");
+        assert_eq!(std::fs::read(&new).unwrap(), b"new");
     }
 }

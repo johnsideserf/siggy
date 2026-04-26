@@ -273,31 +273,15 @@ async fn run_main_flow(
     let database = if incognito {
         db::Database::open_in_memory()?
     } else {
-        let db_dir = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("siggy");
-
-        // Auto-migrate from old "signal-tui" data directory
-        if !db_dir.exists() {
-            let old_db_dir = dirs::data_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("signal-tui");
-            if old_db_dir.exists() {
-                let _ = std::fs::rename(&old_db_dir, &db_dir);
-            }
-        }
+        let data_root = dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        let db_dir = data_root.join("siggy");
+        let old_db_dir = data_root.join("signal-tui");
+        db::migrate_data_dir(&old_db_dir, &db_dir);
 
         std::fs::create_dir_all(&db_dir)?;
         set_dir_permissions(&db_dir);
         let db_path = db_dir.join("siggy.db");
-
-        // Auto-migrate old database filename
-        if !db_path.exists() {
-            let old_db_path = db_dir.join("signal-tui.db");
-            if old_db_path.exists() {
-                let _ = std::fs::rename(&old_db_path, &db_path);
-            }
-        }
+        db::migrate_db_file(&db_dir.join("signal-tui.db"), &db_path);
         set_file_permissions(&db_path);
         db::Database::open(&db_path)?
     };
