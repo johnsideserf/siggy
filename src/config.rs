@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -208,19 +208,8 @@ impl Config {
             Some(p) => PathBuf::from(p),
             None => {
                 let new_path = Self::default_config_path();
-                // Auto-migrate from old "signal-tui" config directory
-                if !new_path.exists() {
-                    let old_path = dirs::config_dir()
-                        .unwrap_or_else(|| PathBuf::from(".config"))
-                        .join("signal-tui")
-                        .join("config.toml");
-                    if old_path.exists() {
-                        if let Some(parent) = new_path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        let _ =
-                            std::fs::rename(old_path.parent().unwrap(), new_path.parent().unwrap());
-                    }
+                if let (Some(new_dir), Some(old_dir)) = (new_path.parent(), legacy_config_dir()) {
+                    migrate_config_dir(&old_dir, new_dir);
                 }
                 new_path
             }
@@ -304,6 +293,31 @@ impl Config {
     }
 }
 
+/// Path to the legacy `signal-tui` config directory, if `dirs::config_dir()`
+/// is resolvable on this platform.
+fn legacy_config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("signal-tui"))
+}
+
+/// Move the legacy config directory into place at `new_dir` if and only if
+/// `new_dir` does not already exist and `old_dir` does. Silently no-ops on
+/// rename errors -- the user can always fall back to running the setup wizard.
+///
+/// The previous implementation pre-created `new_dir` before calling rename,
+/// which works on POSIX (rename onto an empty dir is allowed) but fails on
+/// Windows (`std::fs::rename` returns an error if the target exists). The
+/// fix is to only ensure `new_dir`'s parent exists, leaving `new_dir` itself
+/// absent so rename can create it atomically.
+pub(crate) fn migrate_config_dir(old_dir: &Path, new_dir: &Path) {
+    if new_dir.exists() || !old_dir.exists() {
+        return;
+    }
+    if let Some(parent) = new_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::rename(old_dir, new_dir);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,5 +364,74 @@ mod tests {
         };
         c.migrate_legacy_image_mode();
         assert_eq!(c.image_mode, "native");
+    }
+
+    // --- migrate_config_dir (filesystem) ---
+
+    #[test]
+    fn migrate_config_dir_renames_when_only_old_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui");
+        let new = tmp.path().join("siggy");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("config.toml"), b"account = \"+1\"").unwrap();
+
+        migrate_config_dir(&old, &new);
+
+        assert!(!old.exists());
+        assert!(new.exists());
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            "account = \"+1\""
+        );
+    }
+
+    #[test]
+    fn migrate_config_dir_noops_when_new_already_exists() {
+        // Pre-fix: the previous implementation pre-created `new_dir` then
+        // tried to rename onto it, which fails on Windows. The fix removed
+        // the pre-creation and the no-op guard ensures nothing happens
+        // when the user already has a fresh siggy config dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui");
+        let new = tmp.path().join("siggy");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("config.toml"), b"old").unwrap();
+        std::fs::create_dir(&new).unwrap();
+        std::fs::write(new.join("config.toml"), b"new").unwrap();
+
+        migrate_config_dir(&old, &new);
+
+        assert_eq!(std::fs::read(old.join("config.toml")).unwrap(), b"old");
+        assert_eq!(std::fs::read(new.join("config.toml")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn migrate_config_dir_noops_when_old_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui");
+        let new = tmp.path().join("siggy");
+
+        migrate_config_dir(&old, &new);
+
+        assert!(!old.exists());
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn migrate_config_dir_creates_missing_parent() {
+        // dirs::config_dir() should always exist on a real machine, but
+        // verify we don't choke when it doesn't (e.g., a fresh tempdir
+        // pretending to be `~/.config/`). The new path's parent gets
+        // created so rename can succeed.
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("signal-tui");
+        let new = tmp.path().join("nested").join("subdir").join("siggy");
+        std::fs::create_dir(&old).unwrap();
+
+        migrate_config_dir(&old, &new);
+
+        assert!(!old.exists());
+        assert!(new.exists());
     }
 }

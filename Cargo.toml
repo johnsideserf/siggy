@@ -33,3 +33,4 @@ icy_sixel = "0.5"
 [dev-dependencies]
 insta = "1"
 rstest = "0.26"
+tempfile = "3"
