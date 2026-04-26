@@ -7046,6 +7046,7 @@ impl App {
         self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
+        self.input.reset_for_conv_switch();
         self.clear_kitty_placements();
 
         // Try exact match first
@@ -7106,6 +7107,7 @@ impl App {
         self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
+        self.input.reset_for_conv_switch();
         self.clear_kitty_placements();
         let idx = self
             .active_conversation
@@ -7139,6 +7141,7 @@ impl App {
         self.save_scroll_position();
         self.pending_attachment = None;
         self.reset_typing_with_stop();
+        self.input.reset_for_conv_switch();
         self.clear_kitty_placements();
         let len = self.store.conversation_order.len();
         let idx = self
@@ -10146,6 +10149,40 @@ mod tests {
             .get_or_create_conversation("+2", "Bob", false, &app.db);
         app.next_conversation();
         assert!(app.pending_attachment.is_none());
+    }
+
+    #[rstest]
+    fn history_browse_state_does_not_bleed_across_conv_switch(mut app: App) {
+        // Reproduces #362: pressing Up in conversation A starts history browsing
+        // (sets history_index and history_draft). Switching to conversation B
+        // must clear that browse state so pressing Down in B does nothing.
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store
+            .get_or_create_conversation("+2", "Bob", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+
+        app.input.history = vec!["earlier".to_string()];
+        app.input.buffer = "in-progress draft".to_string();
+        app.input.cursor = "in-progress draft".len();
+
+        app.history_up();
+        assert_eq!(app.input.buffer, "earlier");
+        assert_eq!(app.input.history_index, Some(0));
+        assert_eq!(app.input.history_draft, "in-progress draft");
+
+        app.next_conversation();
+
+        assert_eq!(app.active_conversation.as_deref(), Some("+2"));
+        assert!(app.input.buffer.is_empty(), "buffer should be cleared");
+        assert_eq!(app.input.cursor, 0);
+        assert_eq!(app.input.history_index, None);
+        assert_eq!(app.input.history_draft, "");
+        assert_eq!(
+            app.input.history,
+            vec!["earlier".to_string()],
+            "session history must be preserved across switches"
+        );
     }
 
     #[rstest]
