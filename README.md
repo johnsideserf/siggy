@@ -15,6 +15,8 @@
 <p align="center">
   <b>English</b>
   &nbsp;|&nbsp;
+  <a href="README.fr.md">Français</a>
+  &nbsp;|&nbsp;
   <a href="TRANSLATING.md">Contribute a translation</a>
 </p>
 
