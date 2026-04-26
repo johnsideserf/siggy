@@ -18,3 +18,16 @@ pub struct InputState {
     /// Saves in-progress input when browsing history.
     pub history_draft: String,
 }
+
+impl InputState {
+    /// Reset the composer's transient state on conversation switch:
+    /// clears the buffer, cursor, and history-browse position. The
+    /// `history` vec is preserved because it's per-session, not
+    /// per-conversation.
+    pub fn reset_for_conv_switch(&mut self) {
+        self.buffer.clear();
+        self.cursor = 0;
+        self.history_index = None;
+        self.history_draft.clear();
+    }
+}
