@@ -636,6 +636,27 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
     let content_height: usize = line_heights.iter().sum();
 
+    // Sync viewport pin (#394): when a pin anchor was captured at sync start,
+    // derive scroll.offset from the pin message's current line position so it
+    // stays at its original screen offset regardless of how many lines the
+    // incoming sync messages add. Without this, scroll.offset += 1 per arriving
+    // message under-compensates against multi-line messages and the viewport
+    // drifts downward.
+    if app.sync.active
+        && !app.sync.user_scrolled
+        && let Some((pin_ts, pin_offset)) = app.sync.pin
+        && let Some(pin_idx) = visible.iter().position(|m| m.timestamp == pin_ts)
+        && let Some(new_offset) = compute_sync_pin_offset(
+            &line_heights,
+            &line_msg_idx,
+            content_height,
+            pin_idx,
+            pin_offset,
+        )
+    {
+        app.scroll.offset = new_offset;
+    }
+
     // Bottom-align by default; app.scroll.offset shifts the view upward
     let base_scroll = content_height.saturating_sub(available_height);
     app.scroll.offset = app.scroll.offset.min(base_scroll);
@@ -970,11 +991,132 @@ fn build_poll_display(
     lines
 }
 
+/// Compute the `scroll.offset` that keeps the pinned message at its original
+/// screen position, given the current rendered content. See #394.
+///
+/// Math: `pin_last_line` is the index of the pin message's last rendered line
+/// in the current content. `lines_below_pin` is how many rendered lines now
+/// sit after that line. The new offset = original offset at pin time + lines
+/// added below pin since then. Adding the number of lines that grew below pin
+/// preserves pin's distance from the bottom of the rendered content, and thus
+/// its distance from the bottom of the viewport.
+///
+/// Returns `None` when `pin_idx` does not appear in `line_msg_idx` (e.g., the
+/// pin message has been evicted from the renderer's sliding window).
+fn compute_sync_pin_offset(
+    line_heights: &[usize],
+    line_msg_idx: &[Option<usize>],
+    content_height: usize,
+    pin_idx: usize,
+    pin_offset_at_capture: usize,
+) -> Option<usize> {
+    let mut last_line: Option<usize> = None;
+    let mut cumul = 0usize;
+    for (idx, &h) in line_heights.iter().enumerate() {
+        if line_msg_idx.get(idx) == Some(&Some(pin_idx)) {
+            last_line = Some(cumul + h - 1);
+        }
+        cumul += h;
+    }
+    let pin_last_line = last_line?;
+    let lines_below_pin = content_height
+        .saturating_sub(1)
+        .saturating_sub(pin_last_line);
+    Some(pin_offset_at_capture.saturating_add(lines_below_pin))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::signal::types::{PollData, PollOption, PollVote, Reaction};
     use crate::theme::default_theme;
+
+    // --- compute_sync_pin_offset ---
+
+    #[test]
+    fn pin_offset_single_row_message_addition() {
+        // Pre-sync: 5 messages, each rendered as one Line of height 1.
+        // Pin = msg 4 (the last pre-sync message). One sync message arrives
+        // also as 1 Line, height 1. Old `+= 1` per message would set offset=1;
+        // the render-time math agrees here -- this is the boundary case where
+        // the old code happened to be correct.
+        let line_heights = vec![1, 1, 1, 1, 1, 1];
+        let line_msg_idx: Vec<Option<usize>> = (0..6).map(Some).collect();
+        let content_height = 6;
+        let new_offset =
+            compute_sync_pin_offset(&line_heights, &line_msg_idx, content_height, 4, 0).unwrap();
+        assert_eq!(new_offset, 1);
+    }
+
+    #[test]
+    fn pin_offset_multi_line_message_addition() {
+        // Pre-sync: 5 messages, each as 2 Lines (sender/timestamp + body),
+        // each Line of height 1 -> 10 rows total. Pin = msg 4.
+        // One sync message arrives as 2 Lines, with body wrapping to 2 rows
+        // (height = 2) -> 3 new rows. The old `+= 1` would put scroll.offset
+        // at 1, leaving pin 2 rows above the original viewport bottom -- the
+        // exact bug from #394. The new math sets offset = 3 so pin lands
+        // exactly at the bottom.
+        let mut line_heights = vec![1; 10]; // 5 messages * 2 lines * 1 row
+        line_heights.extend([1, 2]); // sync: timestamp Line (1 row) + body Line (wrapped 2 rows)
+        let mut line_msg_idx: Vec<Option<usize>> = Vec::new();
+        for i in 0..5 {
+            line_msg_idx.push(Some(i));
+            line_msg_idx.push(Some(i));
+        }
+        line_msg_idx.push(Some(5));
+        line_msg_idx.push(Some(5));
+        let content_height = 13;
+        let new_offset =
+            compute_sync_pin_offset(&line_heights, &line_msg_idx, content_height, 4, 0).unwrap();
+        assert_eq!(
+            new_offset, 3,
+            "offset must grow by the row count of new content (3), not by 1 per message"
+        );
+    }
+
+    #[test]
+    fn pin_offset_preserves_user_scroll_distance() {
+        // User was scrolled up by 2 rows when sync started (pin_offset=2).
+        // After sync adds 2 rows of new content, new offset should be 4 --
+        // preserving the user's 2-row distance from pin while compensating
+        // for the 2 new rows below pin.
+        let mut line_heights = vec![1, 1, 1]; // 3 pre-sync single-line messages
+        line_heights.extend([1, 1]); // sync adds 2 rows (one 2-line message)
+        let mut line_msg_idx: Vec<Option<usize>> = (0..3).map(Some).collect();
+        line_msg_idx.push(Some(3));
+        line_msg_idx.push(Some(3));
+        let content_height = 5;
+        let new_offset =
+            compute_sync_pin_offset(&line_heights, &line_msg_idx, content_height, 2, 2).unwrap();
+        assert_eq!(new_offset, 4);
+    }
+
+    #[test]
+    fn pin_offset_returns_none_when_pin_message_evicted() {
+        // Pin message isn't present in line_msg_idx (e.g., evicted from the
+        // renderer's sliding window). Caller should fall back to default
+        // behavior, which is what `None` signals.
+        let line_heights = vec![1, 1, 1];
+        let line_msg_idx = vec![Some(10), Some(11), Some(12)];
+        let pin_idx = 5; // not present
+        let result = compute_sync_pin_offset(&line_heights, &line_msg_idx, 3, pin_idx, 0);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn pin_offset_skips_separator_lines() {
+        // Some lines are date separators / unread markers (None in line_msg_idx).
+        // The walk must ignore those when locating pin's last line.
+        let line_heights = vec![1, 1, 1, 1, 1];
+        let line_msg_idx = vec![Some(0), None, Some(1), Some(1), Some(2)];
+        // Pin = msg 1, which spans lines 2..=3. Last line of pin is index 3.
+        // content_height=5, lines_below_pin = 5 - 1 - 3 = 1 (the line for msg 2).
+        let new_offset = compute_sync_pin_offset(&line_heights, &line_msg_idx, 5, 1, 0).unwrap();
+        assert_eq!(new_offset, 1);
+    }
+
+    // --- end compute_sync_pin_offset ---
 
     #[test]
     fn reaction_summary_counts() {

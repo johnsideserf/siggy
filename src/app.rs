@@ -358,6 +358,13 @@ pub struct SyncState {
     pub suppressed_notifications: HashMap<String, usize>,
     /// True if the user manually scrolled the viewport during sync.
     pub user_scrolled: bool,
+    /// Viewport pin anchor for the active conversation: (timestamp of the
+    /// message that was at viewport bottom when sync started, scroll.offset
+    /// at that moment). Captured once per active-conversation sync session;
+    /// used by the chat-pane renderer to keep that message at its original
+    /// screen position regardless of how many lines incoming messages add.
+    /// Cleared on conversation switch and on sync end.
+    pub pin: Option<(DateTime<Utc>, usize)>,
 }
 
 impl SyncState {
@@ -369,6 +376,7 @@ impl SyncState {
             started_at: Instant::now(),
             suppressed_notifications: HashMap::new(),
             user_scrolled: false,
+            pin: None,
         }
     }
 
@@ -3236,6 +3244,7 @@ impl App {
     /// marks the active conversation read, and resets sync state.
     pub fn end_sync(&mut self) {
         self.sync.active = false;
+        self.sync.pin = None;
 
         // Snap viewport to newest messages (unless user manually scrolled)
         if !self.sync.user_scrolled {
@@ -4366,6 +4375,11 @@ impl App {
             self.sync.last_message_time = Some(Instant::now());
             self.status_message =
                 format!("Syncing... ({} messages received)", self.sync.message_count);
+            // Pin the viewport against the message at the bottom of the
+            // active conversation BEFORE we append the new sync message,
+            // so subsequent renders can hold that message at its original
+            // screen position. See #394.
+            self.maybe_capture_sync_pin(&conv_id);
         }
 
         // Store source_name in contact lookup for future resolution (typing indicators, etc.)
@@ -4727,14 +4741,8 @@ impl App {
             }
         }
 
-        // Viewport stabilization: keep scroll offset pinned during sync so newly
-        // arriving messages don't jump the viewport.
-        if self.sync.active
-            && !self.sync.user_scrolled
-            && self.active_conversation.as_ref() == Some(&conv_id)
-        {
-            self.scroll.offset = self.scroll.offset.saturating_add(1);
-        }
+        // Viewport stabilization happens render-side via SyncState::pin --
+        // see App::maybe_capture_sync_pin and the chat_pane renderer.
 
         // Active conversation: send read receipt and advance read marker
         let conv_accepted = self
@@ -7047,6 +7055,7 @@ impl App {
         self.pending_attachment = None;
         self.reset_typing_with_stop();
         self.input.reset_for_conv_switch();
+        self.sync.pin = None;
         self.clear_kitty_placements();
 
         // Try exact match first
@@ -7098,6 +7107,34 @@ impl App {
         }
     }
 
+    /// Capture the viewport pin anchor on the first sync message arrival
+    /// for the active conversation. The pin records (a) the timestamp of
+    /// the message currently at the bottom of the conversation -- the one
+    /// the user was looking at when sync began -- and (b) the user's
+    /// `scroll.offset` at that moment. The renderer uses both to keep
+    /// the pinned message at its original screen position regardless of
+    /// how many lines the incoming sync messages add.
+    ///
+    /// Skipped when:
+    /// - sync is not active (no need to pin)
+    /// - the user has manually scrolled (their explicit choice wins)
+    /// - the pin is already set (only first arrival captures)
+    /// - the message is for a non-active conversation (pin is per-active)
+    /// - the conversation has no prior messages (nothing to anchor to)
+    pub(crate) fn maybe_capture_sync_pin(&mut self, conv_id: &str) {
+        if !self.sync.active || self.sync.user_scrolled || self.sync.pin.is_some() {
+            return;
+        }
+        if self.active_conversation.as_deref() != Some(conv_id) {
+            return;
+        }
+        if let Some(conv) = self.store.conversations.get(conv_id)
+            && let Some(last) = conv.messages.last()
+        {
+            self.sync.pin = Some((last.timestamp, self.scroll.offset));
+        }
+    }
+
     /// Whether the startup spinner should advance this event-loop tick.
     ///
     /// Pauses during the initial sync burst (`sync.active`). The event loop
@@ -7120,6 +7157,7 @@ impl App {
         self.pending_attachment = None;
         self.reset_typing_with_stop();
         self.input.reset_for_conv_switch();
+        self.sync.pin = None;
         self.clear_kitty_placements();
         let idx = self
             .active_conversation
@@ -7154,6 +7192,7 @@ impl App {
         self.pending_attachment = None;
         self.reset_typing_with_stop();
         self.input.reset_for_conv_switch();
+        self.sync.pin = None;
         self.clear_kitty_placements();
         let len = self.store.conversation_order.len();
         let idx = self
@@ -11410,6 +11449,21 @@ mod tests {
         }
     }
 
+    /// Like `make_msg` but with an explicit millisecond timestamp offset, so
+    /// tests that send multiple messages in quick succession get distinct
+    /// timestamps (avoiding the dedup path).
+    fn make_msg_with_ts(
+        source: &str,
+        body: Option<&str>,
+        group_id: Option<&str>,
+        is_outgoing: bool,
+        ts_ms: i64,
+    ) -> SignalMessage {
+        let mut m = make_msg(source, body, group_id, is_outgoing);
+        m.timestamp = chrono::DateTime::from_timestamp_millis(ts_ms).unwrap();
+        m
+    }
+
     // --- Typing indicator tests ---
 
     #[rstest]
@@ -12085,31 +12139,124 @@ mod tests {
     }
 
     #[rstest]
-    fn sync_stabilizes_scroll(mut app: App) {
+    fn sync_captures_pin_on_first_message(mut app: App) {
+        // Conversation has a prior message (so there's something to anchor to).
+        // First sync arrival captures the pin to that message's timestamp + the
+        // current scroll.offset.
         assert!(app.sync.active);
         app.store
             .get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
-        app.scroll.offset = 0;
-        let msg = make_msg("+1", Some("hello from sync"), None, false);
+        let prior = make_msg_with_ts("+1", Some("prior message"), None, false, 1000);
+        app.handle_signal_event(SignalEvent::MessageReceived(prior));
+        let pinned_ts = app.store.conversations["+1"]
+            .messages
+            .last()
+            .unwrap()
+            .timestamp;
+        // Set a non-zero offset to verify it's captured rather than coerced to 0.
+        app.scroll.offset = 4;
+
+        let msg = make_msg_with_ts("+1", Some("first sync msg"), None, false, 2000);
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(
-            app.scroll.offset > 0,
-            "scroll.offset should increase during sync"
+
+        let (pin_ts, pin_offset) = app
+            .sync
+            .pin
+            .expect("pin should be captured on first sync msg");
+        assert_eq!(pin_ts, pinned_ts);
+        assert_eq!(pin_offset, 4);
+    }
+
+    #[rstest]
+    fn sync_pin_only_captured_once(mut app: App) {
+        // Subsequent sync messages must NOT overwrite the pin -- it anchors
+        // to the user's view at sync start, not the most recent arrival.
+        assert!(app.sync.active);
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        let prior = make_msg_with_ts("+1", Some("prior"), None, false, 1000);
+        app.handle_signal_event(SignalEvent::MessageReceived(prior));
+        let pinned_ts = app.store.conversations["+1"]
+            .messages
+            .last()
+            .unwrap()
+            .timestamp;
+
+        let msg1 = make_msg_with_ts("+1", Some("first"), None, false, 2000);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg1));
+        let msg2 = make_msg_with_ts("+1", Some("second"), None, false, 3000);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg2));
+
+        let (pin_ts, _) = app.sync.pin.expect("pin should still be set");
+        assert_eq!(
+            pin_ts, pinned_ts,
+            "pin must still anchor to the original message"
         );
     }
 
     #[rstest]
-    fn sync_does_not_stabilize_after_user_scroll(mut app: App) {
+    fn sync_does_not_capture_pin_after_user_scroll(mut app: App) {
         assert!(app.sync.active);
         app.store
             .get_or_create_conversation("+1", "Alice", false, &app.db);
         app.active_conversation = Some("+1".to_string());
-        app.scroll.offset = 0;
+        let prior = make_msg_with_ts("+1", Some("prior"), None, false, 1000);
+        app.handle_signal_event(SignalEvent::MessageReceived(prior));
         app.sync.user_scrolled = true;
-        let msg = make_msg("+1", Some("hello"), None, false);
+
+        let msg = make_msg_with_ts("+1", Some("sync"), None, false, 2000);
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
+
+        assert!(app.sync.pin.is_none());
+        // Old behavior: scroll.offset += 1 was suppressed by user_scrolled.
+        // New behavior preserves that property — scroll.offset stays put.
         assert_eq!(app.scroll.offset, 0);
+    }
+
+    #[rstest]
+    fn sync_pin_skips_non_active_conversation(mut app: App) {
+        // Pin is per-active-conversation. Sync messages for a non-active conv
+        // must not capture or overwrite the active conv's pin.
+        assert!(app.sync.active);
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store
+            .get_or_create_conversation("+2", "Bob", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        let prior_other = make_msg_with_ts("+2", Some("prior"), None, false, 1000);
+        app.handle_signal_event(SignalEvent::MessageReceived(prior_other));
+
+        let msg = make_msg_with_ts("+2", Some("from non-active"), None, false, 2000);
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+
+        assert!(
+            app.sync.pin.is_none(),
+            "sync messages for the non-active conversation must not capture pin"
+        );
+    }
+
+    #[rstest]
+    fn sync_pin_cleared_on_end_sync(mut app: App) {
+        app.sync.pin = Some((Utc::now(), 3));
+        app.end_sync();
+        assert!(app.sync.pin.is_none());
+    }
+
+    #[rstest]
+    fn sync_pin_cleared_on_conv_switch(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store
+            .get_or_create_conversation("+2", "Bob", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.sync.pin = Some((Utc::now(), 2));
+        app.next_conversation();
+        assert!(
+            app.sync.pin.is_none(),
+            "switching conversations must clear the pin so it doesn't apply to the new conv"
+        );
     }
 
     #[rstest]
