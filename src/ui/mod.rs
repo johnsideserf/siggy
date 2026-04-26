@@ -13,12 +13,16 @@ mod status_bar;
 use composer::draw_input;
 use overlays::about::draw_about;
 use overlays::action_menu::draw_action_menu;
+use overlays::contacts::draw_contacts;
 use overlays::customize::draw_customize;
 use overlays::delete_confirm::draw_delete_confirm;
+use overlays::emoji_picker::draw_emoji_picker;
+use overlays::forward::draw_forward;
 use overlays::keybindings::draw_keybindings;
 use overlays::message_request::draw_message_request;
 use overlays::pin_duration::draw_pin_duration_picker;
 use overlays::poll_vote::draw_poll_vote_overlay;
+use overlays::profile::draw_profile;
 use overlays::reaction_picker::draw_reaction_picker;
 use overlays::settings::draw_settings;
 use overlays::settings_profile::draw_settings_profile_manager;
@@ -39,11 +43,9 @@ use ratatui::{
 };
 
 use crate::app::{App, AutocompleteMode, GroupMenuState, InputMode, OverlayKind, VisibleImage};
-use crate::domain::CATEGORIES;
 use crate::image_render::{self, ImageProtocol};
 use crate::input::{COMMANDS, format_compact_duration};
 use crate::keybindings::KeyAction;
-use crate::list_overlay;
 use crate::signal::types::{MessageStatus, PollData, PollVote, Reaction, StyleType, TrustLevel};
 use crate::theme::Theme;
 
@@ -55,8 +57,8 @@ const MSG_WINDOW_MULTIPLIER: usize = 10;
 // Popup dimensions
 pub(super) const SETTINGS_POPUP_WIDTH: u16 = 50;
 pub(super) const SETTINGS_POPUP_HEIGHT: u16 = 25;
-const CONTACTS_POPUP_WIDTH: u16 = 50;
-const CONTACTS_MAX_VISIBLE: usize = 20;
+pub(super) const CONTACTS_POPUP_WIDTH: u16 = 50;
+pub(super) const CONTACTS_MAX_VISIBLE: usize = 20;
 const FILE_BROWSER_POPUP_WIDTH: u16 = 60;
 const FILE_BROWSER_MAX_VISIBLE: usize = 20;
 const SEARCH_POPUP_WIDTH: u16 = 60;
@@ -64,9 +66,9 @@ const SEARCH_MAX_VISIBLE: usize = 15;
 const GROUP_MENU_POPUP_WIDTH: u16 = 40;
 const GROUP_MEMBER_MAX_VISIBLE: usize = 15;
 pub(super) const ABOUT_POPUP_WIDTH: u16 = 50;
-const PROFILE_POPUP_WIDTH: u16 = 50;
-const EMOJI_POPUP_WIDTH: u16 = 52;
-const EMOJI_POPUP_HEIGHT: u16 = 20;
+pub(super) const PROFILE_POPUP_WIDTH: u16 = 50;
+pub(super) const EMOJI_POPUP_WIDTH: u16 = 52;
+pub(super) const EMOJI_POPUP_HEIGHT: u16 = 20;
 
 /// Convert emoji in a string to text emoticons or :shortcodes:.
 /// Common emoji get classic emoticons (e.g. :) <3), others get :shortcode: format.
@@ -1808,128 +1810,6 @@ fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_emoji_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-
-    let title = if app.emoji_picker.filter.is_empty() {
-        " Emoji ".to_string()
-    } else {
-        format!(" Emoji [{}] ", app.emoji_picker.filter)
-    };
-
-    let (popup_area, block) = centered_popup(
-        frame,
-        area,
-        EMOJI_POPUP_WIDTH,
-        EMOJI_POPUP_HEIGHT,
-        &title,
-        theme,
-    );
-
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
-    if inner.height < 5 || inner.width < 10 {
-        return;
-    }
-
-    let cols = app.emoji_picker.cols;
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Category tab row
-    let mut cat_spans: Vec<Span<'static>> = Vec::new();
-    for (i, (icon, _label)) in CATEGORIES.iter().enumerate() {
-        let style = if i == app.emoji_picker.category_index {
-            Style::default()
-                .bg(theme.bg_selected)
-                .fg(theme.fg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.fg_muted)
-        };
-        cat_spans.push(Span::styled(format!(" {icon} "), style));
-    }
-    lines.push(Line::from(cat_spans));
-
-    // Separator
-    let sep = "\u{2500}".repeat(inner.width as usize);
-    lines.push(Line::from(Span::styled(
-        sep,
-        Style::default().fg(theme.fg_muted),
-    )));
-
-    // Grid dimensions
-    let footer_lines = 3; // blank + preview + help
-    let grid_height = (inner.height as usize).saturating_sub(lines.len() + footer_lines);
-
-    // Scroll to keep selection visible
-    let selected_row = app.emoji_picker.selected_index / cols;
-    let scroll_offset = if selected_row >= grid_height {
-        selected_row - grid_height + 1
-    } else {
-        0
-    };
-
-    // Render grid rows
-    let total_rows = app.emoji_picker.filtered.len().div_ceil(cols);
-    for row_idx in scroll_offset..(scroll_offset + grid_height).min(total_rows) {
-        let mut row_spans: Vec<Span<'static>> = vec![Span::raw(" ".to_string())];
-        for col_idx in 0..cols {
-            let emoji_idx = row_idx * cols + col_idx;
-            if emoji_idx >= app.emoji_picker.filtered.len() {
-                break;
-            }
-            let entry = &app.emoji_picker.filtered[emoji_idx];
-            let style = if emoji_idx == app.emoji_picker.selected_index {
-                list_overlay::selection_style(theme.bg_selected, theme.fg)
-            } else {
-                Style::default()
-            };
-            row_spans.push(Span::styled(format!("{} ", entry.emoji), style));
-        }
-        lines.push(Line::from(row_spans));
-    }
-
-    // Pad remaining grid rows
-    while lines.len() < (inner.height as usize).saturating_sub(footer_lines) {
-        lines.push(Line::from(""));
-    }
-
-    // Preview line: name + shortcode of selected emoji
-    if let Some(entry) = app
-        .emoji_picker
-        .filtered
-        .get(app.emoji_picker.selected_index)
-    {
-        let preview = if let Some(sc) = entry.shortcode {
-            format!("{} :{sc}: - {}", entry.emoji, entry.name)
-        } else {
-            format!("{} - {}", entry.emoji, entry.name)
-        };
-        lines.push(Line::from(Span::styled(
-            preview,
-            Style::default().fg(theme.accent),
-        )));
-    } else {
-        lines.push(Line::from(""));
-    }
-
-    // Footer
-    let footer = if app.emoji_picker.filtered.is_empty() {
-        " no matches | Tab: category | Esc: close"
-    } else {
-        " Tab: category | arrows/hjkl: nav | type to filter | Esc"
-    };
-    lines.push(Line::from(Span::styled(
-        footer.to_string(),
-        Style::default().fg(theme.fg_muted),
-    )));
-
-    let popup = Paragraph::new(lines);
-    frame.render_widget(popup, inner);
-}
-
 /// Render the welcome/empty-state screen when no conversation is active.
 fn draw_welcome(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
@@ -2367,99 +2247,6 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         "  Press any key to close",
         Style::default().fg(theme.fg_muted),
     )));
-
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
-}
-
-fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let max_visible = CONTACTS_MAX_VISIBLE.min(app.contacts_overlay.filtered.len());
-    let pref_height = max_visible as u16 + 5; // +3 border/title +2 footer/filter
-
-    let title = if app.contacts_overlay.filter.is_empty() {
-        " Contacts ".to_string()
-    } else {
-        format!(" Contacts [{}] ", app.contacts_overlay.filter)
-    };
-
-    let (popup_area, block) = centered_popup(
-        frame,
-        area,
-        CONTACTS_POPUP_WIDTH,
-        pref_height,
-        &title,
-        theme,
-    );
-
-    let inner_height = popup_area.height.saturating_sub(2) as usize; // minus borders
-    let (visible_rows, scroll_offset) =
-        list_overlay::scroll_layout(inner_height, 2, app.contacts_overlay.index);
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    if app.contacts_overlay.filtered.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  No contacts found",
-            Style::default().fg(theme.fg_muted),
-        )));
-    } else {
-        let end = (scroll_offset + visible_rows).min(app.contacts_overlay.filtered.len());
-        let inner_w = popup_area.width.saturating_sub(2) as usize;
-
-        for (i, (number, name)) in app.contacts_overlay.filtered[scroll_offset..end]
-            .iter()
-            .enumerate()
-        {
-            let actual_index = scroll_offset + i;
-            let is_selected = actual_index == app.contacts_overlay.index;
-            let has_conversation = app.store.conversation_order.contains(number);
-
-            // Checkmark for contacts that already have a conversation
-            let marker = if has_conversation { " \u{2713}" } else { "  " };
-            let marker_style = if has_conversation {
-                Style::default().fg(theme.success)
-            } else {
-                Style::default()
-            };
-
-            // Truncate name to fit with number and marker
-            let number_display = format!("  {}", number);
-            let name_max = inner_w.saturating_sub(number_display.len() + marker.len() + 2);
-            let display_name = truncate(name, name_max);
-
-            let name_style = if is_selected {
-                list_overlay::selection_style(theme.bg_selected, theme.fg)
-            } else if has_conversation {
-                Style::default().fg(theme.fg_secondary)
-            } else {
-                Style::default().fg(theme.fg)
-            };
-            let number_style = if is_selected {
-                Style::default().bg(theme.bg_selected).fg(theme.accent)
-            } else {
-                Style::default().fg(theme.fg_muted)
-            };
-            let marker_bg = if is_selected {
-                marker_style.bg(theme.bg_selected)
-            } else {
-                marker_style
-            };
-
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {}", display_name), name_style),
-                Span::styled(number_display, number_style),
-                Span::styled(marker.to_string(), marker_bg),
-            ]));
-        }
-    }
-
-    list_overlay::append_footer(
-        &mut lines,
-        visible_rows,
-        "  j/k navigate  |  Enter select  |  Esc close",
-        theme.fg_muted,
-    );
 
     let popup = Paragraph::new(lines).block(block);
     frame.render_widget(popup, popup_area);
@@ -3136,167 +2923,6 @@ pub(crate) fn build_poll_display(
     )));
 
     lines
-}
-
-fn draw_profile(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let labels = ["Given name", "Family name", "About", "About emoji"];
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    for (i, label) in labels.iter().enumerate() {
-        let is_selected = i == app.profile.index;
-        let is_editing = is_selected && app.profile.editing;
-
-        let label_style = if is_selected {
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(theme.fg_secondary)
-        };
-
-        let value = if is_editing {
-            format!("{}\u{2588}", app.profile.edit_buffer) // block cursor
-        } else {
-            let v = &app.profile.fields[i];
-            if v.is_empty() {
-                "(empty)".to_string()
-            } else {
-                v.clone()
-            }
-        };
-
-        let value_style = if is_editing || is_selected {
-            Style::default().bg(theme.bg_selected).fg(theme.fg)
-        } else if app.profile.fields[i].is_empty() {
-            Style::default().fg(theme.fg_muted)
-        } else {
-            Style::default().fg(theme.fg)
-        };
-
-        let row_style = if is_selected {
-            Style::default().bg(theme.bg_selected)
-        } else {
-            Style::default()
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {:<14} ", label), label_style),
-            Span::styled(value, value_style),
-            // Pad remaining width with bg color for selected row
-            Span::styled("", row_style),
-        ]));
-    }
-
-    // Blank line before Save
-    lines.push(Line::from(""));
-
-    // Save button
-    let save_selected = app.profile.index == 4;
-    let save_style = if save_selected {
-        Style::default()
-            .bg(theme.bg_selected)
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.fg_secondary)
-    };
-    lines.push(Line::from(Span::styled("  [ Save ]", save_style)));
-
-    // Footer
-    lines.push(Line::from(""));
-    let footer = if app.profile.editing {
-        "  Type to edit | Enter confirm | Esc cancel"
-    } else {
-        "  j/k navigate | Enter edit | Esc close"
-    };
-    lines.push(Line::from(Span::styled(
-        footer,
-        Style::default().fg(theme.fg_muted),
-    )));
-
-    let pref_height = lines.len() as u16 + 2; // +2 for borders
-    let (popup_area, block) = centered_popup(
-        frame,
-        area,
-        PROFILE_POPUP_WIDTH,
-        pref_height,
-        " Edit Profile ",
-        theme,
-    );
-
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
-}
-
-fn draw_forward(frame: &mut Frame, app: &App, area: Rect) {
-    let theme = &app.theme;
-    let max_rows = 10usize;
-    let list_height = app.forward.filtered.len().min(max_rows);
-    let pref_height = (list_height + 4) as u16; // filter line + blank + list + footer
-    let (popup_area, block) = centered_popup(frame, area, 45, pref_height, " Forward to ", theme);
-    let inner = popup_area.inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Filter input
-    let filter_display = if app.forward.filter.is_empty() {
-        "type to filter...".to_string()
-    } else {
-        app.forward.filter.clone()
-    };
-    let filter_style = if app.forward.filter.is_empty() {
-        Style::default().fg(theme.fg_muted)
-    } else {
-        Style::default().fg(theme.fg)
-    };
-    lines.push(Line::from(Span::styled(
-        format!("  > {filter_display}"),
-        filter_style,
-    )));
-    lines.push(Line::from(""));
-
-    // Conversation list
-    let visible_rows = inner.height.saturating_sub(3) as usize;
-    let scroll_offset = if app.forward.index >= visible_rows {
-        app.forward.index - visible_rows + 1
-    } else {
-        0
-    };
-    let end = (scroll_offset + visible_rows).min(app.forward.filtered.len());
-
-    if app.forward.filtered.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  No conversations found",
-            Style::default().fg(theme.fg_muted),
-        )));
-    } else {
-        for (i, (_id, name)) in app.forward.filtered[scroll_offset..end].iter().enumerate() {
-            let actual_idx = scroll_offset + i;
-            let is_selected = actual_idx == app.forward.index;
-            let prefix = if is_selected { "> " } else { "  " };
-            let style = if is_selected {
-                list_overlay::selection_style(theme.bg_selected, theme.fg)
-            } else {
-                Style::default().fg(theme.fg)
-            };
-            lines.push(Line::from(Span::styled(format!("{prefix}{name}"), style)));
-        }
-    }
-
-    // Footer
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Enter: forward | Esc: cancel",
-        Style::default().fg(theme.fg_muted),
-    )));
-
-    let popup = Paragraph::new(lines).block(block);
-    frame.render_widget(popup, popup_area);
 }
 
 #[cfg(test)]
