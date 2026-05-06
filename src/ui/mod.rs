@@ -21,6 +21,7 @@ use links::collect_link_regions;
 use overlays::about::draw_about;
 use overlays::action_menu::{draw_action_menu, draw_delete_confirm};
 use overlays::contacts::draw_contacts;
+use overlays::delete_conversation_confirm::draw_delete_conversation_confirm;
 use overlays::emoji_picker::draw_emoji_picker;
 use overlays::file_browser::draw_file_browser;
 use overlays::forward::draw_forward;
@@ -285,6 +286,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Delete confirmation overlay
     if app.is_overlay(OverlayKind::DeleteConfirm) {
         draw_delete_confirm(frame, app, size);
+    }
+
+    // Delete conversation confirmation overlay (/delete and message-request 'd')
+    if app.is_overlay(OverlayKind::DeleteConversationConfirm) {
+        draw_delete_conversation_confirm(frame, app, size);
     }
 
     // Theme picker overlay

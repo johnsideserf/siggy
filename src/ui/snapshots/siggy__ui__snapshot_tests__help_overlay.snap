@@ -1,6 +1,5 @@
 ---
-source: src/ui.rs
-assertion_line: 5062
+source: src/ui/mod.rs
 expression: output
 ---
  Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
@@ -8,28 +7,28 @@ expression: output
   • ##Family (2)     │││  Commands                                          │                      │
   • Carol (1)        │││  /join <name>        Switch to a conversation      │                      │
     ##Rust Devs      │││  /part               Leave current conversation    │                      │
-    Bob              │││  /attach             Attach a file                 │ run                  │
-▸   Alice            │││  /search <query>     Search messages               │d before 7            │
-    Dave             │││  /sidebar            Toggle sidebar visibility     │habit                 │
-                     │││  /bell [type]        Toggle notifications          │                      │
-                     │││  /mute               Mute/unmute conversation      │matic                 │
-                     │││  /contacts           Browse contacts               │                      │
-                     │││  /settings           Open settings                 │too                   │
+    Bob              │││  /delete             Delete current conversation   │ run                  │
+▸   Alice            │││  /attach             Attach a file                 │d before 7            │
+    Dave             │││  /search <query>     Search messages               │habit                 │
+                     │││  /sidebar            Toggle sidebar visibility     │                      │
+                     │││  /bell [type]        Toggle notifications          │matic                 │
+                     │││  /mute               Mute/unmute conversation      │                      │
+                     │││  /contacts           Browse contacts               │too                   │
+                     │││  /settings           Open settings                 │                      │
                      │││  /keybindings        Configure keybindings         │                      │
-                     │││  /quit               Exit siggy                    │                      │
-                     │││                                                    │ocalmarket.example.com│
-                     │││  Shortcuts                                         │                      │
-                     │││  Tab / Shift+Tab     Next / prev conversation      │ Saturday…            │
+                     │││  /quit               Exit siggy                    │ocalmarket.example.com│
+                     │││                                                    │                      │
+                     │││  Shortcuts                                         │ Saturday…            │
+                     │││  Tab / Shift+Tab     Next / prev conversation      │                      │
                      │││  Up / Down           Recall input history          │                      │
-                     │││  @                   Mention autocomplete          │                      │
-                     │││  PgUp / PgDn         Scroll messages               │ded.                  │
+                     │││  @                   Mention autocomplete          │ded.                  │
+                     │││  PgUp / PgDn         Scroll messages               │                      │
                      │││  Ctrl+Left / Ctrl+RightResize sidebar              │                      │
-                     │││  Ctrl+c              Quit                          │                      │
-                     │││                                                    │ to browse early      │
+                     │││  Ctrl+c              Quit                          │ to browse early      │
+                     │││                                                    │                      │
                      │││  Keybindings [Default]                             │                      │
-                     │││  Esc                 Normal mode                   │                      │
-                     │╰│  i / a / I / A / o   Insert mode                   │──────────────────────╯
-                     │╭│  Shift+Enter         Insert newline in input       │──────────────────────╮
-                     │││  Ctrl+e / Ctrl+y     Scroll up / down              │                      │
+                     │╰│  Esc                 Normal mode                   │──────────────────────╯
+                     │╭│  i / a / I / A / o   Insert mode                   │──────────────────────╮
+                     │││  Shift+Enter         Insert newline in input       │                      │
                      │╰╰────────────────────────────────────────────────────╯──────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats

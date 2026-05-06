@@ -25,6 +25,7 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let commands: &[(&str, &str)] = &[
         ("/join <name>", "Switch to a conversation"),
         ("/part", "Leave current conversation"),
+        ("/delete", "Delete current conversation"),
         ("/attach", "Attach a file"),
         ("/search <query>", "Search messages"),
         ("/sidebar", "Toggle sidebar visibility"),

@@ -11,6 +11,7 @@
 pub(super) mod about;
 pub(super) mod action_menu;
 pub(super) mod contacts;
+pub(super) mod delete_conversation_confirm;
 pub(super) mod emoji_picker;
 pub(super) mod file_browser;
 pub(super) mod forward;

@@ -27,6 +27,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Leave current conversation",
     },
     CommandInfo {
+        name: "/delete",
+        alias: "",
+        args: "",
+        description: "Delete current conversation",
+    },
+    CommandInfo {
         name: "/sidebar",
         alias: "/sb",
         args: "",
@@ -169,6 +175,8 @@ pub enum InputAction {
     Join(String),
     /// Leave current conversation (go back to no selection)
     Part,
+    /// Delete the current conversation (with confirmation)
+    DeleteConversation,
     /// Quit the application
     Quit,
     /// Toggle sidebar visibility
@@ -249,6 +257,7 @@ pub fn parse_input(input: &str) -> InputAction {
             }
         }
         "/part" | "/p" => InputAction::Part,
+        "/delete" => InputAction::DeleteConversation,
         "/quit" | "/q" => InputAction::Quit,
         "/sidebar" | "/sb" => InputAction::ToggleSidebar,
         "/bell" | "/notify" => {
@@ -480,6 +489,7 @@ mod tests {
     #[rstest]
     #[case("/part", InputAction::Part)]
     #[case("/p", InputAction::Part)]
+    #[case("/delete", InputAction::DeleteConversation)]
     #[case("/quit", InputAction::Quit)]
     #[case("/q", InputAction::Quit)]
     #[case("/sidebar", InputAction::ToggleSidebar)]

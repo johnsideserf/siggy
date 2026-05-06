@@ -257,6 +257,7 @@ pub enum OverlayKind {
     PinDuration,
     ActionMenu,
     DeleteConfirm,
+    DeleteConversationConfirm,
     FilePicker,
     EmojiPicker,
     ReactionPicker,
@@ -2050,23 +2051,8 @@ impl App {
                 })
             }
             KeyCode::Char('d') => {
-                let is_group = self
-                    .store
-                    .conversations
-                    .get(&conv_id)
-                    .map(|c| c.is_group)
-                    .unwrap_or(false);
-                self.store.conversations.remove(&conv_id);
-                self.store.conversation_order.retain(|id| id != &conv_id);
-                self.scroll.positions.remove(&conv_id);
-                self.db_warn_visible(self.db.delete_conversation(&conv_id), "delete_conversation");
                 self.close_overlay();
-                self.active_conversation = None;
-                Some(SendRequest::MessageRequestResponse {
-                    recipient: conv_id,
-                    is_group,
-                    response_type: "delete".to_string(),
-                })
+                self.delete_active_conversation()
             }
             KeyCode::Esc => {
                 self.close_overlay();
@@ -3526,6 +3512,10 @@ impl App {
             }
             OverlayKind::DeleteConfirm => {
                 let send = self.handle_delete_confirm_key(code);
+                (true, send)
+            }
+            OverlayKind::DeleteConversationConfirm => {
+                let send = self.handle_delete_conversation_confirm_key(code);
                 (true, send)
             }
             OverlayKind::FilePicker => {
@@ -5060,6 +5050,81 @@ impl App {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// Handle a key press in the delete-conversation confirmation overlay.
+    pub fn handle_delete_conversation_confirm_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+        match code {
+            KeyCode::Char('y') => {
+                self.close_overlay();
+                self.delete_active_conversation()
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.close_overlay();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Remove the active conversation from local state, the database, and any
+    /// cached side tables, then clear the composer.
+    ///
+    /// For unaccepted message requests this also returns a
+    /// `MessageRequestResponse { response_type: "delete" }` so signal-cli can
+    /// notify the server. For accepted conversations the deletion is purely
+    /// local.
+    pub(crate) fn delete_active_conversation(&mut self) -> Option<SendRequest> {
+        let conv_id = match self.active_conversation.clone() {
+            Some(id) => id,
+            None => {
+                self.status_message = "No active conversation to delete".to_string();
+                return None;
+            }
+        };
+
+        let (name, is_group, accepted) = match self.store.conversations.get(&conv_id) {
+            Some(conv) => (conv.name.clone(), conv.is_group, conv.accepted),
+            None => {
+                self.status_message = "Active conversation no longer exists".to_string();
+                self.active_conversation = None;
+                return None;
+            }
+        };
+
+        self.store.conversations.remove(&conv_id);
+        self.store.conversation_order.retain(|id| id != &conv_id);
+        self.store.last_read_index.remove(&conv_id);
+        self.store.has_more_messages.remove(&conv_id);
+        self.store.groups.remove(&conv_id);
+        self.scroll.positions.remove(&conv_id);
+        self.muted_conversations.remove(&conv_id);
+        self.blocked_conversations.remove(&conv_id);
+        self.db_warn_visible(self.db.delete_conversation(&conv_id), "delete_conversation");
+
+        self.active_conversation = None;
+        self.scroll.offset = 0;
+        self.scroll.focused_index = None;
+        self.pending_attachment = None;
+        self.reply_target = None;
+        self.editing_message = None;
+        self.reset_typing_with_stop();
+        self.clear_kitty_placements();
+        if self.is_overlay(OverlayKind::SidebarFilter) {
+            self.refresh_sidebar_filter();
+        }
+
+        self.status_message = format!("Deleted conversation \"{name}\"");
+
+        if !accepted {
+            Some(SendRequest::MessageRequestResponse {
+                recipient: conv_id,
+                is_group,
+                response_type: "delete".to_string(),
+            })
+        } else {
+            None
         }
     }
 
@@ -10301,11 +10366,25 @@ mod tests {
     fn delete_key_removes_conversation(mut app: App) {
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
         app.active_conversation = Some("+1".to_string());
+        // Pre-populate auxiliary state that the dedup with delete_active_conversation
+        // is supposed to clean up (regression guard for the partial cleanup the
+        // 'd' arm did before PR #312).
+        app.scroll.positions.insert("+1".to_string(), (3, Some(0)));
+        app.store.last_read_index.insert("+1".to_string(), 1);
+        app.store.has_more_messages.insert("+1".to_string());
+        app.muted_conversations
+            .insert("+1".to_string(), MuteState::Permanent);
+        app.blocked_conversations.insert("+1".to_string());
         app.open_overlay(OverlayKind::MessageRequest);
 
         let req = app.handle_message_request_key(KeyCode::Char('d'));
         assert!(!app.store.conversations.contains_key("+1"));
         assert!(!app.store.conversation_order.contains(&"+1".to_string()));
+        assert!(!app.scroll.positions.contains_key("+1"));
+        assert!(!app.store.last_read_index.contains_key("+1"));
+        assert!(!app.store.has_more_messages.contains("+1"));
+        assert!(!app.muted_conversations.contains_key("+1"));
+        assert!(!app.blocked_conversations.contains("+1"));
         assert!(app.active_conversation.is_none());
         assert!(!app.is_overlay(OverlayKind::MessageRequest));
         assert!(matches!(
@@ -10325,6 +10404,112 @@ mod tests {
         assert!(req.is_none());
         assert!(!app.is_overlay(OverlayKind::MessageRequest));
         assert!(app.active_conversation.is_none());
+    }
+
+    // --- /delete slash command + confirmation overlay (PR #312) ---
+
+    #[rstest]
+    fn slash_delete_opens_confirmation_overlay(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.input.buffer = "/delete".to_string();
+        app.input.cursor = 7;
+
+        let req = app.handle_input();
+
+        assert!(req.is_none());
+        assert!(app.is_overlay(OverlayKind::DeleteConversationConfirm));
+        // Confirmation overlay is just a prompt — must not delete yet.
+        assert!(app.store.conversations.contains_key("+1"));
+        assert_eq!(app.active_conversation.as_deref(), Some("+1"));
+    }
+
+    #[rstest]
+    fn slash_delete_without_active_conversation_sets_error(mut app: App) {
+        app.input.buffer = "/delete".to_string();
+        app.input.cursor = 7;
+
+        let req = app.handle_input();
+
+        assert!(req.is_none());
+        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
+        assert!(app.status_message.contains("No active conversation"));
+    }
+
+    #[rstest]
+    fn delete_confirm_yes_removes_accepted_conversation(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.scroll.positions.insert("+1".to_string(), (3, Some(0)));
+        app.store.last_read_index.insert("+1".to_string(), 1);
+        app.open_overlay(OverlayKind::DeleteConversationConfirm);
+
+        let (handled, req) = app.handle_overlay_key(KeyCode::Char('y'));
+
+        assert!(handled);
+        // Accepted conversation: purely local, no remote response.
+        assert!(req.is_none());
+        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
+        assert!(!app.store.conversations.contains_key("+1"));
+        assert!(!app.scroll.positions.contains_key("+1"));
+        assert!(!app.store.last_read_index.contains_key("+1"));
+        assert!(app.active_conversation.is_none());
+    }
+
+    #[rstest]
+    fn delete_confirm_yes_on_unaccepted_returns_remote_delete(mut app: App) {
+        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+15550007777")));
+        assert!(!app.store.conversations["+15550007777"].accepted);
+        app.active_conversation = Some("+15550007777".to_string());
+        app.open_overlay(OverlayKind::DeleteConversationConfirm);
+
+        let (_, req) = app.handle_overlay_key(KeyCode::Char('y'));
+
+        let Some(SendRequest::MessageRequestResponse {
+            recipient,
+            is_group,
+            response_type,
+        }) = req
+        else {
+            panic!("expected MessageRequestResponse(delete) for unaccepted conversation");
+        };
+        assert_eq!(recipient, "+15550007777");
+        assert!(!is_group);
+        assert_eq!(response_type, "delete");
+        assert!(!app.store.conversations.contains_key("+15550007777"));
+        assert!(app.active_conversation.is_none());
+    }
+
+    #[rstest]
+    fn delete_confirm_no_keeps_conversation(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.open_overlay(OverlayKind::DeleteConversationConfirm);
+
+        let (handled, req) = app.handle_overlay_key(KeyCode::Char('n'));
+
+        assert!(handled);
+        assert!(req.is_none());
+        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
+        assert!(app.store.conversations.contains_key("+1"));
+        assert_eq!(app.active_conversation.as_deref(), Some("+1"));
+    }
+
+    #[rstest]
+    fn delete_confirm_esc_keeps_conversation(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.open_overlay(OverlayKind::DeleteConversationConfirm);
+
+        let (_, req) = app.handle_overlay_key(KeyCode::Esc);
+
+        assert!(req.is_none());
+        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
+        assert!(app.store.conversations.contains_key("+1"));
     }
 
     #[rstest]
