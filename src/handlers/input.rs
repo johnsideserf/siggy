@@ -46,6 +46,14 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             app.update_status();
             None
         }
+        InputAction::DeleteConversation => {
+            if app.active_conversation.is_some() {
+                app.open_overlay(OverlayKind::DeleteConversationConfirm);
+            } else {
+                app.status_message = "No active conversation to delete".to_string();
+            }
+            None
+        }
         InputAction::Quit => {
             if app.input.buffer.is_empty() || app.quit_confirm {
                 app.should_quit = true;
