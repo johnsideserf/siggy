@@ -64,7 +64,11 @@ jobs:
           workspaces: fuzz
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        # Intentionally not --locked: cargo-fuzz's bundled lockfile pins
+        # rustix v0.36.5, which uses unstable `rustc_attrs` no longer
+        # accepted by current nightly. Resolving fresh transitive deps
+        # picks a rustix that compiles.
+        run: cargo install cargo-fuzz
 
       - name: Run ${{ matrix.target }}
         run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
