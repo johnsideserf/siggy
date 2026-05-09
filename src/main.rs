@@ -1257,6 +1257,7 @@ async fn run_app(
     let mut last_expiry_sweep = Instant::now();
     let mut last_sync_redraw = Instant::now();
     let mut needs_redraw = true;
+    let mut last_title: Option<String> = None;
 
     // Re-enable terminal modes — on Windows, spawning cmd.exe subprocesses
     // (signal-cli.bat, check_account_registered) can reset console input mode flags.
@@ -1347,17 +1348,15 @@ async fn run_app(
             needs_redraw = true;
         }
 
-        // Poll for events with a short timeout so we stay responsive to signal events
-        let has_terminal_event = event::poll(POLL_TIMEOUT)?;
-
-        if has_terminal_event {
+        // Poll for events with a short timeout so we stay responsive to signal events.
+        // Drain all queued terminal events in one pass so a flood of mouse-move events
+        // (with EnableMouseCapture, terminals send one per pixel of motion) doesn't
+        // multiply the per-tick bookkeeping below into a busy loop. See issue #408.
+        let mut had_terminal_event = event::poll(POLL_TIMEOUT)?;
+        while had_terminal_event {
             match event::read()? {
-                Event::Key(key) => {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
-                    }
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
-                    // Keybinding capture mode intercepts ALL keys before anything else
                     if app.keybindings_overlay.capturing {
                         app.handle_keybinding_capture(key.modifiers, key.code);
                     } else if !app.handle_global_key(key.modifiers, key.code) {
@@ -1397,6 +1396,7 @@ async fn run_app(
                 }
                 _ => {}
             }
+            had_terminal_event = event::poll(Duration::ZERO)?;
         }
 
         // Drain signal events (non-blocking), detect disconnect
@@ -1474,17 +1474,22 @@ async fn run_app(
             }
         }
 
-        // Update terminal title with unread count
+        // Update terminal title with unread count, but only when it actually changes.
+        // Emitting SetTitle every tick (~20Hz) is a write+flush per iteration the terminal
+        // has to parse, which compounds with mouse-move event storms. See issue #408.
         let unread = app.store.total_unread();
         let title = if unread > 0 {
             format!("siggy ({unread})")
         } else {
             "siggy".to_string()
         };
-        execute!(
-            terminal.backend_mut(),
-            crossterm::terminal::SetTitle(&title)
-        )?;
+        if last_title.as_deref() != Some(title.as_str()) {
+            execute!(
+                terminal.backend_mut(),
+                crossterm::terminal::SetTitle(&title)
+            )?;
+            last_title = Some(title);
+        }
 
         if app.should_quit {
             break;
