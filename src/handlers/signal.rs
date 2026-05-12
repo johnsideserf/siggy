@@ -19,8 +19,8 @@ use crate::conversation_store::{Conversation, DisplayMessage, Quote, db_warn, sh
 use crate::db::Database;
 use crate::image_render;
 use crate::signal::types::{
-    Contact, Group, IdentityInfo, Mention, MessageStatus, PollData, PollVote, Reaction,
-    SignalEvent, SignalMessage, StyleType,
+    Contact, Group, IdentityInfo, LinkPreview, Mention, MessageStatus, PollData, PollVote,
+    Reaction, SignalEvent, SignalMessage, StyleType,
 };
 
 /// Convert a local file path to a file:/// URI (forward slashes, for terminal Ctrl+Click).
@@ -223,53 +223,73 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
     }
 }
 
-fn handle_message(app: &mut App, msg: SignalMessage) {
+/// One pushable DisplayMessage worth of resolved data. A single incoming
+/// `SignalMessage` produces one entry for the text body (if any) plus one entry
+/// per attachment.
+struct ResolvedEntry {
+    body: String,
+    image_lines: Option<Vec<Line<'static>>>,
+    image_path: Option<String>,
+    mention_ranges: Vec<(usize, usize)>,
+    style_ranges: Vec<(usize, usize, StyleType)>,
+    quote: Option<Quote>,
+    body_raw: Option<String>,
+    mentions: Vec<Mention>,
+}
+
+/// An incoming `SignalMessage` after all pure-read resolution: identity, body
+/// resolution, mention/style decoding, quote lookup, per-attachment body
+/// strings. Built by [`resolve_incoming`] (no mutation) and consumed by
+/// [`push_resolved`] and [`apply_notification_policy`].
+struct ResolvedMessage {
+    conv_id: String,
+    conv_name: String,
+    is_group: bool,
+    is_outgoing: bool,
+    sender_display: String,
+    sender_id: String,
+    timestamp: DateTime<Utc>,
+    msg_ts_ms: i64,
+    msg_status: Option<MessageStatus>,
+    msg_expires_in: i64,
+    msg_expiration_start: i64,
+    /// One entry per DisplayMessage to append: text body first (if any),
+    /// then one entry per attachment, in push order.
+    entries: Vec<ResolvedEntry>,
+    /// Raw body + mentions for `upsert_message_mentions` so the display body
+    /// can be re-resolved when the contact/group list later fills in UUIDs.
+    /// `None` when the message had no mentions.
+    raw_body_for_mentions_db: Option<(String, Vec<Mention>)>,
+    /// First link preview attached to this message, if any.
+    preview: Option<LinkPreview>,
+    /// Wire-format quote fields, for DB persistence via `on_message_added`.
+    wire_quote: WireQuote,
+    /// Original message body, used only for the desktop notification preview.
+    body_text: Option<String>,
+    /// True when this is a new incoming 1:1 message from an unknown sender:
+    /// the conversation should be created with `accepted = false` (message request).
+    is_unaccepted_request: bool,
+    /// Source identity to remember after creating the conversation. Only set
+    /// for incoming messages. Tuple is (source, source_uuid, source_name).
+    source_to_remember: Option<(String, Option<String>, Option<String>)>,
+}
+
+/// Pure read-only resolution of an incoming `SignalMessage`. Returns `None`
+/// for outgoing 1:1 messages with no destination (can't be routed).
+fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
     let conv_id = if let Some(ref gid) = msg.group_id {
         gid.clone()
     } else if msg.is_outgoing {
         // Outgoing 1:1 — conversation is keyed by recipient
-        match msg.destination {
-            Some(ref dest) => dest.clone(),
-            None => return,
-        }
+        msg.destination.as_ref()?.clone()
     } else {
         msg.source.clone()
     };
 
-    if app.store.move_conversation_to_top(&conv_id) && app.is_overlay(OverlayKind::SidebarFilter) {
-        app.refresh_sidebar_filter();
-    }
-
-    // Track sync burst progress
-    if app.sync.active {
-        app.sync.message_count += 1;
-        app.sync.last_message_time = Some(Instant::now());
-        app.status_message = format!("Syncing... ({} messages received)", app.sync.message_count);
-        // Pin the viewport against the message at the bottom of the
-        // active conversation BEFORE we append the new sync message,
-        // so subsequent renders can hold that message at its original
-        // screen position. See #394.
-        app.maybe_capture_sync_pin(&conv_id);
-    }
-
-    // Store source_name in contact lookup for future resolution (typing indicators, etc.)
-    if !msg.is_outgoing {
-        app.store
-            .remember_contact_name(&msg.source, msg.source_name.as_deref());
-        // Populate UUID->name for @mention resolution
-        if let (Some(uuid), Some(name)) = (&msg.source_uuid, &msg.source_name)
-            && !name.is_empty()
-        {
-            app.store
-                .uuid_to_name
-                .entry(uuid.clone())
-                .or_insert_with(|| name.clone());
-        }
-    }
-
-    // Resolve conversation name: prefer message metadata, then contact lookup, then raw ID
-    // For groups, source_name is the sender (not the group), so skip it
     let is_group = msg.group_id.is_some();
+
+    // Conversation name: prefer message metadata, then contact lookup, then raw ID.
+    // For groups, source_name is the sender (not the group), so skip it.
     let conv_name = msg
         .group_name
         .as_deref()
@@ -302,29 +322,18 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         msg.source.clone()
     };
 
-    // Ensure conversation exists; detect message requests for new 1:1 from unknown senders
-    let is_new = !app.store.conversations.contains_key(&conv_id);
-    app.store
-        .get_or_create_conversation(&conv_id, &conv_name, is_group, &app.db);
-    if is_new && !msg.is_outgoing && !is_group && !app.store.contact_names.contains_key(&conv_id) {
-        if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
-            conv.accepted = false;
-        }
-        app.db_warn_visible(app.db.update_accepted(&conv_id, false), "update_accepted");
-    }
-
     let msg_ts_ms = msg.timestamp.timestamp_millis();
-    // Outgoing synced messages already have a server timestamp; incoming messages have no status
+    // Outgoing synced messages already have a server timestamp; incoming messages have no status.
     let msg_status = if msg.is_outgoing {
         Some(MessageStatus::Sent)
     } else {
         None
     };
 
-    // Disappearing messages: extract expiration metadata
+    // Disappearing-messages: extract expiration metadata.
     let msg_expires_in = msg.expires_in_seconds;
     let msg_expiration_start = if msg_expires_in > 0 {
-        // For received messages, start countdown now; for sent sync, use message timestamp
+        // For received messages, start countdown now; for sent sync, use message timestamp.
         if msg.is_outgoing {
             msg_ts_ms
         } else {
@@ -334,24 +343,10 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         0
     };
 
-    // Keep conversation's expiration_timer in sync with incoming messages
-    if let Some(conv) = app.store.conversations.get_mut(&conv_id)
-        && conv.expiration_timer != msg_expires_in
-    {
-        conv.expiration_timer = msg_expires_in;
-        db_warn(
-            app.db.update_expiration_timer(&conv_id, msg_expires_in),
-            "update_expiration_timer",
-        );
-    }
-
-    // Resolve @mentions before the push closure borrows app mutably
     let resolved_body = msg
         .body
         .as_ref()
         .map(|body| app.store.resolve_mentions(body, &msg.mentions));
-
-    // Resolve text styles (UTF-16 → byte offsets, accounting for mention replacements)
     let resolved_styles = resolved_body
         .as_ref()
         .map(|(resolved, _)| {
@@ -387,66 +382,16 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         )
     });
     let display_quote = msg_quote.as_ref().map(|(q, _, _, _)| q.clone());
-    let wire_quote_author = msg_quote.as_ref().map(|(_, a, _, _)| a.clone());
-    let wire_quote_body = msg_quote.as_ref().map(|(_, _, b, _)| b.clone());
-    let wire_quote_ts = msg_quote.as_ref().map(|(_, _, _, t)| *t);
-
-    // Helper: build a DisplayMessage in timestamp order and persist via on_message_added.
-    let push_msg = |app: &mut App,
-                    body: String,
-                    image_lines: Option<Vec<Line<'static>>>,
-                    image_path: Option<String>,
-                    mention_ranges: Vec<(usize, usize)>,
-                    style_ranges: Vec<(usize, usize, StyleType)>,
-                    quote: Option<Quote>,
-                    body_raw: Option<String>,
-                    mentions: Vec<Mention>| {
-        // Check for buffered poll data from a race condition (poll event arrived first)
-        let deferred_poll = app
-            .poll_vote
-            .pending_polls
-            .remove(&(conv_id.clone(), msg_ts_ms));
-        let display = DisplayMessage {
-            sender: sender_display.clone(),
-            timestamp: msg.timestamp,
-            body,
-            is_system: false,
-            image_lines,
-            image_path,
-            status: msg_status,
-            timestamp_ms: msg_ts_ms,
-            reactions: Vec::new(),
-            mention_ranges,
-            style_ranges,
-            body_raw,
-            mentions,
-            quote,
-            is_edited: false,
-            is_deleted: false,
-            is_pinned: false,
-            sender_id: sender_id.clone(),
-            expires_in_seconds: msg_expires_in,
-            expiration_start_ms: msg_expiration_start,
-            poll_data: deferred_poll,
-            poll_votes: Vec::new(),
-            preview: None,
-            preview_image_lines: None,
-            preview_image_path: None,
-        };
-        app.on_message_added(
-            &conv_id,
-            display,
-            WireQuote {
-                author: wire_quote_author.clone(),
-                body: wire_quote_body.clone(),
-                timestamp: wire_quote_ts,
-            },
-            true,
-        );
+    let wire_quote = WireQuote {
+        author: msg_quote.as_ref().map(|(_, a, _, _)| a.clone()),
+        body: msg_quote.as_ref().map(|(_, _, b, _)| b.clone()),
+        timestamp: msg_quote.as_ref().map(|(_, _, _, t)| *t),
     };
 
-    // Add text body (with resolved @mentions and text styles)
     let had_mentions = !msg.mentions.is_empty();
+    let mut entries: Vec<ResolvedEntry> = Vec::new();
+
+    // Text body entry (if present).
     if let Some((resolved, ranges)) = resolved_body {
         let raw_body_for_msg = if had_mentions { msg.body.clone() } else { None };
         let mentions_for_msg = if had_mentions {
@@ -454,82 +399,216 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         } else {
             Vec::new()
         };
-        push_msg(
-            app,
-            resolved,
-            None,
-            None,
-            ranges,
-            resolved_styles,
-            display_quote,
-            raw_body_for_msg,
-            mentions_for_msg,
-        );
+        entries.push(ResolvedEntry {
+            body: resolved,
+            image_lines: None,
+            image_path: None,
+            mention_ranges: ranges,
+            style_ranges: resolved_styles,
+            quote: display_quote,
+            body_raw: raw_body_for_msg,
+            mentions: mentions_for_msg,
+        });
     }
 
-    // Add attachment notices
+    // Attachment entries.
     for att in &msg.attachments {
         let label = att.filename.as_deref().unwrap_or(&att.content_type);
         let is_image = matches!(
             att.content_type.as_str(),
             "image/jpeg" | "image/png" | "image/gif" | "image/webp"
         );
-
         let path_info = att
             .local_path
             .as_deref()
             .map(|p| format!("({})", path_to_file_uri(p)))
             .unwrap_or_default();
-
         if is_image {
             let rendered = att
                 .local_path
                 .as_deref()
                 .and_then(|p| image_render::render_image(Path::new(p), 40));
-            push_msg(
-                app,
-                format!("[image: {label}]{path_info}"),
-                rendered,
-                att.local_path.clone(),
-                Vec::new(),
-                Vec::new(),
-                None,
-                None,
-                Vec::new(),
-            );
+            entries.push(ResolvedEntry {
+                body: format!("[image: {label}]{path_info}"),
+                image_lines: rendered,
+                image_path: att.local_path.clone(),
+                mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
+                quote: None,
+                body_raw: None,
+                mentions: Vec::new(),
+            });
         } else {
-            push_msg(
-                app,
-                format!("[attachment: {label}]{path_info}"),
-                None,
-                None,
-                Vec::new(),
-                Vec::new(),
-                None,
-                None,
-                Vec::new(),
-            );
+            entries.push(ResolvedEntry {
+                body: format!("[attachment: {label}]{path_info}"),
+                image_lines: None,
+                image_path: None,
+                mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
+                quote: None,
+                body_raw: None,
+                mentions: Vec::new(),
+            });
         }
     }
 
+    let raw_body_for_mentions_db = if had_mentions {
+        msg.body
+            .as_ref()
+            .map(|raw| (raw.clone(), msg.mentions.clone()))
+    } else {
+        None
+    };
+
+    let is_new = !app.store.conversations.contains_key(&conv_id);
+    let is_unaccepted_request =
+        is_new && !msg.is_outgoing && !is_group && !app.store.contact_names.contains_key(&conv_id);
+
+    let source_to_remember = if !msg.is_outgoing {
+        Some((
+            msg.source.clone(),
+            msg.source_uuid.clone(),
+            msg.source_name.clone(),
+        ))
+    } else {
+        None
+    };
+
+    Some(ResolvedMessage {
+        conv_id,
+        conv_name,
+        is_group,
+        is_outgoing: msg.is_outgoing,
+        sender_display,
+        sender_id,
+        timestamp: msg.timestamp,
+        msg_ts_ms,
+        msg_status,
+        msg_expires_in,
+        msg_expiration_start,
+        entries,
+        raw_body_for_mentions_db,
+        preview: msg.previews.first().cloned(),
+        wire_quote,
+        body_text: msg.body.clone(),
+        is_unaccepted_request,
+        source_to_remember,
+    })
+}
+
+/// Apply mutations: sync-burst tracking, conversation creation, append each
+/// entry, persist mention rows, attach link preview, and update the read
+/// marker for the active conversation. The corresponding bell / unread /
+/// desktop-notification side effects are handled by
+/// [`apply_notification_policy`].
+fn push_resolved(app: &mut App, r: &ResolvedMessage) {
+    if app.store.move_conversation_to_top(&r.conv_id) && app.is_overlay(OverlayKind::SidebarFilter)
+    {
+        app.refresh_sidebar_filter();
+    }
+
+    // Track sync burst progress.
+    if app.sync.active {
+        app.sync.message_count += 1;
+        app.sync.last_message_time = Some(Instant::now());
+        app.status_message = format!("Syncing... ({} messages received)", app.sync.message_count);
+        // Pin the viewport against the message at the bottom of the active
+        // conversation BEFORE we append, so subsequent renders hold that
+        // message at its original screen position. See #394.
+        app.maybe_capture_sync_pin(&r.conv_id);
+    }
+
+    // Remember sender identity for future events (typing indicators, mentions).
+    if let Some((source, source_uuid, source_name)) = &r.source_to_remember {
+        app.store
+            .remember_contact_name(source, source_name.as_deref());
+        if let (Some(uuid), Some(name)) = (source_uuid, source_name)
+            && !name.is_empty()
+        {
+            app.store
+                .uuid_to_name
+                .entry(uuid.clone())
+                .or_insert_with(|| name.clone());
+        }
+    }
+
+    // Ensure conversation exists. For new 1:1 from an unknown sender, mark
+    // unaccepted so the UI can present a message-request prompt.
+    app.store
+        .get_or_create_conversation(&r.conv_id, &r.conv_name, r.is_group, &app.db);
+    if r.is_unaccepted_request {
+        if let Some(conv) = app.store.conversations.get_mut(&r.conv_id) {
+            conv.accepted = false;
+        }
+        app.db_warn_visible(app.db.update_accepted(&r.conv_id, false), "update_accepted");
+    }
+
+    // Keep the conversation's expiration timer in sync with incoming messages.
+    if let Some(conv) = app.store.conversations.get_mut(&r.conv_id)
+        && conv.expiration_timer != r.msg_expires_in
+    {
+        conv.expiration_timer = r.msg_expires_in;
+        db_warn(
+            app.db.update_expiration_timer(&r.conv_id, r.msg_expires_in),
+            "update_expiration_timer",
+        );
+    }
+
+    // Append each entry as a DisplayMessage in push order.
+    for entry in &r.entries {
+        // A poll event may have arrived before its message; attach buffered poll data if so.
+        let deferred_poll = app
+            .poll_vote
+            .pending_polls
+            .remove(&(r.conv_id.clone(), r.msg_ts_ms));
+        let display = DisplayMessage {
+            sender: r.sender_display.clone(),
+            timestamp: r.timestamp,
+            body: entry.body.clone(),
+            is_system: false,
+            image_lines: entry.image_lines.clone(),
+            image_path: entry.image_path.clone(),
+            status: r.msg_status,
+            timestamp_ms: r.msg_ts_ms,
+            reactions: Vec::new(),
+            mention_ranges: entry.mention_ranges.clone(),
+            style_ranges: entry.style_ranges.clone(),
+            body_raw: entry.body_raw.clone(),
+            mentions: entry.mentions.clone(),
+            quote: entry.quote.clone(),
+            is_edited: false,
+            is_deleted: false,
+            is_pinned: false,
+            sender_id: r.sender_id.clone(),
+            expires_in_seconds: r.msg_expires_in,
+            expiration_start_ms: r.msg_expiration_start,
+            poll_data: deferred_poll,
+            poll_votes: Vec::new(),
+            preview: None,
+            preview_image_lines: None,
+            preview_image_path: None,
+        };
+        app.on_message_added(&r.conv_id, display, r.wire_quote.clone(), true);
+    }
+
     // Persist raw body + mentions so the display body can be re-resolved
-    // later when the contact list or group list fills in unknown UUIDs.
-    if had_mentions && let Some(ref raw) = msg.body {
+    // when the contact / group list later fills in unknown UUIDs.
+    if let Some((raw, mentions)) = &r.raw_body_for_mentions_db {
         db_warn(
             app.db
-                .upsert_message_mentions(&conv_id, msg_ts_ms, raw, &msg.mentions),
+                .upsert_message_mentions(&r.conv_id, r.msg_ts_ms, raw, mentions),
             "upsert_message_mentions",
         );
     }
 
-    // Attach first link preview to the body message (not attachment messages)
-    if let Some(preview) = msg.previews.into_iter().next() {
-        if let Some(conv) = app.store.conversations.get_mut(&conv_id)
+    // Attach the first link preview to the body message (skip attachment entries).
+    if let Some(preview) = &r.preview {
+        if let Some(conv) = app.store.conversations.get_mut(&r.conv_id)
             && let Some(dm) = conv
                 .messages
                 .iter_mut()
                 .rev()
-                .find(|m| m.timestamp_ms == msg_ts_ms && !m.body.starts_with('['))
+                .find(|m| m.timestamp_ms == r.msg_ts_ms && !m.body.starts_with('['))
         {
             let (img_lines, img_path) =
                 if app.image.show_link_previews && app.image.image_mode != "none" {
@@ -549,92 +628,115 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
             dm.preview_image_path = img_path;
         }
         db_warn(
-            app.db.upsert_link_preview(&conv_id, msg_ts_ms, &preview),
+            app.db.upsert_link_preview(&r.conv_id, r.msg_ts_ms, preview),
             "upsert_link_preview",
         );
     }
 
+    // Active conversation: send read receipt and advance the read marker.
     let is_active = app
         .active_conversation
         .as_ref()
-        .map(|a| a == &conv_id)
+        .map(|a| a == &r.conv_id)
         .unwrap_or(false);
-
-    if !is_active && !msg.is_outgoing {
-        if let Some(c) = app.store.conversations.get_mut(&conv_id) {
-            c.unread += 1;
-        }
+    if is_active {
         let conv_accepted = app
             .store
             .conversations
-            .get(&conv_id)
+            .get(&r.conv_id)
             .map(|c| c.accepted)
             .unwrap_or(true);
-        let is_muted = app.is_muted_at(&conv_id, Utc::now());
-        let not_muted_or_blocked =
-            conv_accepted && !is_muted && !app.blocked_conversations.contains(&conv_id);
-        let type_enabled = if is_group {
-            app.notifications.notify_group
-        } else {
-            app.notifications.notify_direct
-        };
-        if app.sync.active {
-            if type_enabled && not_muted_or_blocked {
-                *app.sync
-                    .suppressed_notifications
-                    .entry(conv_id.clone())
-                    .or_insert(0) += 1;
+        if !app.sync.active {
+            if !r.is_outgoing && conv_accepted && !app.blocked_conversations.contains(&r.conv_id) {
+                app.queue_single_read_receipt(&r.sender_id, r.msg_ts_ms);
             }
-        } else {
-            if type_enabled && not_muted_or_blocked {
-                app.notifications.pending_bell = true;
-            }
-            if app.notifications.desktop_notifications && not_muted_or_blocked {
-                let notif_body = msg.body.as_deref().unwrap_or("");
-                let notif_group = if is_group {
-                    app.store
-                        .conversations
-                        .get(&conv_id)
-                        .map(|c| c.name.clone())
-                } else {
-                    None
-                };
-                show_desktop_notification(
-                    &sender_display,
-                    notif_body,
-                    is_group,
-                    notif_group.as_deref(),
-                    &app.notifications.notification_preview,
-                );
+            if let Some(conv) = app.store.conversations.get(&r.conv_id) {
+                app.store
+                    .last_read_index
+                    .insert(r.conv_id.clone(), conv.messages.len());
             }
         }
+        if let Ok(Some(rowid)) = app.db.last_message_rowid(&r.conv_id) {
+            db_warn(
+                app.db.save_read_marker(&r.conv_id, rowid),
+                "save_read_marker",
+            );
+        }
+    }
+}
+
+/// Apply notification side effects for an incoming message that is NOT in
+/// the active conversation: bump unread, ring the bell, fire desktop
+/// notification, or buffer for the post-sync digest if a sync burst is
+/// running. Outgoing messages and messages in the active conversation are
+/// silently ignored.
+fn apply_notification_policy(app: &mut App, r: &ResolvedMessage) {
+    let is_active = app
+        .active_conversation
+        .as_ref()
+        .map(|a| a == &r.conv_id)
+        .unwrap_or(false);
+    if is_active || r.is_outgoing {
+        return;
     }
 
-    // Viewport stabilization happens render-side via SyncState::pin --
-    // see App::maybe_capture_sync_pin and the chat_pane renderer.
-
-    // Active conversation: send read receipt and advance read marker
+    if let Some(c) = app.store.conversations.get_mut(&r.conv_id) {
+        c.unread += 1;
+    }
     let conv_accepted = app
         .store
         .conversations
-        .get(&conv_id)
+        .get(&r.conv_id)
         .map(|c| c.accepted)
         .unwrap_or(true);
-    if is_active {
-        if !app.sync.active {
-            if !msg.is_outgoing && conv_accepted && !app.blocked_conversations.contains(&conv_id) {
-                app.queue_single_read_receipt(&sender_id, msg_ts_ms);
-            }
-            if let Some(conv) = app.store.conversations.get(&conv_id) {
-                app.store
-                    .last_read_index
-                    .insert(conv_id.clone(), conv.messages.len());
-            }
+    let is_muted = app.is_muted_at(&r.conv_id, Utc::now());
+    let not_muted_or_blocked =
+        conv_accepted && !is_muted && !app.blocked_conversations.contains(&r.conv_id);
+    let type_enabled = if r.is_group {
+        app.notifications.notify_group
+    } else {
+        app.notifications.notify_direct
+    };
+
+    if app.sync.active {
+        if type_enabled && not_muted_or_blocked {
+            *app.sync
+                .suppressed_notifications
+                .entry(r.conv_id.clone())
+                .or_insert(0) += 1;
         }
-        if let Ok(Some(rowid)) = app.db.last_message_rowid(&conv_id) {
-            db_warn(app.db.save_read_marker(&conv_id, rowid), "save_read_marker");
-        }
+        return;
     }
+
+    if type_enabled && not_muted_or_blocked {
+        app.notifications.pending_bell = true;
+    }
+    if app.notifications.desktop_notifications && not_muted_or_blocked {
+        let notif_body = r.body_text.as_deref().unwrap_or("");
+        let notif_group = if r.is_group {
+            app.store
+                .conversations
+                .get(&r.conv_id)
+                .map(|c| c.name.clone())
+        } else {
+            None
+        };
+        show_desktop_notification(
+            &r.sender_display,
+            notif_body,
+            r.is_group,
+            notif_group.as_deref(),
+            &app.notifications.notification_preview,
+        );
+    }
+}
+
+fn handle_message(app: &mut App, msg: SignalMessage) {
+    let Some(resolved) = resolve_incoming(app, &msg) else {
+        return;
+    };
+    push_resolved(app, &resolved);
+    apply_notification_policy(app, &resolved);
 }
 
 pub(crate) fn handle_system_message(

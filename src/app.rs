@@ -76,7 +76,7 @@ fn floor_char_boundary(buf: &str, pos: usize) -> usize {
 ///
 /// `DisplayMessage.quote` holds the resolved author display name, which differs
 /// from the phone-number/UUID we persist in the DB for cross-session recovery.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct WireQuote {
     pub author: Option<String>,
     pub body: Option<String>,
