@@ -5796,16 +5796,6 @@ fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
-/// Convert a local file path to a file:/// URI (forward slashes, for terminal Ctrl+Click).
-pub(crate) fn path_to_file_uri(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    if normalized.starts_with('/') {
-        format!("file://{normalized}")
-    } else {
-        format!("file:///{normalized}")
-    }
-}
-
 /// Extract a local file path from a file:/// URI. On Unix the third slash is the
 /// root path separator, so it must be preserved; on Windows it's just the scheme.
 fn file_uri_to_path(uri: &str) -> String {

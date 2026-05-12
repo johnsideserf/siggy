@@ -23,8 +23,18 @@ use crate::signal::types::{
     SignalEvent, SignalMessage, StyleType,
 };
 
+/// Convert a local file path to a file:/// URI (forward slashes, for terminal Ctrl+Click).
+fn path_to_file_uri(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with('/') {
+        format!("file://{normalized}")
+    } else {
+        format!("file:///{normalized}")
+    }
+}
+
 /// Dispatch a `SignalEvent` from the signal-cli backend to the appropriate handler.
-pub(crate) fn handle_signal_event(app: &mut App, event: SignalEvent) {
+pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
     match event {
         SignalEvent::MessageReceived(msg) => handle_message(app, msg),
         SignalEvent::ReceiptReceived {
@@ -468,7 +478,7 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         let path_info = att
             .local_path
             .as_deref()
-            .map(|p| format!("({})", crate::app::path_to_file_uri(p)))
+            .map(|p| format!("({})", path_to_file_uri(p)))
             .unwrap_or_default();
 
         if is_image {
