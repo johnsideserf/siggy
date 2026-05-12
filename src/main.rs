@@ -1256,8 +1256,16 @@ async fn run_app(
 
     let mut last_expiry_sweep = Instant::now();
     let mut last_sync_redraw = Instant::now();
+    let mut last_spinner_tick = Instant::now();
     let mut needs_redraw = true;
     let mut last_title: Option<String> = None;
+    // Loop-rate diagnostics: only counted/logged when --debug is on. Helps
+    // locate non-converging redraw triggers (see issue #408). Cheap when off.
+    let mut diag_last = Instant::now();
+    let mut diag_iter = 0u32;
+    let mut diag_render = 0u32;
+    let mut diag_term_event = 0u32;
+    let mut diag_signal_event = 0u32;
 
     // Re-enable terminal modes — on Windows, spawning cmd.exe subprocesses
     // (signal-cli.bat, check_account_registered) can reset console input mode flags.
@@ -1272,8 +1280,10 @@ async fn run_app(
     }
 
     loop {
+        diag_iter = diag_iter.wrapping_add(1);
         // Only redraw when state has changed (avoids resetting cursor blink timer every 50ms)
         if needs_redraw {
+            diag_render = diag_render.wrapping_add(1);
             let native = app.image.image_mode == "native";
             let sixel_mode =
                 native && app.image.image_protocol == image_render::ImageProtocol::Sixel;
@@ -1334,11 +1344,14 @@ async fn run_app(
             needs_redraw = true;
         }
 
-        // Animate the loading spinner. Skipped during sync.active so the
-        // 50ms event-loop tick rate doesn't bypass the 500ms sync redraw
-        // throttle below; see App::should_tick_spinner for context.
-        if app.should_tick_spinner() {
+        // Animate the loading spinner on a wall-clock cadence so its speed
+        // is decoupled from event-loop iteration rate. The drain loop above
+        // collapses bursts of input into a single outer iteration, which
+        // would otherwise tie the spinner to "events arrived" rather than
+        // "time passed". 80ms = 12.5fps, brisk but not frantic.
+        if app.should_tick_spinner() && last_spinner_tick.elapsed() >= Duration::from_millis(80) {
             app.spinner_tick = app.spinner_tick.wrapping_add(1);
+            last_spinner_tick = Instant::now();
             needs_redraw = true;
         }
 
@@ -1354,6 +1367,7 @@ async fn run_app(
         // multiply the per-tick bookkeeping below into a busy loop. See issue #408.
         let mut had_terminal_event = event::poll(POLL_TIMEOUT)?;
         while had_terminal_event {
+            diag_term_event = diag_term_event.wrapping_add(1);
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
@@ -1401,6 +1415,7 @@ async fn run_app(
 
         // Drain signal events (non-blocking), detect disconnect
         if backend.drain_events(&mut app) {
+            diag_signal_event = diag_signal_event.wrapping_add(1);
             if app.sync.active {
                 // During sync: throttle redraws to 500ms to keep UI responsive
                 if last_sync_redraw.elapsed() >= std::time::Duration::from_millis(500) {
@@ -1489,6 +1504,24 @@ async fn run_app(
                 crossterm::terminal::SetTitle(&title)
             )?;
             last_title = Some(title);
+        }
+
+        // Periodic loop-rate digest under --debug. Helps diagnose unconverged
+        // redraw triggers in real-world setups (issue #408). No-op when off.
+        if diag_last.elapsed() >= Duration::from_secs(5) {
+            debug_log::logf(format_args!(
+                "loop 5s: iter={diag_iter} render={diag_render} term_ev={diag_term_event} sig_ev={diag_signal_event} bg_in_flight={} active_conv={}",
+                app.image.image_render_in_flight.len(),
+                app.active_conversation
+                    .as_deref()
+                    .map(|_| "yes")
+                    .unwrap_or("no"),
+            ));
+            diag_last = Instant::now();
+            diag_iter = 0;
+            diag_render = 0;
+            diag_term_event = 0;
+            diag_signal_event = 0;
         }
 
         if app.should_quit {
