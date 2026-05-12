@@ -6,3 +6,4 @@
 //! same global state.
 
 pub(crate) mod input;
+pub(crate) mod signal;
