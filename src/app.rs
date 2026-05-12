@@ -197,7 +197,14 @@ impl App {
     }
 }
 
-/// Fire an OS-level desktop notification (runs on a blocking thread to avoid stalling async).
+/// Fire an OS-level desktop notification.
+///
+/// Runs on `tokio::task::spawn_blocking` so it never stalls the event loop, but it
+/// also does NOT deduplicate or rate-limit: each call produces one OS notification.
+///
+/// **Caller contract:** gate this behind the sync-burst check (`!app.sync.active`)
+/// or its equivalent. Firing it from inside an initial-sync replay produces a flood
+/// of "new message" toasts for messages the user already saw on their phone.
 pub(crate) fn show_desktop_notification(
     sender: &str,
     body: &str,
@@ -3315,7 +3322,16 @@ impl App {
         }
     }
 
-    /// Queue a read receipt for a single incoming message (when it arrives in the active conversation).
+    /// Queue a read receipt for a single incoming message.
+    ///
+    /// Intended for use when a message arrives while its conversation is active and
+    /// the user is therefore "reading" it immediately.
+    ///
+    /// **Caller contract:** `sender_id` must be the *remote peer* who sent the message
+    /// (a phone or UUID), never `self.account`. The fn drops empty sender_ids and
+    /// self-sent receipts as a safety net, but callers should not rely on those
+    /// guards as a way to send "ambiguous" receipts — pre-resolve identity instead.
+    /// The fn is also a no-op when `send_read_receipts` is disabled in settings.
     pub(crate) fn queue_single_read_receipt(&mut self, sender_id: &str, timestamp_ms: i64) {
         if !self.send_read_receipts {
             return;
