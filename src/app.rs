@@ -9056,6 +9056,21 @@ mod tests {
     }
 
     #[rstest]
+    fn unknown_sender_with_source_name_creates_accepted_conversation(mut app: App) {
+        // Regression for #421 review: a first message from an unknown sender
+        // whose envelope includes source_name should auto-accept the
+        // conversation, because remember_contact_name inserts the name into
+        // contact_names before the message-request check runs.
+        let mut msg = msg_from("+1");
+        msg.source_name = Some("Alice".to_string());
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(
+            app.store.conversations["+1"].accepted,
+            "sender announced their name in the envelope — conversation should not be a message request"
+        );
+    }
+
+    #[rstest]
     fn outgoing_sync_creates_accepted_conversation(mut app: App) {
         let msg = SignalMessage {
             source: "+10000000000".to_string(),

@@ -223,6 +223,14 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
     }
 }
 
+/// Incoming sender identity to fold into the contact lookup before applying
+/// the message-request check.
+struct ContactIdentity {
+    source: String,
+    source_uuid: Option<String>,
+    source_name: Option<String>,
+}
+
 /// One pushable DisplayMessage worth of resolved data. A single incoming
 /// `SignalMessage` produces one entry for the text body (if any) plus one entry
 /// per attachment.
@@ -266,12 +274,9 @@ struct ResolvedMessage {
     wire_quote: WireQuote,
     /// Original message body, used only for the desktop notification preview.
     body_text: Option<String>,
-    /// True when this is a new incoming 1:1 message from an unknown sender:
-    /// the conversation should be created with `accepted = false` (message request).
-    is_unaccepted_request: bool,
-    /// Source identity to remember after creating the conversation. Only set
-    /// for incoming messages. Tuple is (source, source_uuid, source_name).
-    source_to_remember: Option<(String, Option<String>, Option<String>)>,
+    /// Source identity to fold into contact_names / uuid_to_name after the
+    /// conversation is created. Only set for incoming messages.
+    source_to_remember: Option<ContactIdentity>,
 }
 
 /// Pure read-only resolution of an incoming `SignalMessage`. Returns `None`
@@ -460,16 +465,12 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
         None
     };
 
-    let is_new = !app.store.conversations.contains_key(&conv_id);
-    let is_unaccepted_request =
-        is_new && !msg.is_outgoing && !is_group && !app.store.contact_names.contains_key(&conv_id);
-
     let source_to_remember = if !msg.is_outgoing {
-        Some((
-            msg.source.clone(),
-            msg.source_uuid.clone(),
-            msg.source_name.clone(),
-        ))
+        Some(ContactIdentity {
+            source: msg.source.clone(),
+            source_uuid: msg.source_uuid.clone(),
+            source_name: msg.source_name.clone(),
+        })
     } else {
         None
     };
@@ -491,7 +492,6 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
         preview: msg.previews.first().cloned(),
         wire_quote,
         body_text: msg.body.clone(),
-        is_unaccepted_request,
         source_to_remember,
     })
 }
@@ -501,7 +501,7 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
 /// marker for the active conversation. The corresponding bell / unread /
 /// desktop-notification side effects are handled by
 /// [`apply_notification_policy`].
-fn push_resolved(app: &mut App, r: &ResolvedMessage) {
+fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) {
     if app.store.move_conversation_to_top(&r.conv_id) && app.is_overlay(OverlayKind::SidebarFilter)
     {
         app.refresh_sidebar_filter();
@@ -519,10 +519,10 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage) {
     }
 
     // Remember sender identity for future events (typing indicators, mentions).
-    if let Some((source, source_uuid, source_name)) = &r.source_to_remember {
+    if let Some(identity) = &r.source_to_remember {
         app.store
-            .remember_contact_name(source, source_name.as_deref());
-        if let (Some(uuid), Some(name)) = (source_uuid, source_name)
+            .remember_contact_name(&identity.source, identity.source_name.as_deref());
+        if let (Some(uuid), Some(name)) = (&identity.source_uuid, &identity.source_name)
             && !name.is_empty()
         {
             app.store
@@ -532,11 +532,22 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage) {
         }
     }
 
+    // Detect "this is the conversation's first message" BEFORE get_or_create_conversation
+    // creates it. The is_unaccepted_request check below must run AFTER remember_contact_name
+    // (above) so that messages from new senders who include source_name in their envelope
+    // are NOT mis-classified as message-requests: remember_contact_name pre-populates
+    // contact_names, and the request check looks for an entry there.
+    let is_new = !app.store.conversations.contains_key(&r.conv_id);
+
     // Ensure conversation exists. For new 1:1 from an unknown sender, mark
     // unaccepted so the UI can present a message-request prompt.
     app.store
         .get_or_create_conversation(&r.conv_id, &r.conv_name, r.is_group, &app.db);
-    if r.is_unaccepted_request {
+    let is_unaccepted_request = is_new
+        && !r.is_outgoing
+        && !r.is_group
+        && !app.store.contact_names.contains_key(&r.conv_id);
+    if is_unaccepted_request {
         if let Some(conv) = app.store.conversations.get_mut(&r.conv_id) {
             conv.accepted = false;
         }
@@ -554,13 +565,15 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage) {
         );
     }
 
+    // Drain any poll event that arrived before this message; attach it to the FIRST
+    // entry (body, or first attachment if there's no body). Subsequent entries get None.
+    let mut deferred_poll = app
+        .poll_vote
+        .pending_polls
+        .remove(&(r.conv_id.clone(), r.msg_ts_ms));
+
     // Append each entry as a DisplayMessage in push order.
     for entry in &r.entries {
-        // A poll event may have arrived before its message; attach buffered poll data if so.
-        let deferred_poll = app
-            .poll_vote
-            .pending_polls
-            .remove(&(r.conv_id.clone(), r.msg_ts_ms));
         let display = DisplayMessage {
             sender: r.sender_display.clone(),
             timestamp: r.timestamp,
@@ -582,7 +595,7 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage) {
             sender_id: r.sender_id.clone(),
             expires_in_seconds: r.msg_expires_in,
             expiration_start_ms: r.msg_expiration_start,
-            poll_data: deferred_poll,
+            poll_data: deferred_poll.take(),
             poll_votes: Vec::new(),
             preview: None,
             preview_image_lines: None,
@@ -634,11 +647,6 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage) {
     }
 
     // Active conversation: send read receipt and advance the read marker.
-    let is_active = app
-        .active_conversation
-        .as_ref()
-        .map(|a| a == &r.conv_id)
-        .unwrap_or(false);
     if is_active {
         let conv_accepted = app
             .store
@@ -670,12 +678,7 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage) {
 /// notification, or buffer for the post-sync digest if a sync burst is
 /// running. Outgoing messages and messages in the active conversation are
 /// silently ignored.
-fn apply_notification_policy(app: &mut App, r: &ResolvedMessage) {
-    let is_active = app
-        .active_conversation
-        .as_ref()
-        .map(|a| a == &r.conv_id)
-        .unwrap_or(false);
+fn apply_notification_policy(app: &mut App, r: &ResolvedMessage, is_active: bool) {
     if is_active || r.is_outgoing {
         return;
     }
@@ -735,8 +738,13 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
     let Some(resolved) = resolve_incoming(app, &msg) else {
         return;
     };
-    push_resolved(app, &resolved);
-    apply_notification_policy(app, &resolved);
+    let is_active = app
+        .active_conversation
+        .as_ref()
+        .map(|a| a == &resolved.conv_id)
+        .unwrap_or(false);
+    push_resolved(app, &resolved, is_active);
+    apply_notification_policy(app, &resolved, is_active);
 }
 
 pub(crate) fn handle_system_message(
