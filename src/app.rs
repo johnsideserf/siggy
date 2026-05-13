@@ -76,7 +76,7 @@ fn floor_char_boundary(buf: &str, pos: usize) -> usize {
 ///
 /// `DisplayMessage.quote` holds the resolved author display name, which differs
 /// from the phone-number/UUID we persist in the DB for cross-session recovery.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct WireQuote {
     pub author: Option<String>,
     pub body: Option<String>,
@@ -9053,6 +9053,21 @@ mod tests {
             .insert("+1".to_string(), "Alice".to_string());
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
         assert!(app.store.conversations["+1"].accepted);
+    }
+
+    #[rstest]
+    fn unknown_sender_with_source_name_creates_accepted_conversation(mut app: App) {
+        // Regression for #421 review: a first message from an unknown sender
+        // whose envelope includes source_name should auto-accept the
+        // conversation, because remember_contact_name inserts the name into
+        // contact_names before the message-request check runs.
+        let mut msg = msg_from("+1");
+        msg.source_name = Some("Alice".to_string());
+        app.handle_signal_event(SignalEvent::MessageReceived(msg));
+        assert!(
+            app.store.conversations["+1"].accepted,
+            "sender announced their name in the envelope — conversation should not be a message request"
+        );
     }
 
     #[rstest]
