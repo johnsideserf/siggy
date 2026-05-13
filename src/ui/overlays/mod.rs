@@ -18,6 +18,7 @@ pub(super) mod forward;
 pub(super) mod group_menu;
 pub(super) mod help;
 pub(super) mod keybindings;
+pub(super) mod lock_screen;
 pub(super) mod message_request;
 pub(super) mod pin_duration;
 pub(super) mod poll_vote;
