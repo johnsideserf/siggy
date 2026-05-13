@@ -573,6 +573,12 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) -> bool {
         .pending_polls
         .remove(&(r.conv_id.clone(), r.msg_ts_ms));
 
+    // Likewise, the wire-quote belongs to the message as a whole, not per-entry.
+    // Hand it to on_message_added on the first entry only -- attachment rows that
+    // followed historically had the same quote_author/body/ts columns populated
+    // which produced duplicate quote rendering on reload.
+    let mut entry_wire_quote = Some(r.wire_quote.clone());
+
     // Append each entry as a DisplayMessage in push order.
     for entry in &r.entries {
         let display = DisplayMessage {
@@ -602,7 +608,8 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) -> bool {
             preview_image_lines: None,
             preview_image_path: None,
         };
-        app.on_message_added(&r.conv_id, display, r.wire_quote.clone(), true);
+        let wq = entry_wire_quote.take().unwrap_or_default();
+        app.on_message_added(&r.conv_id, display, wq, true);
     }
 
     // Persist raw body + mentions so the display body can be re-resolved
