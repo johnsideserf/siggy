@@ -219,7 +219,7 @@ impl SignalClient {
         self.stdin_tx
             .send(json)
             .await
-            .context("Failed to send to signal-cli stdin")?;
+            .with_context(|| format!("Failed to send {method} to signal-cli stdin"))?;
         Ok(id)
     }
 

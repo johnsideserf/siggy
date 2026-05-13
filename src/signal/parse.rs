@@ -14,7 +14,7 @@ use chrono::DateTime;
 
 use crate::signal::types::*;
 
-pub(super) fn parse_rpc_result(
+pub fn parse_rpc_result(
     method: &str,
     result: &serde_json::Value,
     rpc_id: Option<&str>,
@@ -173,7 +173,7 @@ pub(super) fn parse_rpc_result(
     }
 }
 
-pub(super) fn parse_signal_event(
+pub fn parse_signal_event(
     resp: &JsonRpcResponse,
     download_dir: &std::path::Path,
 ) -> Option<SignalEvent> {
