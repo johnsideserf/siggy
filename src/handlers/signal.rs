@@ -754,7 +754,7 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
     apply_notification_policy(app, &resolved, is_active, conv_accepted);
 }
 
-pub(crate) fn handle_system_message(
+pub(super) fn handle_system_message(
     app: &mut App,
     conv_id: &str,
     body: &str,
@@ -957,7 +957,7 @@ fn handle_poll_created(app: &mut App, conv_id: &str, timestamp: i64, poll_data: 
     );
 }
 
-pub(crate) fn handle_poll_vote(
+pub(super) fn handle_poll_vote(
     app: &mut App,
     conv_id: &str,
     target_timestamp: i64,
