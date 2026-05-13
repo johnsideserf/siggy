@@ -62,6 +62,27 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             }
             None
         }
+        InputAction::Lock => {
+            app.lock_now();
+            None
+        }
+        InputAction::LockReset => {
+            // If no passphrase exists yet, treat as SetPassphrase. Otherwise
+            // enter ChangePassphraseOld and require verification first.
+            let has_hash = crate::domain::load_hash(&app.lock.hash_path)
+                .ok()
+                .flatten()
+                .is_some();
+            app.lock.phase = if has_hash {
+                crate::domain::LockPhase::ChangePassphraseOld
+            } else {
+                crate::domain::LockPhase::SetPassphrase
+            };
+            app.lock.input_buffer.clear();
+            app.lock.error = None;
+            app.lock.old_passphrase_verified = false;
+            None
+        }
         InputAction::ToggleSidebar => {
             app.sidebar_visible = !app.sidebar_visible;
             None
