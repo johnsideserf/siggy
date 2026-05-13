@@ -3480,9 +3480,129 @@ impl App {
         self.lock.old_passphrase_verified = false;
     }
 
+    /// Process a keypress while the lock screen is showing. Drives the
+    /// LockPhase state machine: typing fills the buffer, Enter submits,
+    /// Backspace deletes, Esc clears the buffer (but does NOT unlock).
+    /// Returns true if the key was consumed (always true when locked).
+    pub fn handle_lock_key(&mut self, code: crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode;
+        // Any char/Backspace clears the transient error so the user can retry.
+        // Leave error visible on Enter so a submit failure stays on screen.
+        if matches!(code, KeyCode::Char(_) | KeyCode::Backspace) {
+            self.lock.error = None;
+        }
+        match code {
+            KeyCode::Char(c) => {
+                self.lock.input_buffer.push(c);
+                true
+            }
+            KeyCode::Backspace => {
+                self.lock.input_buffer.pop();
+                true
+            }
+            KeyCode::Esc => {
+                // Esc clears the current input but does not unlock or change phase.
+                self.lock.input_buffer.clear();
+                true
+            }
+            KeyCode::Enter => {
+                self.submit_lock_input();
+                true
+            }
+            _ => true, // swallow all other keys; lock screen owns input fully
+        }
+    }
+
+    /// Resolve an Enter press on the lock screen by advancing the phase
+    /// based on what's currently being asked for. The state machine:
+    ///
+    /// - SetPassphrase: hash the entered string, save, transition to Unlocked.
+    /// - LockEntry: verify against stored hash; on success transition to
+    ///   Unlocked, on failure stay and set the error.
+    /// - ChangePassphraseOld: verify; on success transition to
+    ///   ChangePassphraseNew and set old_passphrase_verified, on failure
+    ///   stay and set the error.
+    /// - ChangePassphraseNew: hash + save the new passphrase, transition
+    ///   to Unlocked, clear old_passphrase_verified.
+    fn submit_lock_input(&mut self) {
+        use crate::domain::{LockPhase, hash_passphrase, load_hash, save_hash, verify_passphrase};
+        let entered = std::mem::take(&mut self.lock.input_buffer);
+        match self.lock.phase {
+            LockPhase::Unlocked => {} // defensive; should not happen
+            LockPhase::SetPassphrase => {
+                if entered.is_empty() {
+                    self.lock.error = Some("Passphrase cannot be empty".to_string());
+                    return;
+                }
+                match hash_passphrase(&entered) {
+                    Ok(h) => {
+                        if let Err(e) = save_hash(&self.lock.hash_path, &h) {
+                            self.lock.error = Some(format!("Could not save hash: {e}"));
+                            return;
+                        }
+                        self.lock.phase = LockPhase::Unlocked;
+                        self.lock.error = None;
+                        self.status_message = "Lock passphrase set".to_string();
+                    }
+                    Err(e) => {
+                        self.lock.error = Some(format!("Hash failed: {e}"));
+                    }
+                }
+            }
+            LockPhase::LockEntry => {
+                let stored = load_hash(&self.lock.hash_path)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                if verify_passphrase(&entered, &stored) {
+                    self.lock.phase = LockPhase::Unlocked;
+                    self.lock.error = None;
+                } else {
+                    self.lock.error = Some("Incorrect passphrase".to_string());
+                }
+            }
+            LockPhase::ChangePassphraseOld => {
+                let stored = load_hash(&self.lock.hash_path)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                if verify_passphrase(&entered, &stored) {
+                    self.lock.old_passphrase_verified = true;
+                    self.lock.phase = LockPhase::ChangePassphraseNew;
+                    self.lock.error = None;
+                } else {
+                    self.lock.error = Some("Incorrect passphrase".to_string());
+                }
+            }
+            LockPhase::ChangePassphraseNew => {
+                if entered.is_empty() {
+                    self.lock.error = Some("Passphrase cannot be empty".to_string());
+                    return;
+                }
+                match hash_passphrase(&entered) {
+                    Ok(h) => {
+                        if let Err(e) = save_hash(&self.lock.hash_path, &h) {
+                            self.lock.error = Some(format!("Could not save hash: {e}"));
+                            return;
+                        }
+                        self.lock.phase = LockPhase::Unlocked;
+                        self.lock.old_passphrase_verified = false;
+                        self.status_message = "Lock passphrase changed".to_string();
+                    }
+                    Err(e) => {
+                        self.lock.error = Some(format!("Hash failed: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
     /// Handle global keys that work in both Normal and Insert mode.
     /// Returns true if the key was consumed.
     pub fn handle_global_key(&mut self, modifiers: KeyModifiers, code: KeyCode) -> bool {
+        if self.lock.is_locked() {
+            return self.handle_lock_key(code);
+        }
         let action = self
             .keybindings
             .resolve(modifiers, code, BindingMode::Global);
@@ -10996,5 +11116,41 @@ mod tests {
             "attachment row should not carry wire-quote columns; got {:?}",
             attachment_row.quote
         );
+    }
+
+    #[rstest]
+    fn lock_flow_set_then_unlock(mut app: App) {
+        use crossterm::event::KeyCode;
+
+        // No passphrase yet -- /lock should drop into SetPassphrase phase.
+        app.lock_now();
+        assert_eq!(app.lock.phase, crate::domain::LockPhase::SetPassphrase);
+
+        // Set a passphrase via Enter.
+        for c in "secret".chars() {
+            app.handle_lock_key(KeyCode::Char(c));
+        }
+        app.handle_lock_key(KeyCode::Enter);
+        assert_eq!(app.lock.phase, crate::domain::LockPhase::Unlocked);
+
+        // Lock again -- hash now exists, should drop into LockEntry.
+        app.lock_now();
+        assert_eq!(app.lock.phase, crate::domain::LockPhase::LockEntry);
+
+        // Wrong passphrase -- stays locked, sets error.
+        for c in "wrong".chars() {
+            app.handle_lock_key(KeyCode::Char(c));
+        }
+        app.handle_lock_key(KeyCode::Enter);
+        assert_eq!(app.lock.phase, crate::domain::LockPhase::LockEntry);
+        assert!(app.lock.error.is_some());
+
+        // Correct passphrase -- unlocks.
+        for c in "secret".chars() {
+            app.handle_lock_key(KeyCode::Char(c));
+        }
+        app.handle_lock_key(KeyCode::Enter);
+        assert_eq!(app.lock.phase, crate::domain::LockPhase::Unlocked);
+        assert!(app.lock.error.is_none());
     }
 }
