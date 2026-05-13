@@ -49,8 +49,9 @@ pub(in crate::ui) fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) 
         };
 
         let label_part = format!("  {icon}{}", action.label);
-        let hint_width = action.key_hint.len();
-        let pad = content_width.saturating_sub(label_part.chars().count() + hint_width + 2);
+        let hint_char = action.key_hint.key_char();
+        // hint is rendered as a single char; account for that plus a trailing space
+        let pad = content_width.saturating_sub(label_part.chars().count() + 1 + 2);
         let padding = " ".repeat(pad);
 
         let row_style = if is_selected {
@@ -69,7 +70,7 @@ pub(in crate::ui) fn draw_action_menu(frame: &mut Frame, app: &App, area: Rect) 
 
         lines.push(Line::from(vec![
             Span::styled(format!("{label_part}{padding}"), row_style),
-            Span::styled(format!("{} ", action.key_hint), hint_style),
+            Span::styled(format!("{hint_char} "), hint_style),
         ]));
     }
 
