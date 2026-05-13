@@ -10818,4 +10818,54 @@ mod tests {
         let idx = conv.find_msg_idx(ts).expect("group message present");
         assert_eq!(conv.messages[idx].status, Some(MessageStatus::Read));
     }
+
+    #[rstest]
+    fn wire_quote_attached_to_body_row_not_attachment_row(mut app: App) {
+        // Regression for #423: a message with a body + image attachment + quote
+        // should persist the wire-quote on the body row only. The attachment
+        // row's quote_author / quote_body / quote_ts_ms columns must be NULL
+        // so a reload from DB doesn't render a duplicate quote on the
+        // attachment message.
+        let ts = 1_700_000_040_000;
+        let quote_ts = ts - 1000;
+        let mut m = make_msg_with_ts("+1", Some("see this"), None, false, ts);
+        m.source_name = Some("Alice".to_string());
+        m.quote = Some((quote_ts, "+2".to_string(), "original".to_string()));
+        m.attachments = vec![Attachment {
+            id: "att1".to_string(),
+            content_type: "image/png".to_string(),
+            filename: Some("pic.png".to_string()),
+            local_path: None,
+        }];
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+        // Read what was persisted. load_messages_page reconstructs the quote
+        // field from the quote_* DB columns, so it accurately reflects what
+        // we wrote.
+        let rows = app
+            .db
+            .load_messages_page("+1", 100, 0)
+            .expect("DB query succeeds");
+        assert_eq!(rows.len(), 2, "body + one attachment row");
+
+        // Body row carries the wire-quote.
+        let body_row = rows
+            .iter()
+            .find(|r| !r.body.starts_with('['))
+            .expect("body row present");
+        let q = body_row.quote.as_ref().expect("body row has quote");
+        assert_eq!(q.body, "original");
+        assert_eq!(q.timestamp_ms, quote_ts);
+
+        // Attachment row does NOT carry the wire-quote.
+        let attachment_row = rows
+            .iter()
+            .find(|r| r.body.starts_with("[image:"))
+            .expect("attachment row present");
+        assert!(
+            attachment_row.quote.is_none(),
+            "attachment row should not carry wire-quote columns; got {:?}",
+            attachment_row.quote
+        );
+    }
 }
