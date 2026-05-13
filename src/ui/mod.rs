@@ -768,4 +768,15 @@ mod snapshot_tests {
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }
+
+    #[test]
+    fn test_lock_screen() {
+        let mut app = demo_app();
+        // Pretend a hash already exists by jumping straight into LockEntry.
+        app.lock.phase = crate::domain::LockPhase::LockEntry;
+        // Pre-fill some input to verify masking.
+        app.lock.input_buffer = "hello".to_string();
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
 }

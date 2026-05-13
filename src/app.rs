@@ -11119,6 +11119,28 @@ mod tests {
     }
 
     #[rstest]
+    fn locked_session_suppresses_pending_bell(mut app: App) {
+        // Lock the session by setting phase to LockEntry directly. We don't
+        // need a real hash for this test -- we're verifying the side-effect
+        // gate, not the unlock flow.
+        app.lock.phase = crate::domain::LockPhase::LockEntry;
+        app.notifications.notify_direct = true;
+        app.notifications.notify_group = true;
+
+        // Now fire an inbound message in a non-active conversation. Normally
+        // this would set pending_bell = true; with the lock gate it must not.
+        let ts = 1_700_000_100_000;
+        let mut m = make_msg_with_ts("+1", Some("hi"), None, false, ts);
+        m.source_name = Some("Alice".to_string());
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+        assert!(
+            !app.notifications.pending_bell,
+            "pending_bell should be false when locked"
+        );
+    }
+
+    #[rstest]
     fn lock_flow_set_then_unlock(mut app: App) {
         use crossterm::event::KeyCode;
 
