@@ -501,7 +501,7 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
 /// marker for the active conversation. The corresponding bell / unread /
 /// desktop-notification side effects are handled by
 /// [`apply_notification_policy`].
-fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) {
+fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) -> bool {
     if app.store.move_conversation_to_top(&r.conv_id) && app.is_overlay(OverlayKind::SidebarFilter)
     {
         app.refresh_sidebar_filter();
@@ -646,14 +646,19 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) {
         );
     }
 
+    // Snapshot the final accepted state once: it's read here for the read-receipt
+    // gate (active-conv branch) and returned so apply_notification_policy can
+    // reuse the same value without re-reading the store. After this point nothing
+    // mutates conv.accepted, so the two consumers always agree.
+    let conv_accepted = app
+        .store
+        .conversations
+        .get(&r.conv_id)
+        .map(|c| c.accepted)
+        .unwrap_or(true);
+
     // Active conversation: send read receipt and advance the read marker.
     if is_active {
-        let conv_accepted = app
-            .store
-            .conversations
-            .get(&r.conv_id)
-            .map(|c| c.accepted)
-            .unwrap_or(true);
         if !app.sync.active {
             if !r.is_outgoing && conv_accepted && !app.blocked_conversations.contains(&r.conv_id) {
                 app.queue_single_read_receipt(&r.sender_id, r.msg_ts_ms);
@@ -671,6 +676,8 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) {
             );
         }
     }
+
+    conv_accepted
 }
 
 /// Apply notification side effects for an incoming message that is NOT in
@@ -678,7 +685,12 @@ fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) {
 /// notification, or buffer for the post-sync digest if a sync burst is
 /// running. Outgoing messages and messages in the active conversation are
 /// silently ignored.
-fn apply_notification_policy(app: &mut App, r: &ResolvedMessage, is_active: bool) {
+fn apply_notification_policy(
+    app: &mut App,
+    r: &ResolvedMessage,
+    is_active: bool,
+    conv_accepted: bool,
+) {
     if is_active || r.is_outgoing {
         return;
     }
@@ -686,12 +698,6 @@ fn apply_notification_policy(app: &mut App, r: &ResolvedMessage, is_active: bool
     if let Some(c) = app.store.conversations.get_mut(&r.conv_id) {
         c.unread += 1;
     }
-    let conv_accepted = app
-        .store
-        .conversations
-        .get(&r.conv_id)
-        .map(|c| c.accepted)
-        .unwrap_or(true);
     let is_muted = app.is_muted_at(&r.conv_id, Utc::now());
     let not_muted_or_blocked =
         conv_accepted && !is_muted && !app.blocked_conversations.contains(&r.conv_id);
@@ -743,8 +749,8 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         .as_ref()
         .map(|a| a == &resolved.conv_id)
         .unwrap_or(false);
-    push_resolved(app, &resolved, is_active);
-    apply_notification_policy(app, &resolved, is_active);
+    let conv_accepted = push_resolved(app, &resolved, is_active);
+    apply_notification_policy(app, &resolved, is_active, conv_accepted);
 }
 
 pub(crate) fn handle_system_message(
