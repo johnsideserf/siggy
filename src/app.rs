@@ -2430,7 +2430,7 @@ impl App {
             }
             "p" => {
                 // Pin/Unpin
-                self.execute_pin_toggle()
+                crate::handlers::keys::execute_pin_toggle(self)
             }
             "v" => {
                 // Vote on poll
@@ -3918,7 +3918,7 @@ impl App {
                 }
                 None
             }
-            Some(KeyAction::PinMessage) => self.execute_pin_toggle(),
+            Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
             Some(KeyAction::JumpToQuote) => {
                 self.jump_to_quote();
                 None
@@ -4124,7 +4124,7 @@ impl App {
                 }
                 None
             }
-            Some(KeyAction::PinMessage) => self.execute_pin_toggle(),
+            Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
             Some(KeyAction::JumpToQuote) => {
                 self.jump_to_quote();
                 None
@@ -4410,123 +4410,9 @@ impl App {
         }
     }
 
-    fn execute_pin_toggle(&mut self) -> Option<SendRequest> {
-        let msg = self.selected_message()?;
-        if msg.is_system || msg.is_deleted {
-            return None;
-        }
-        let was_pinned = msg.is_pinned;
-        let target_timestamp = msg.timestamp_ms;
-        let author_phone = msg.sender_id.clone();
-        let conv_id = self.active_conversation.clone()?;
-        let is_group = self
-            .store
-            .conversations
-            .get(&conv_id)
-            .map(|c| c.is_group)
-            .unwrap_or(false);
-
-        let target_author = if author_phone.is_empty() || author_phone == "you" {
-            self.account.clone()
-        } else {
-            author_phone
-        };
-
-        if was_pinned {
-            // Unpin immediately — no duration needed
-            if let Some(conv) = self.store.conversations.get_mut(&conv_id)
-                && let Some(idx) = conv.find_msg_idx(target_timestamp)
-            {
-                conv.messages[idx].is_pinned = false;
-            }
-            self.db_warn_visible(
-                self.db
-                    .set_message_pinned(&conv_id, target_timestamp, false),
-                "set_message_pinned",
-            );
-            self.scroll.offset = 0;
-            self.scroll.focused_index = None;
-            let body = "you unpinned a message";
-            let now = Utc::now();
-            let now_ms = now.timestamp_millis();
-            crate::handlers::signal::handle_system_message(self, &conv_id, body, now, now_ms);
-            Some(SendRequest::Unpin {
-                recipient: conv_id,
-                is_group,
-                target_author,
-                target_timestamp,
-            })
-        } else {
-            // Open pin duration picker
-            self.pin_duration.pending = Some(PinPending {
-                conv_id,
-                is_group,
-                target_author,
-                target_timestamp,
-            });
-            self.open_overlay(OverlayKind::PinDuration);
-            self.pin_duration.index = 0;
-            None
-        }
-    }
-
     /// Handle a key press while the pin duration picker overlay is open.
     pub fn handle_pin_duration_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match classify_list_key(code, false) {
-            ListKeyAction::Down => {
-                if self.pin_duration.index < PIN_DURATIONS.len() - 1 {
-                    self.pin_duration.index += 1;
-                }
-                None
-            }
-            ListKeyAction::Up => {
-                self.pin_duration.index = self.pin_duration.index.saturating_sub(1);
-                None
-            }
-            ListKeyAction::Select => {
-                let duration = PIN_DURATIONS[self.pin_duration.index].0;
-                self.close_overlay();
-                let pending = self.pin_duration.pending.take()?;
-
-                // Optimistically pin
-                if let Some(conv) = self.store.conversations.get_mut(&pending.conv_id)
-                    && let Some(idx) = conv.find_msg_idx(pending.target_timestamp)
-                {
-                    conv.messages[idx].is_pinned = true;
-                }
-                self.db_warn_visible(
-                    self.db
-                        .set_message_pinned(&pending.conv_id, pending.target_timestamp, true),
-                    "set_message_pinned",
-                );
-                self.scroll.offset = 0;
-                self.scroll.focused_index = None;
-                let body = "you pinned a message";
-                let now = Utc::now();
-                let now_ms = now.timestamp_millis();
-                crate::handlers::signal::handle_system_message(
-                    self,
-                    &pending.conv_id,
-                    body,
-                    now,
-                    now_ms,
-                );
-
-                Some(SendRequest::Pin {
-                    recipient: pending.conv_id,
-                    is_group: pending.is_group,
-                    target_author: pending.target_author,
-                    target_timestamp: pending.target_timestamp,
-                    pin_duration: duration,
-                })
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-                self.pin_duration.pending = None;
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_pin_duration_key(self, code)
     }
 
     /// Handle keys in the profile editor overlay.
@@ -4594,80 +4480,9 @@ impl App {
         None
     }
 
+    /// Handle a key press while the poll vote overlay is open.
     pub fn handle_poll_vote_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let pending = self.poll_vote.pending.as_ref()?;
-        let option_count = pending.options.len();
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.poll_vote.index < option_count.saturating_sub(1) {
-                    self.poll_vote.index += 1;
-                }
-                None
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.poll_vote.index = self.poll_vote.index.saturating_sub(1);
-                None
-            }
-            KeyCode::Char(' ') => {
-                let allow_multiple = pending.allow_multiple;
-                if allow_multiple {
-                    if let Some(sel) = self.poll_vote.selections.get_mut(self.poll_vote.index) {
-                        *sel = !*sel;
-                    }
-                } else {
-                    // Single select: clear all, select current
-                    for sel in &mut self.poll_vote.selections {
-                        *sel = false;
-                    }
-                    if let Some(sel) = self.poll_vote.selections.get_mut(self.poll_vote.index) {
-                        *sel = true;
-                    }
-                }
-                None
-            }
-            KeyCode::Enter => {
-                let selected: Vec<i64> = self
-                    .poll_vote
-                    .selections
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &sel)| sel)
-                    .map(|(i, _)| i as i64)
-                    .collect();
-                if selected.is_empty() {
-                    return None;
-                }
-                let pending = self.poll_vote.pending.take()?;
-                self.close_overlay();
-
-                // Optimistic local vote
-                let voter = self.account.clone();
-                crate::handlers::signal::handle_poll_vote(
-                    self,
-                    &pending.conv_id,
-                    pending.poll_timestamp,
-                    &voter,
-                    None,
-                    &selected,
-                    1,
-                );
-
-                Some(SendRequest::PollVote {
-                    recipient: pending.conv_id,
-                    is_group: pending.is_group,
-                    poll_author: pending.poll_author,
-                    poll_timestamp: pending.poll_timestamp,
-                    option_indexes: selected,
-                    vote_count: 1,
-                })
-            }
-            KeyCode::Esc => {
-                self.close_overlay();
-                self.poll_vote.pending = None;
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_poll_vote_key(self, code)
     }
 
     /// Prepare outgoing mentions: replace @Name with U+FFFC and compute UTF-16 offsets.
