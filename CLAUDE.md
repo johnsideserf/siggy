@@ -9,7 +9,7 @@ cargo build                    # dev build
 cargo build --release          # release build
 cargo test                     # run all tests
 cargo test app::tests          # run app module tests only
-cargo test signal::client::tests  # run signal client tests only
+cargo test signal::parse::tests  # run signal parser tests only
 cargo test <test_name>         # run a single test by name
 ```
 
