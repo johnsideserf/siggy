@@ -72,6 +72,7 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             let has_hash = crate::domain::load_hash(&app.lock.hash_path)
                 .ok()
                 .flatten()
+                .filter(|s| !s.is_empty())
                 .is_some();
             app.lock.phase = if has_hash {
                 crate::domain::LockPhase::ChangePassphraseOld

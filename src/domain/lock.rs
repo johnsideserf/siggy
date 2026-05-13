@@ -16,7 +16,6 @@ use rand_core::OsRng;
 use std::path::{Path, PathBuf};
 
 /// State machine for the lock screen.
-#[allow(dead_code)]
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockPhase {
     #[default]
@@ -28,7 +27,6 @@ pub enum LockPhase {
 }
 
 /// Session-lock state owned by `App`.
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct LockState {
     pub phase: LockPhase,
@@ -48,14 +46,12 @@ pub struct LockState {
 }
 
 impl LockState {
-    #[allow(dead_code)]
     pub fn is_locked(&self) -> bool {
         self.phase != LockPhase::Unlocked
     }
 }
 
 /// Path to the passphrase hash file, alongside the TOML config.
-#[allow(dead_code)]
 pub fn lock_hash_path(config_path: &Path) -> PathBuf {
     let dir = config_path
         .parent()
@@ -154,5 +150,12 @@ mod tests {
         let path = dir.path().join("does_not_exist");
         let loaded = load_hash(&path).expect("load");
         assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn verify_rejects_empty_stored_hash() {
+        // Defensive: a zero-byte hash file (e.g., from a crashed save) must
+        // never accept any passphrase as valid.
+        assert!(!verify_passphrase("anything", ""));
     }
 }

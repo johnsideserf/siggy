@@ -3469,6 +3469,7 @@ impl App {
         let has_hash = crate::domain::load_hash(&self.lock.hash_path)
             .ok()
             .flatten()
+            .filter(|s| !s.is_empty())
             .is_some();
         self.lock.phase = if has_hash {
             crate::domain::LockPhase::LockEntry
@@ -5092,6 +5093,9 @@ impl App {
     /// Handle a bracketed paste event (Ctrl+V or terminal paste).
     /// Inserts the entire pasted string at once, avoiding per-character overhead.
     pub fn handle_paste(&mut self, text: String) -> Option<SendRequest> {
+        if self.lock.is_locked() {
+            return None;
+        }
         if self.mode != InputMode::Insert || self.has_overlay() {
             return None;
         }
@@ -5169,6 +5173,9 @@ impl App {
     /// requires a display/compositor and cannot be mocked. The individual handlers
     /// (`handle_clipboard_image`, `handle_paste_text`) are tested directly instead.
     pub(crate) fn handle_paste_command(&mut self) -> Option<SendRequest> {
+        if self.lock.is_locked() {
+            return None;
+        }
         if self.active_conversation.is_none() {
             self.status_message = "No active conversation".to_string();
             return None;

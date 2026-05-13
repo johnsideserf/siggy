@@ -1506,7 +1506,9 @@ async fn run_app(
         // Emitting SetTitle every tick (~20Hz) is a write+flush per iteration the terminal
         // has to parse, which compounds with mouse-move event storms. See issue #408.
         let unread = app.store.total_unread();
-        let title = if unread > 0 {
+        let title = if app.lock.is_locked() {
+            "siggy".to_string()
+        } else if unread > 0 {
             format!("siggy ({unread})")
         } else {
             "siggy".to_string()
