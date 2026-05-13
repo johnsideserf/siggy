@@ -3515,6 +3515,7 @@ impl App {
                 self.sidebar_filtered.clear();
                 true
             }
+            Some(KeyAction::Lock) => false, // T4 will replace with self.lock_now(); true
             _ => false,
         }
     }
