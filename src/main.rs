@@ -1477,10 +1477,14 @@ async fn run_app(
             needs_redraw = true;
         }
 
-        // Terminal bell on new messages in background conversations
+        // Terminal bell on new messages in background conversations. Suppress
+        // entirely while the session is locked -- the bell would advertise
+        // activity even though the screen is supposed to be opaque.
         if app.notifications.pending_bell {
             app.notifications.pending_bell = false;
-            execute!(terminal.backend_mut(), Print("\x07"))?;
+            if !app.lock.is_locked() {
+                execute!(terminal.backend_mut(), Print("\x07"))?;
+            }
         }
 
         // Auto-clear clipboard after timeout

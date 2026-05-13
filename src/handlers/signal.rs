@@ -725,10 +725,10 @@ fn apply_notification_policy(
         return;
     }
 
-    if type_enabled && not_muted_or_blocked {
+    if type_enabled && not_muted_or_blocked && !app.lock.is_locked() {
         app.notifications.pending_bell = true;
     }
-    if app.notifications.desktop_notifications && not_muted_or_blocked {
+    if app.notifications.desktop_notifications && not_muted_or_blocked && !app.lock.is_locked() {
         let notif_body = r.notification_preview_body.as_deref().unwrap_or("");
         let notif_group = if r.is_group {
             app.store
