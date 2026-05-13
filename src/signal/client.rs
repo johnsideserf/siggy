@@ -187,6 +187,42 @@ impl SignalClient {
         })
     }
 
+    /// Set the target field on params for recipient/groupId based on is_group.
+    /// The non-group case wraps recipient in a single-element array because that's
+    /// the shape signal-cli expects for almost every RPC that takes one. The few
+    /// special cases (sendReaction wants a bare string; block/unblock want a single
+    /// groupId in an array) build their target field by hand.
+    fn set_target(params: &mut serde_json::Value, recipient: &str, is_group: bool) {
+        if is_group {
+            params["groupId"] = serde_json::Value::String(recipient.to_string());
+        } else {
+            params["recipient"] = serde_json::json!([recipient]);
+        }
+    }
+
+    /// Build the JSON-RPC envelope, register the rpc id with `method` so the stdout
+    /// reader can correlate the response, and send to signal-cli's stdin. Returns
+    /// the rpc id so callers that need to track the send (send_message,
+    /// send_edit_message) can correlate the result.
+    async fn send_rpc(&self, method: &str, params: serde_json::Value) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        if let Ok(mut map) = self.pending_requests.lock() {
+            map.insert(id.clone(), (method.to_string(), Instant::now()));
+        }
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            id: id.clone(),
+            params: Some(params),
+        };
+        let json = serde_json::to_string(&request)?;
+        self.stdin_tx
+            .send(json)
+            .await
+            .context("Failed to send to signal-cli stdin")?;
+        Ok(id)
+    }
+
     pub async fn send_message(
         &self,
         recipient: &str,
@@ -196,26 +232,11 @@ impl SignalClient {
         attachments: &[&Path],
         quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
-
-        // Track the RPC so we can correlate the response with a SendTimestamp/SendFailed event
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("send".to_string(), Instant::now()));
-        }
-
-        let mut params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "message": body,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "message": body,
-                "account": self.account,
-            })
-        };
+        let mut params = serde_json::json!({
+            "message": body,
+            "account": self.account,
+        });
+        Self::set_target(&mut params, recipient, is_group);
 
         if !mentions.is_empty() {
             // signal-cli expects mentions as colon-separated strings: "start:length:uuid"
@@ -240,18 +261,7 @@ impl SignalClient {
             params["quoteMessage"] = serde_json::json!(body_text);
         }
 
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "send".to_string(),
-            id: id.clone(),
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send to signal-cli stdin")?;
+        let id = self.send_rpc("send", params).await?;
         Ok(id)
     }
 
@@ -264,27 +274,12 @@ impl SignalClient {
         mentions: &[(usize, String)],
         quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("send".to_string(), Instant::now()));
-        }
-
-        let mut params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "message": body,
-                "account": self.account,
-                "editTimestamp": edit_timestamp,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "message": body,
-                "account": self.account,
-                "editTimestamp": edit_timestamp,
-            })
-        };
+        let mut params = serde_json::json!({
+            "message": body,
+            "account": self.account,
+            "editTimestamp": edit_timestamp,
+        });
+        Self::set_target(&mut params, recipient, is_group);
 
         if !mentions.is_empty() {
             let mention_arr: Vec<serde_json::Value> = mentions
@@ -300,18 +295,7 @@ impl SignalClient {
             params["quoteMessage"] = serde_json::json!(body_text);
         }
 
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "send".to_string(),
-            id: id.clone(),
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send edit to signal-cli stdin")?;
+        let id = self.send_rpc("send", params).await?;
         Ok(id)
     }
 
@@ -321,38 +305,12 @@ impl SignalClient {
         is_group: bool,
         target_timestamp: i64,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("remoteDelete".to_string(), Instant::now()));
-        }
-
-        let params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "targetTimestamp": target_timestamp,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "targetTimestamp": target_timestamp,
-                "account": self.account,
-            })
-        };
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "remoteDelete".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send remote delete to signal-cli stdin")?;
+        let mut params = serde_json::json!({
+            "targetTimestamp": target_timestamp,
+            "account": self.account,
+        });
+        Self::set_target(&mut params, recipient, is_group);
+        self.send_rpc("remoteDelete", params).await?;
         Ok(())
     }
 
@@ -364,42 +322,14 @@ impl SignalClient {
         target_timestamp: i64,
         pin_duration: i64,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendPinMessage".to_string(), Instant::now()));
-        }
-
-        let params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "targetAuthor": target_author,
-                "targetTimestamp": target_timestamp,
-                "pinDuration": pin_duration,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "targetAuthor": target_author,
-                "targetTimestamp": target_timestamp,
-                "pinDuration": pin_duration,
-                "account": self.account,
-            })
-        };
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendPinMessage".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send pin message to signal-cli stdin")?;
+        let mut params = serde_json::json!({
+            "targetAuthor": target_author,
+            "targetTimestamp": target_timestamp,
+            "pinDuration": pin_duration,
+            "account": self.account,
+        });
+        Self::set_target(&mut params, recipient, is_group);
+        self.send_rpc("sendPinMessage", params).await?;
         Ok(())
     }
 
@@ -410,123 +340,61 @@ impl SignalClient {
         target_author: &str,
         target_timestamp: i64,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendUnpinMessage".to_string(), Instant::now()));
-        }
-
-        let params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "targetAuthor": target_author,
-                "targetTimestamp": target_timestamp,
-                "pinDuration": -1,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "targetAuthor": target_author,
-                "targetTimestamp": target_timestamp,
-                "pinDuration": -1,
-                "account": self.account,
-            })
-        };
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendUnpinMessage".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send unpin message to signal-cli stdin")?;
+        let mut params = serde_json::json!({
+            "targetAuthor": target_author,
+            "targetTimestamp": target_timestamp,
+            "pinDuration": -1,
+            "account": self.account,
+        });
+        Self::set_target(&mut params, recipient, is_group);
+        self.send_rpc("sendUnpinMessage", params).await?;
         Ok(())
     }
 
     pub async fn list_groups(&self) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("listGroups".to_string(), Instant::now()));
-        }
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "listGroups".to_string(),
-            id,
-            params: Some(serde_json::json!({ "account": self.account })),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send")?;
+        self.send_rpc("listGroups", serde_json::json!({ "account": self.account }))
+            .await?;
         Ok(())
     }
 
     pub async fn list_contacts(&self) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("listContacts".to_string(), Instant::now()));
-        }
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "listContacts".to_string(),
-            id,
-            params: Some(serde_json::json!({ "account": self.account })),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send")?;
+        self.send_rpc(
+            "listContacts",
+            serde_json::json!({ "account": self.account }),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn list_identities(&self) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("listIdentities".to_string(), Instant::now()));
-        }
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "listIdentities".to_string(),
-            id,
-            params: Some(serde_json::json!({ "account": self.account })),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send")?;
+        self.send_rpc(
+            "listIdentities",
+            serde_json::json!({ "account": self.account }),
+        )
+        .await?;
         Ok(())
     }
 
     pub async fn trust_identity(&self, recipient: &str, safety_number: &str) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("trust".to_string(), Instant::now()));
-        }
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "trust".to_string(),
-            id,
-            params: Some(serde_json::json!({
-                "recipient": [recipient],
-                "verifiedSafetyNumber": safety_number,
-                "account": self.account,
-            })),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send")?;
+        let params = serde_json::json!({
+            "recipient": [recipient],
+            "verifiedSafetyNumber": safety_number,
+            "account": self.account,
+        });
+        self.send_rpc("trust", params).await?;
         Ok(())
     }
 
+    /// Note: previously this method did not register in pending_requests. After this
+    /// refactor it goes through send_rpc and will be registered. The entry will be
+    /// swept by the existing TTL cleanup if signal-cli never sends a correlated
+    /// response, and the parser falls through to default for unknown methods.
     pub async fn send_sync_request(&self) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendSyncRequest".to_string(),
-            id,
-            params: Some(serde_json::json!({ "account": self.account })),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx.send(json).await.context("Failed to send")?;
+        self.send_rpc(
+            "sendSyncRequest",
+            serde_json::json!({ "account": self.account }),
+        )
+        .await?;
         Ok(())
     }
 
@@ -539,12 +407,8 @@ impl SignalClient {
         target_timestamp: i64,
         remove: bool,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendReaction".to_string(), Instant::now()));
-        }
-
+        // sendReaction uses recipient as a bare string (not wrapped in array) for 1:1.
+        // Do not use set_target here — build inline to preserve the bare-string shape.
         let mut params = if is_group {
             serde_json::json!({
                 "groupId": recipient,
@@ -567,90 +431,31 @@ impl SignalClient {
             params["remove"] = serde_json::json!(true);
         }
 
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendReaction".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send reaction to signal-cli stdin")?;
+        self.send_rpc("sendReaction", params).await?;
         Ok(())
     }
 
     pub async fn send_typing(&self, recipient: &str, is_group: bool, stop: bool) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(
-                id.clone(),
-                ("sendTypingIndicator".to_string(), Instant::now()),
-            );
-        }
-
-        let mut params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "account": self.account,
-            })
-        };
-
+        let mut params = serde_json::json!({ "account": self.account });
+        Self::set_target(&mut params, recipient, is_group);
         if stop {
             params["stop"] = serde_json::json!(true);
         }
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendTypingIndicator".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send typing indicator to signal-cli stdin")?;
+        self.send_rpc("sendTypingIndicator", params).await?;
         Ok(())
     }
 
     /// Send a read receipt to a single recipient for one or more message timestamps.
     /// Fire-and-forget — no useful result is expected from signal-cli.
     pub async fn send_read_receipt(&self, recipient: &str, timestamps: &[i64]) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendReceipt".to_string(), Instant::now()));
-        }
-
+        // target is a single recipient, no is_group branch — inline to preserve shape.
         let params = serde_json::json!({
             "recipient": [recipient],
             "type": "read",
             "targetTimestamp": timestamps,
             "account": self.account,
         });
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendReceipt".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send read receipt to signal-cli stdin")?;
+        self.send_rpc("sendReceipt", params).await?;
         Ok(())
     }
 
@@ -661,33 +466,12 @@ impl SignalClient {
         is_group: bool,
         response_type: &str,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(
-                id.clone(),
-                ("sendMessageRequestResponse".to_string(), Instant::now()),
-            );
-        }
         let mut params = serde_json::json!({
             "type": response_type,
             "account": self.account,
         });
-        if is_group {
-            params["groupId"] = serde_json::json!(recipient);
-        } else {
-            params["recipient"] = serde_json::json!([recipient]);
-        }
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendMessageRequestResponse".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send message request response to signal-cli stdin")?;
+        Self::set_target(&mut params, recipient, is_group);
+        self.send_rpc("sendMessageRequestResponse", params).await?;
         Ok(())
     }
 
@@ -697,35 +481,18 @@ impl SignalClient {
         recipient: &str,
         seconds: i64,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("updateContact".to_string(), Instant::now()));
-        }
+        // updateContact uses recipient as a bare string (not array) — inline to preserve shape.
         let params = serde_json::json!({
             "recipient": recipient,
             "expiration": seconds,
             "account": self.account,
         });
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "updateContact".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send updateContact to signal-cli stdin")?;
+        self.send_rpc("updateContact", params).await?;
         Ok(())
     }
 
     /// Create a new group with the given name (optionally with initial members).
     pub async fn create_group(&self, name: &str, members: &[String]) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
-        }
         let mut params = serde_json::json!({
             "name": name,
             "account": self.account,
@@ -733,92 +500,40 @@ impl SignalClient {
         if !members.is_empty() {
             params["members"] = serde_json::json!(members);
         }
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "updateGroup".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send createGroup to signal-cli stdin")?;
+        self.send_rpc("updateGroup", params).await?;
         Ok(())
     }
 
     /// Add members to an existing group.
     pub async fn add_group_members(&self, group_id: &str, members: &[String]) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
-        }
         let params = serde_json::json!({
             "groupId": group_id,
             "members": members,
             "account": self.account,
         });
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "updateGroup".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send addGroupMembers to signal-cli stdin")?;
+        self.send_rpc("updateGroup", params).await?;
         Ok(())
     }
 
     /// Remove members from an existing group.
     pub async fn remove_group_members(&self, group_id: &str, members: &[String]) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
-        }
         let params = serde_json::json!({
             "groupId": group_id,
             "removeMembers": members,
             "account": self.account,
         });
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "updateGroup".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send removeGroupMembers to signal-cli stdin")?;
+        self.send_rpc("updateGroup", params).await?;
         Ok(())
     }
 
     /// Rename an existing group.
     pub async fn rename_group(&self, group_id: &str, name: &str) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
-        }
         let params = serde_json::json!({
             "groupId": group_id,
             "name": name,
             "account": self.account,
         });
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "updateGroup".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send renameGroup to signal-cli stdin")?;
+        self.send_rpc("updateGroup", params).await?;
         Ok(())
     }
 
@@ -830,10 +545,6 @@ impl SignalClient {
         about: &str,
         about_emoji: &str,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("updateProfile".to_string(), Instant::now()));
-        }
         let params = serde_json::json!({
             "account": self.account,
             "givenName": given_name,
@@ -841,26 +552,14 @@ impl SignalClient {
             "about": about,
             "aboutEmoji": about_emoji,
         });
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "updateProfile".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send updateProfile to signal-cli stdin")?;
+        self.send_rpc("updateProfile", params).await?;
         Ok(())
     }
 
     /// Block a contact or group.
     pub async fn block_contact(&self, recipient: &str, is_group: bool) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("block".to_string(), Instant::now()));
-        }
+        // block/unblock wrap groupId in a single-element array (not a bare string).
+        // Do not use set_target — build inline to preserve that shape.
         let params = if is_group {
             serde_json::json!({
                 "groupId": [recipient],
@@ -872,26 +571,14 @@ impl SignalClient {
                 "account": self.account,
             })
         };
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "block".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send block to signal-cli stdin")?;
+        self.send_rpc("block", params).await?;
         Ok(())
     }
 
     /// Unblock a contact or group.
     pub async fn unblock_contact(&self, recipient: &str, is_group: bool) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("unblock".to_string(), Instant::now()));
-        }
+        // block/unblock wrap groupId in a single-element array (not a bare string).
+        // Do not use set_target — build inline to preserve that shape.
         let params = if is_group {
             serde_json::json!({
                 "groupId": [recipient],
@@ -903,66 +590,28 @@ impl SignalClient {
                 "account": self.account,
             })
         };
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "unblock".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send unblock to signal-cli stdin")?;
+        self.send_rpc("unblock", params).await?;
         Ok(())
     }
 
     /// Leave (quit) a group.
     pub async fn quit_group(&self, group_id: &str) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("quitGroup".to_string(), Instant::now()));
-        }
         let params = serde_json::json!({
             "groupId": group_id,
             "account": self.account,
         });
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "quitGroup".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send quitGroup to signal-cli stdin")?;
+        self.send_rpc("quitGroup", params).await?;
         Ok(())
     }
 
     /// Set the disappearing message timer for a group.
     pub async fn send_update_group_expiration(&self, group_id: &str, seconds: i64) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("updateGroup".to_string(), Instant::now()));
-        }
         let params = serde_json::json!({
             "groupId": group_id,
             "expiration": seconds,
             "account": self.account,
         });
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "updateGroup".to_string(),
-            id,
-            params: Some(params),
-        };
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send updateGroup to signal-cli stdin")?;
+        self.send_rpc("updateGroup", params).await?;
         Ok(())
     }
 
@@ -974,49 +623,23 @@ impl SignalClient {
         options: &[String],
         allow_multiple: bool,
     ) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendPollCreate".to_string(), Instant::now()));
-        }
-
         let option_arr: Vec<serde_json::Value> = options
             .iter()
             .map(|o| serde_json::Value::String(o.clone()))
             .collect();
 
-        let mut params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "question": question,
-                "option": option_arr,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "question": question,
-                "option": option_arr,
-                "account": self.account,
-            })
-        };
+        let mut params = serde_json::json!({
+            "question": question,
+            "option": option_arr,
+            "account": self.account,
+        });
+        Self::set_target(&mut params, recipient, is_group);
 
         if !allow_multiple {
             params["noMulti"] = serde_json::json!(true);
         }
 
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendPollCreate".to_string(),
-            id: id.clone(),
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send poll create to signal-cli stdin")?;
+        let id = self.send_rpc("sendPollCreate", params).await?;
         Ok(id)
     }
 
@@ -1029,49 +652,22 @@ impl SignalClient {
         options: &[i64],
         vote_count: i64,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(id.clone(), ("sendPollVote".to_string(), Instant::now()));
-        }
-
         let option_arr: Vec<serde_json::Value> =
             options.iter().map(|&o| serde_json::json!(o)).collect();
 
-        let mut params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "pollAuthor": poll_author,
-                "pollTimestamp": poll_timestamp,
-                "option": option_arr,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "pollAuthor": poll_author,
-                "pollTimestamp": poll_timestamp,
-                "option": option_arr,
-                "account": self.account,
-            })
-        };
+        let mut params = serde_json::json!({
+            "pollAuthor": poll_author,
+            "pollTimestamp": poll_timestamp,
+            "option": option_arr,
+            "account": self.account,
+        });
+        Self::set_target(&mut params, recipient, is_group);
 
         if vote_count != 1 {
             params["voteCount"] = serde_json::json!(vote_count);
         }
 
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendPollVote".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send poll vote to signal-cli stdin")?;
+        self.send_rpc("sendPollVote", params).await?;
         Ok(())
     }
 
@@ -1081,41 +677,12 @@ impl SignalClient {
         is_group: bool,
         poll_timestamp: i64,
     ) -> Result<()> {
-        let id = Uuid::new_v4().to_string();
-
-        if let Ok(mut map) = self.pending_requests.lock() {
-            map.insert(
-                id.clone(),
-                ("sendPollTerminate".to_string(), Instant::now()),
-            );
-        }
-
-        let params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "pollTimestamp": poll_timestamp,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "pollTimestamp": poll_timestamp,
-                "account": self.account,
-            })
-        };
-
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "sendPollTerminate".to_string(),
-            id,
-            params: Some(params),
-        };
-
-        let json = serde_json::to_string(&request)?;
-        self.stdin_tx
-            .send(json)
-            .await
-            .context("Failed to send poll terminate to signal-cli stdin")?;
+        let mut params = serde_json::json!({
+            "pollTimestamp": poll_timestamp,
+            "account": self.account,
+        });
+        Self::set_target(&mut params, recipient, is_group);
+        self.send_rpc("sendPollTerminate", params).await?;
         Ok(())
     }
 
