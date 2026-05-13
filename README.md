@@ -164,6 +164,8 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 | `/theme` | `/t` | Open theme picker |
 | `/contacts` | `/c` | Browse synced contacts |
 | `/settings` | | Open settings overlay |
+| `/lock` | | Lock the session |
+| `/lock-reset` | | Change the lock passphrase |
 | `/help` | `/h` | Show help overlay |
 | `/quit` | `/q` | Exit siggy |
 
