@@ -272,8 +272,9 @@ struct ResolvedMessage {
     preview: Option<LinkPreview>,
     /// Wire-format quote fields, for DB persistence via `on_message_added`.
     wire_quote: WireQuote,
-    /// Original message body, used only for the desktop notification preview.
-    body_text: Option<String>,
+    /// Original message body used as the desktop-notification preview string.
+    /// Read only by [`apply_notification_policy`] when the OS notification fires.
+    notification_preview_body: Option<String>,
     /// Source identity to fold into contact_names / uuid_to_name after the
     /// conversation is created. Only set for incoming messages.
     source_to_remember: Option<ContactIdentity>,
@@ -491,7 +492,7 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
         raw_body_for_mentions_db,
         preview: msg.previews.first().cloned(),
         wire_quote,
-        body_text: msg.body.clone(),
+        notification_preview_body: msg.body.clone(),
         source_to_remember,
     })
 }
@@ -721,7 +722,7 @@ fn apply_notification_policy(
         app.notifications.pending_bell = true;
     }
     if app.notifications.desktop_notifications && not_muted_or_blocked {
-        let notif_body = r.body_text.as_deref().unwrap_or("");
+        let notif_body = r.notification_preview_body.as_deref().unwrap_or("");
         let notif_group = if r.is_group {
             app.store
                 .conversations
