@@ -327,11 +327,80 @@ pub enum GroupMenuState {
     LeaveConfirm, // y/n confirmation
 }
 
-/// An action available in the message action menu.
-pub struct MenuAction {
+/// An item in the group-menu overlay (Manage members / Rename / Leave / ...).
+pub struct GroupMenuItem {
     pub label: &'static str,
     pub key_hint: &'static str,
     pub nerd_icon: &'static str,
+}
+
+/// An item in the per-message action-menu overlay (Reply / Edit / React / ...).
+/// `key_hint` is type-safe: every variant of [`ActionMenuHint`] must be handled
+/// by [`App::execute_action_by_hint`] (compiler-enforced exhaustive match), and
+/// adding a new action means adding a variant, an `action_menu_items` entry,
+/// and an `execute_action_by_hint` arm at the same time.
+pub struct ActionMenuItem {
+    pub label: &'static str,
+    pub key_hint: ActionMenuHint,
+    pub nerd_icon: &'static str,
+}
+
+/// Compile-time-checked discriminator for the per-message action menu.
+///
+/// Each variant maps to exactly one keyboard shortcut character. Changes here
+/// force the dispatcher and the menu builder to be updated in lockstep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionMenuHint {
+    Reply,
+    Edit,
+    React,
+    Forward,
+    Copy,
+    Delete,
+    PinToggle,
+    Vote,
+    EndPoll,
+    OpenAttachment,
+    OpenLink,
+}
+
+impl ActionMenuHint {
+    /// Single-letter shortcut for this action. Used both as the display hint
+    /// in the menu overlay and as the keyboard binding.
+    pub fn key_char(self) -> char {
+        match self {
+            Self::Reply => 'q',
+            Self::Edit => 'e',
+            Self::React => 'r',
+            Self::Forward => 'f',
+            Self::Copy => 'y',
+            Self::Delete => 'd',
+            Self::PinToggle => 'p',
+            Self::Vote => 'v',
+            Self::EndPoll => 'x',
+            Self::OpenAttachment => 'o',
+            Self::OpenLink => 'l',
+        }
+    }
+
+    /// Parse a keypress back into a hint. Returns `None` for any char that
+    /// doesn't correspond to a menu action.
+    pub fn from_char(c: char) -> Option<Self> {
+        Some(match c {
+            'q' => Self::Reply,
+            'e' => Self::Edit,
+            'r' => Self::React,
+            'f' => Self::Forward,
+            'y' => Self::Copy,
+            'd' => Self::Delete,
+            'p' => Self::PinToggle,
+            'v' => Self::Vote,
+            'x' => Self::EndPoll,
+            'o' => Self::OpenAttachment,
+            'l' => Self::OpenLink,
+            _ => return None,
+        })
+    }
 }
 
 /// Context saved when the pin duration picker is open (remembers which message is being pinned).
@@ -1618,7 +1687,7 @@ impl App {
     }
 
     /// Build the list of available group menu actions (context-dependent).
-    pub fn group_menu_items(&self) -> Vec<MenuAction> {
+    pub fn group_menu_items(&self) -> Vec<GroupMenuItem> {
         let is_group = self
             .active_conversation
             .as_ref()
@@ -1626,34 +1695,34 @@ impl App {
             .is_some_and(|c| c.is_group);
         if is_group {
             vec![
-                MenuAction {
+                GroupMenuItem {
                     label: "Members",
                     key_hint: "m",
                     nerd_icon: "\u{f0849}",
                 },
-                MenuAction {
+                GroupMenuItem {
                     label: "Add member",
                     key_hint: "a",
                     nerd_icon: "\u{f0234}",
                 },
-                MenuAction {
+                GroupMenuItem {
                     label: "Remove member",
                     key_hint: "r",
                     nerd_icon: "\u{f0235}",
                 },
-                MenuAction {
+                GroupMenuItem {
                     label: "Rename",
                     key_hint: "n",
                     nerd_icon: "\u{f03eb}",
                 },
-                MenuAction {
+                GroupMenuItem {
                     label: "Leave",
                     key_hint: "l",
                     nerd_icon: "\u{f0a79}",
                 },
             ]
         } else {
-            vec![MenuAction {
+            vec![GroupMenuItem {
                 label: "Create group",
                 key_hint: "c",
                 nerd_icon: "\u{f0234}",
@@ -2194,87 +2263,87 @@ impl App {
     }
 
     /// Build the list of available actions for the focused message.
-    pub fn action_menu_items(&self) -> Vec<MenuAction> {
+    pub fn action_menu_items(&self) -> Vec<ActionMenuItem> {
         let msg = match self.selected_message() {
             Some(m) => m,
             None => return Vec::new(),
         };
         let mut items = Vec::new();
         if !msg.is_system && !msg.is_deleted {
-            items.push(MenuAction {
+            items.push(ActionMenuItem {
                 label: "Reply",
-                key_hint: "q",
+                key_hint: ActionMenuHint::Reply,
                 nerd_icon: "\u{f045a}",
             });
         }
         if msg.sender == "you" && !msg.is_system && !msg.is_deleted {
-            items.push(MenuAction {
+            items.push(ActionMenuItem {
                 label: "Edit",
-                key_hint: "e",
+                key_hint: ActionMenuHint::Edit,
                 nerd_icon: "\u{f03eb}",
             });
         }
         if !msg.is_system {
-            items.push(MenuAction {
+            items.push(ActionMenuItem {
                 label: "React",
-                key_hint: "r",
+                key_hint: ActionMenuHint::React,
                 nerd_icon: "\u{f0785}",
             });
         }
         if !msg.is_system && !msg.is_deleted {
-            items.push(MenuAction {
+            items.push(ActionMenuItem {
                 label: "Forward",
-                key_hint: "f",
+                key_hint: ActionMenuHint::Forward,
                 nerd_icon: "\u{f04d6}",
             });
         }
-        items.push(MenuAction {
+        items.push(ActionMenuItem {
             label: "Copy",
-            key_hint: "y",
+            key_hint: ActionMenuHint::Copy,
             nerd_icon: "\u{f018f}",
         });
         if !msg.is_system && !msg.is_deleted {
-            items.push(MenuAction {
+            items.push(ActionMenuItem {
                 label: "Delete",
-                key_hint: "d",
+                key_hint: ActionMenuHint::Delete,
                 nerd_icon: "\u{f0a79}",
             });
         }
         if !msg.is_system && !msg.is_deleted {
-            items.push(MenuAction {
+            items.push(ActionMenuItem {
                 label: if msg.is_pinned { "Unpin" } else { "Pin" },
-                key_hint: "p",
+                key_hint: ActionMenuHint::PinToggle,
                 nerd_icon: "\u{f0403}",
             });
         }
         if let Some(ref poll) = msg.poll_data {
             if !poll.closed {
-                items.push(MenuAction {
+                items.push(ActionMenuItem {
                     label: "Vote",
-                    key_hint: "v",
+                    key_hint: ActionMenuHint::Vote,
                     nerd_icon: "\u{f0e73}",
                 });
             }
             if msg.sender == "you" && !poll.closed {
-                items.push(MenuAction {
+                items.push(ActionMenuItem {
                     label: "End Poll",
-                    key_hint: "x",
+                    key_hint: ActionMenuHint::EndPoll,
                     nerd_icon: "\u{f073a}",
                 });
             }
         }
         if !msg.is_deleted {
             if extract_file_uri(&msg.body).is_some() {
-                items.push(MenuAction {
+                items.push(ActionMenuItem {
                     label: "Open attachment",
-                    key_hint: "o",
+                    key_hint: ActionMenuHint::OpenAttachment,
                     nerd_icon: "\u{f15b5}",
                 });
             }
             if extract_http_url(&msg.body).is_some() {
-                items.push(MenuAction {
+                items.push(ActionMenuItem {
                     label: "Open link",
-                    key_hint: "l",
+                    key_hint: ActionMenuHint::OpenLink,
                     nerd_icon: "\u{f0337}",
                 });
             }
@@ -2316,30 +2385,15 @@ impl App {
                 None
             }
             ListKeyAction::None => {
-                // Action menu shortcut keys
-                if let KeyCode::Char(c) = code {
-                    let hint = match c {
-                        'q' => "q",
-                        'e' => "e",
-                        'r' => "r",
-                        'f' => "f",
-                        'y' => "y",
-                        'd' => "d",
-                        'p' => "p",
-                        'v' => "v",
-                        'x' => "x",
-                        'o' => "o",
-                        'l' => "l",
-                        _ => return None,
-                    };
-                    // Only execute if this action is available in the menu
-                    let items = self.action_menu_items();
-                    if items.iter().any(|a| a.key_hint == hint) {
-                        self.close_overlay();
-                        self.execute_action_by_hint(hint)
-                    } else {
-                        None
-                    }
+                // Action menu shortcut keys: parse the keypress into a hint,
+                // then check that the hint corresponds to an action currently
+                // present in the menu (the menu items vary by message state).
+                let KeyCode::Char(c) = code else { return None };
+                let hint = ActionMenuHint::from_char(c)?;
+                let items = self.action_menu_items();
+                if items.iter().any(|a| a.key_hint == hint) {
+                    self.close_overlay();
+                    self.execute_action_by_hint(hint)
                 } else {
                     None
                 }
@@ -2348,11 +2402,12 @@ impl App {
         }
     }
 
-    /// Execute an action by its key hint character. Reuses the same logic as
-    /// the direct Normal-mode keybinds.
-    fn execute_action_by_hint(&mut self, hint: &str) -> Option<SendRequest> {
+    /// Execute an action by its hint. Reuses the same logic as the direct
+    /// Normal-mode keybinds. Exhaustive match: adding a variant to
+    /// [`ActionMenuHint`] is a compiler error here until handled.
+    fn execute_action_by_hint(&mut self, hint: ActionMenuHint) -> Option<SendRequest> {
         match hint {
-            "q" => {
+            ActionMenuHint::Reply => {
                 // Reply — same as Normal 'q'
                 if let Some(msg) = self.selected_message()
                     && !msg.is_system
@@ -2375,7 +2430,7 @@ impl App {
                 }
                 None
             }
-            "e" => {
+            ActionMenuHint::Edit => {
                 // Edit — same as Normal 'e'
                 if let Some(msg) = self.selected_message()
                     && msg.sender == "you"
@@ -2394,7 +2449,7 @@ impl App {
                 }
                 None
             }
-            "r" => {
+            ActionMenuHint::React => {
                 // React — open reaction picker
                 if self.selected_message().is_some_and(|m| !m.is_system) {
                     self.open_overlay(OverlayKind::ReactionPicker);
@@ -2402,7 +2457,7 @@ impl App {
                 }
                 None
             }
-            "f" => {
+            ActionMenuHint::Forward => {
                 // Forward — open conversation picker
                 if let Some(msg) = self.selected_message()
                     && !msg.is_system
@@ -2413,12 +2468,12 @@ impl App {
                 }
                 None
             }
-            "y" => {
+            ActionMenuHint::Copy => {
                 // Copy
                 self.copy_selected_message(false);
                 None
             }
-            "d" => {
+            ActionMenuHint::Delete => {
                 // Delete — open delete confirm
                 if let Some(msg) = self.selected_message()
                     && !msg.is_system
@@ -2428,11 +2483,11 @@ impl App {
                 }
                 None
             }
-            "p" => {
+            ActionMenuHint::PinToggle => {
                 // Pin/Unpin
                 crate::handlers::keys::execute_pin_toggle(self)
             }
-            "v" => {
+            ActionMenuHint::Vote => {
                 // Vote on poll
                 if let Some(msg) = self.selected_message()
                     && let Some(ref poll) = msg.poll_data
@@ -2468,7 +2523,7 @@ impl App {
                 }
                 None
             }
-            "x" => {
+            ActionMenuHint::EndPoll => {
                 // End poll
                 if let Some(msg) = self.selected_message()
                     && msg.sender == "you"
@@ -2501,7 +2556,7 @@ impl App {
                 }
                 None
             }
-            "o" => {
+            ActionMenuHint::OpenAttachment => {
                 // Open attachment
                 if let Some(msg) = self.selected_message()
                     && let Some(uri) = extract_file_uri(&msg.body)
@@ -2510,7 +2565,7 @@ impl App {
                 }
                 None
             }
-            "l" => {
+            ActionMenuHint::OpenLink => {
                 // Open link
                 if let Some(msg) = self.selected_message()
                     && let Some(url) = extract_http_url(&msg.body)
@@ -2519,7 +2574,6 @@ impl App {
                 }
                 None
             }
-            _ => None,
         }
     }
 
@@ -8869,6 +8923,47 @@ mod tests {
             .insert("+1".to_string(), "Alice".to_string());
         app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
         assert!(app.store.conversations["+1"].accepted);
+    }
+
+    #[test]
+    fn action_menu_hint_roundtrips_through_char() {
+        // Every variant in ActionMenuHint must round-trip through its key_char.
+        // This guards the from_char/key_char tables from drift if a variant
+        // is added without updating both.
+        let all = [
+            ActionMenuHint::Reply,
+            ActionMenuHint::Edit,
+            ActionMenuHint::React,
+            ActionMenuHint::Forward,
+            ActionMenuHint::Copy,
+            ActionMenuHint::Delete,
+            ActionMenuHint::PinToggle,
+            ActionMenuHint::Vote,
+            ActionMenuHint::EndPoll,
+            ActionMenuHint::OpenAttachment,
+            ActionMenuHint::OpenLink,
+        ];
+        for hint in all {
+            let c = hint.key_char();
+            assert_eq!(
+                ActionMenuHint::from_char(c),
+                Some(hint),
+                "round-trip failed for {hint:?} (char {c})"
+            );
+        }
+
+        // Distinct chars across all variants (no accidental aliasing).
+        let chars: Vec<char> = all.iter().map(|h| h.key_char()).collect();
+        let unique: std::collections::HashSet<&char> = chars.iter().collect();
+        assert_eq!(
+            unique.len(),
+            chars.len(),
+            "ActionMenuHint variants must map to distinct keys; got {chars:?}"
+        );
+
+        // Garbage chars don't smuggle a variant in.
+        assert_eq!(ActionMenuHint::from_char('z'), None);
+        assert_eq!(ActionMenuHint::from_char(' '), None);
     }
 
     #[rstest]
