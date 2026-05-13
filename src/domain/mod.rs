@@ -10,6 +10,7 @@ mod emoji_picker;
 mod file_picker;
 mod image;
 mod input;
+mod lock;
 mod mouse;
 mod notification;
 mod overlays;
@@ -23,6 +24,10 @@ pub use emoji_picker::{CATEGORIES, EmojiPickerAction, EmojiPickerSource, EmojiPi
 pub use file_picker::{FilePickerOutcome, FilePickerState};
 pub use image::ImageState;
 pub use input::InputState;
+#[allow(unused_imports)]
+pub use lock::{LockPhase, LockState};
+#[allow(unused_imports)]
+pub use lock::{hash_passphrase, load_hash, lock_hash_path, save_hash, verify_passphrase};
 pub use mouse::MouseState;
 pub use notification::NotificationState;
 pub use overlays::{
