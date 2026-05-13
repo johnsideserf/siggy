@@ -178,6 +178,10 @@ async fn main() -> Result<()> {
     }
 
     // Load config
+    let resolved_config_path = match config_path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => Config::default_config_path(),
+    };
     let mut config = Config::load(config_path)?;
     if let Some(acct) = account {
         config.account = acct;
@@ -206,6 +210,7 @@ async fn main() -> Result<()> {
         force_setup,
         demo_mode,
         incognito,
+        &resolved_config_path,
     )
     .await;
 
@@ -233,6 +238,7 @@ async fn run_main_flow(
     force_setup: bool,
     demo_mode: bool,
     incognito: bool,
+    config_path: &std::path::Path,
 ) -> Result<()> {
     if demo_mode {
         let database = db::Database::open_in_memory()?;
@@ -246,6 +252,7 @@ async fn run_main_flow(
             &demo_config,
             database,
             false,
+            config_path,
         )
         .await;
     }
@@ -354,6 +361,7 @@ async fn run_main_flow(
         config,
         database,
         incognito,
+        config_path,
     )
     .await;
 
@@ -1190,8 +1198,9 @@ async fn run_app(
     config: &Config,
     db: db::Database,
     incognito: bool,
+    config_path: &std::path::Path,
 ) -> Result<()> {
-    let mut app = App::new(config.account.clone(), db);
+    let mut app = App::new(config.account.clone(), db, config_path);
     app.notifications.notify_direct = config.notify_direct;
     app.notifications.notify_group = config.notify_group;
     app.notifications.desktop_notifications = config.desktop_notifications;

@@ -435,6 +435,7 @@ mod snapshot_tests {
     use crate::image_render::ImageProtocol;
     use chrono::NaiveDate;
     use ratatui::{Terminal, backend::TestBackend};
+    use tempfile::tempdir;
 
     /// Fixed date for deterministic timestamps in snapshots.
     fn fixed_date() -> NaiveDate {
@@ -443,8 +444,13 @@ mod snapshot_tests {
 
     /// Create a fully-populated demo App with deterministic data.
     fn demo_app() -> App {
+        let dir = tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        // Leak the tempdir so its drop doesn't reclaim the path mid-test.
+        // The OS reclaims temp dirs on process exit.
+        std::mem::forget(dir);
         let db = Database::open_in_memory().unwrap();
-        let mut app = App::new("+15559999999".to_string(), db);
+        let mut app = App::new("+15559999999".to_string(), db, &config_path);
         app.connected = true;
         app.loading = false;
         app.is_demo = true;

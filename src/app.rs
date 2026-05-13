@@ -620,8 +620,6 @@ pub struct App {
     /// state structs and persists across close/reopen.
     pub current_overlay: Option<OverlayKind>,
     /// Session-lock state (boss-key / auto-lock).
-    // Subsequent tasks in #261 will read this field; suppress until then.
-    #[allow(dead_code)]
     pub lock: LockState,
 }
 
@@ -2950,7 +2948,7 @@ impl App {
         None
     }
 
-    pub fn new(account: String, db: Database) -> Self {
+    pub fn new(account: String, db: Database, config_path: &std::path::Path) -> Self {
         let (image_render_tx, image_render_rx) = mpsc::channel();
         Self {
             store: ConversationStore::new(),
@@ -3046,7 +3044,10 @@ impl App {
             settings_mouse_snapshot: true,
             sync: SyncState::new(),
             current_overlay: None,
-            lock: LockState::default(),
+            lock: LockState {
+                hash_path: crate::domain::lock_hash_path(config_path),
+                ..Default::default()
+            },
         }
     }
 
@@ -3461,6 +3462,24 @@ impl App {
         }
     }
 
+    /// Trigger the lock screen. If no passphrase hash exists yet, transitions
+    /// to `SetPassphrase` so the user can create one. Otherwise transitions
+    /// to `LockEntry`. Clears the input buffer and any pending error.
+    pub fn lock_now(&mut self) {
+        let has_hash = crate::domain::load_hash(&self.lock.hash_path)
+            .ok()
+            .flatten()
+            .is_some();
+        self.lock.phase = if has_hash {
+            crate::domain::LockPhase::LockEntry
+        } else {
+            crate::domain::LockPhase::SetPassphrase
+        };
+        self.lock.input_buffer.clear();
+        self.lock.error = None;
+        self.lock.old_passphrase_verified = false;
+    }
+
     /// Handle global keys that work in both Normal and Insert mode.
     /// Returns true if the key was consumed.
     pub fn handle_global_key(&mut self, modifiers: KeyModifiers, code: KeyCode) -> bool {
@@ -3515,7 +3534,10 @@ impl App {
                 self.sidebar_filtered.clear();
                 true
             }
-            Some(KeyAction::Lock) => false, // T4 will replace with self.lock_now(); true
+            Some(KeyAction::Lock) => {
+                self.lock_now();
+                true
+            }
             _ => false,
         }
     }
@@ -6311,8 +6333,13 @@ mod tests {
 
     #[fixture]
     fn app() -> App {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        // Leak the tempdir so it lives as long as the test process. Tests are
+        // short-lived and the OS reclaims temp dirs on exit anyway.
+        std::mem::forget(dir);
         let db = Database::open_in_memory().unwrap();
-        let mut app = App::new("+10000000000".to_string(), db);
+        let mut app = App::new("+10000000000".to_string(), db, &config_path);
         app.set_connected();
         app
     }

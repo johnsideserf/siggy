@@ -43,6 +43,8 @@ pub struct LockState {
     /// flow is authorised without re-prompting or re-reading the hash file.
     /// Cleared when phase returns to Unlocked.
     pub old_passphrase_verified: bool,
+    /// Filesystem path to the on-disk lock hash file. Set once at App::new.
+    pub hash_path: std::path::PathBuf,
 }
 
 impl LockState {
