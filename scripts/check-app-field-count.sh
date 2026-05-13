@@ -11,9 +11,12 @@
 # If a field addition is genuinely necessary (rare), lower BASELINE at the same
 # time as the extraction, or raise BASELINE with a justification in the PR body.
 #
+# Baseline history:
+#   66 -> 67: added lock: LockState for session-lock / boss-key feature (#261)
+#
 set -euo pipefail
 
-BASELINE=66
+BASELINE=67
 
 count=$(awk '
   /^pub struct App \{/ { inside=1; next }

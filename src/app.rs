@@ -23,9 +23,10 @@ use crate::db::Database;
 use crate::domain::{
     ActionMenuState, ContactsOverlayState, EmojiPickerAction, EmojiPickerSource, EmojiPickerState,
     FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, InputState,
-    KeybindingsOverlayState, MouseState, NotificationState, PendingState, PinDurationOverlayState,
-    PollVoteOverlayState, ProfileOverlayState, ReactionState, ScrollState, SearchAction,
-    SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState, VerifyOverlayState,
+    KeybindingsOverlayState, LockState, MouseState, NotificationState, PendingState,
+    PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, ScrollState,
+    SearchAction, SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState,
+    VerifyOverlayState,
 };
 use crate::image_render;
 use crate::image_render::ImageProtocol;
@@ -618,6 +619,10 @@ pub struct App {
     /// (filter text, cursor index, candidate lists) lives on the per-overlay
     /// state structs and persists across close/reopen.
     pub current_overlay: Option<OverlayKind>,
+    /// Session-lock state (boss-key / auto-lock).
+    // Subsequent tasks in #261 will read this field; suppress until then.
+    #[allow(dead_code)]
+    pub lock: LockState,
 }
 
 pub const QUICK_REACTIONS: &[&str] = &[
@@ -3041,6 +3046,7 @@ impl App {
             settings_mouse_snapshot: true,
             sync: SyncState::new(),
             current_overlay: None,
+            lock: LockState::default(),
         }
     }
 
