@@ -7,8 +7,9 @@
 
 use std::io::Cursor;
 use std::path::Path;
+use std::time::Instant;
 
-use image::GenericImageView;
+use image::{GenericImageView, ImageReader, Limits};
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -387,9 +388,38 @@ pub fn kitty_id_color(image_id: u32) -> Color {
 /// Each terminal cell represents two vertical pixels using the upper-half-block
 /// character (▀) with the top pixel as foreground and bottom pixel as background.
 ///
-/// Returns `None` if the image cannot be loaded or decoded.
+/// Returns `None` if the image cannot be loaded or decoded, or if the source
+/// image exceeds `MAX_INPUT_DIM` on either axis. The size cap is defensive:
+/// a pathological link-preview og:image (e.g. a 30000×30000 promotional poster)
+/// can pin a `spawn_blocking` thread for minutes inside the resize step, and
+/// the output is at most a 30-cell column anyway. See issue #408.
 pub fn render_image(path: &Path, max_width: u32) -> Option<Vec<Line<'static>>> {
-    let img = image::open(path).ok()?;
+    /// Largest input dimension we'll attempt to decode. Anything over this
+    /// is treated as a broken / hostile image and silently skipped.
+    const MAX_INPUT_DIM: u32 = 8192;
+
+    let start = Instant::now();
+    crate::debug_log::logf(format_args!(
+        "render_image start: path={} max_width={max_width}",
+        path.display()
+    ));
+
+    let mut reader = ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_INPUT_DIM);
+    limits.max_image_height = Some(MAX_INPUT_DIM);
+    reader.limits(limits);
+    let img = match reader.decode() {
+        Ok(img) => img,
+        Err(e) => {
+            crate::debug_log::logf(format_args!(
+                "render_image decode failed: path={} err={e} elapsed_ms={}",
+                path.display(),
+                start.elapsed().as_millis()
+            ));
+            return None;
+        }
+    };
 
     let cap_width = max_width;
     let cap_height: u32 = 60; // 30 cell-rows × 2 pixels per row
@@ -451,6 +481,15 @@ pub fn render_image(path: &Path, max_width: u32) -> Option<Vec<Line<'static>>> {
         lines.push(Line::from(spans));
     }
 
+    crate::debug_log::logf(format_args!(
+        "render_image done: path={} elapsed_ms={} src={}x{} out={}x{}",
+        path.display(),
+        start.elapsed().as_millis(),
+        orig_w,
+        orig_h,
+        new_w,
+        new_h
+    ));
     Some(lines)
 }
 
