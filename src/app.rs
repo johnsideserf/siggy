@@ -6427,7 +6427,8 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::signal::types::{
-        Attachment, Contact, Group, Mention, SignalEvent, SignalMessage, StyleType, TextStyle,
+        Attachment, Contact, Group, IdentityInfo, Mention, PollData, PollOption, SignalEvent,
+        SignalMessage, StyleType, TextStyle, TrustLevel,
     };
     use crossterm::event::{KeyCode, KeyModifiers};
     use rstest::{fixture, rstest};
@@ -10640,5 +10641,366 @@ mod tests {
         app.end_sync();
         assert!(!app.sync.active);
         assert!(!app.notifications.pending_bell);
+    }
+
+    // --- SignalEvent dispatch coverage (closes #418) ---
+    //
+    // Each test fires one previously-uncovered SignalEvent variant through
+    // App::handle_signal_event and asserts the expected observable mutation.
+    // A future regression that turns any variant into a silent no-op will
+    // fail the test for that variant.
+
+    /// Seed a 1:1 conversation with one incoming message at the given timestamp.
+    /// Returns the conversation id (== source phone for 1:1).
+    fn seed_conv_with_msg(app: &mut App, source: &str, body: &str, ts_ms: i64) -> String {
+        let mut m = make_msg_with_ts(source, Some(body), None, false, ts_ms);
+        m.source_name = Some("Alice".to_string());
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+        source.to_string()
+    }
+
+    #[rstest]
+    fn edit_received_updates_body_and_marks_edited(mut app: App) {
+        let ts = 1_700_000_000_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
+
+        app.handle_signal_event(SignalEvent::EditReceived {
+            conv_id: conv_id.clone(),
+            sender: "+1".to_string(),
+            sender_name: Some("Alice".to_string()),
+            target_timestamp: ts,
+            new_body: "edited body".to_string(),
+            new_timestamp: ts + 1,
+            is_outgoing: false,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert_eq!(conv.messages[idx].body, "edited body");
+        assert!(conv.messages[idx].is_edited);
+    }
+
+    #[rstest]
+    fn remote_delete_received_clears_body_and_reactions(mut app: App) {
+        let ts = 1_700_000_001_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
+
+        // Add a reaction so we can verify clearing.
+        app.handle_signal_event(SignalEvent::ReactionReceived {
+            conv_id: conv_id.clone(),
+            emoji: "👍".to_string(),
+            sender: "+1".to_string(),
+            sender_name: Some("Alice".to_string()),
+            target_author: "+1".to_string(),
+            target_timestamp: ts,
+            is_remove: false,
+        });
+
+        app.handle_signal_event(SignalEvent::RemoteDeleteReceived {
+            conv_id: conv_id.clone(),
+            sender: "+1".to_string(),
+            target_timestamp: ts,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert!(conv.messages[idx].is_deleted);
+        assert_eq!(conv.messages[idx].body, "[deleted]");
+        assert!(conv.messages[idx].reactions.is_empty());
+    }
+
+    #[rstest]
+    fn pin_received_sets_pinned_and_inserts_system_message(mut app: App) {
+        let ts = 1_700_000_002_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
+        let before = app.store.conversations[&conv_id].messages.len();
+
+        app.handle_signal_event(SignalEvent::PinReceived {
+            conv_id: conv_id.clone(),
+            sender: "+1".to_string(),
+            sender_name: Some("Alice".to_string()),
+            target_author: "+1".to_string(),
+            target_timestamp: ts,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert!(conv.messages[idx].is_pinned);
+        assert_eq!(conv.messages.len(), before + 1, "system message inserted");
+        let last = conv.messages.last().unwrap();
+        assert!(last.is_system);
+        assert!(last.body.contains("pinned"));
+    }
+
+    #[rstest]
+    fn unpin_received_clears_pinned(mut app: App) {
+        let ts = 1_700_000_003_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
+
+        app.handle_signal_event(SignalEvent::PinReceived {
+            conv_id: conv_id.clone(),
+            sender: "+1".to_string(),
+            sender_name: Some("Alice".to_string()),
+            target_author: "+1".to_string(),
+            target_timestamp: ts,
+        });
+        assert!(
+            app.store.conversations[&conv_id]
+                .find_msg_idx(ts)
+                .map(|i| app.store.conversations[&conv_id].messages[i].is_pinned)
+                .unwrap_or(false)
+        );
+
+        app.handle_signal_event(SignalEvent::UnpinReceived {
+            conv_id: conv_id.clone(),
+            sender: "+1".to_string(),
+            sender_name: Some("Alice".to_string()),
+            target_author: "+1".to_string(),
+            target_timestamp: ts,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert!(!conv.messages[idx].is_pinned);
+        let last = conv.messages.last().unwrap();
+        assert!(last.is_system);
+        assert!(last.body.contains("unpinned"));
+    }
+
+    fn sample_poll() -> PollData {
+        PollData {
+            question: "tabs or spaces?".to_string(),
+            options: vec![
+                PollOption {
+                    id: 0,
+                    text: "tabs".to_string(),
+                },
+                PollOption {
+                    id: 1,
+                    text: "spaces".to_string(),
+                },
+            ],
+            allow_multiple: false,
+            closed: false,
+        }
+    }
+
+    #[rstest]
+    fn poll_created_attaches_to_existing_message(mut app: App) {
+        let ts = 1_700_000_010_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "vote!", ts);
+
+        app.handle_signal_event(SignalEvent::PollCreated {
+            conv_id: conv_id.clone(),
+            timestamp: ts,
+            poll_data: sample_poll(),
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        let poll = conv.messages[idx]
+            .poll_data
+            .as_ref()
+            .expect("poll attached");
+        assert_eq!(poll.question, "tabs or spaces?");
+    }
+
+    #[rstest]
+    fn poll_created_before_message_buffers_then_attaches_on_arrival(mut app: App) {
+        let ts = 1_700_000_011_000;
+        // Conversation must exist so the buffer-insert branch runs (the
+        // handle_poll_created code looks up conversations.get_mut).
+        seed_conv_with_msg(&mut app, "+1", "ignore", ts - 1000);
+
+        app.handle_signal_event(SignalEvent::PollCreated {
+            conv_id: "+1".to_string(),
+            timestamp: ts,
+            poll_data: sample_poll(),
+        });
+
+        // The poll arrived before the message that carries it. The poll should
+        // be parked in pending_polls until the message lands.
+        assert!(
+            app.poll_vote
+                .pending_polls
+                .contains_key(&("+1".to_string(), ts))
+        );
+
+        // Now the message arrives via the normal MessageReceived path.
+        let m = make_msg_with_ts("+1", Some("vote!"), None, false, ts);
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+        let conv = &app.store.conversations["+1"];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        let poll = conv.messages[idx]
+            .poll_data
+            .as_ref()
+            .expect("poll attached on arrival");
+        assert_eq!(poll.question, "tabs or spaces?");
+        assert!(
+            !app.poll_vote
+                .pending_polls
+                .contains_key(&("+1".to_string(), ts))
+        );
+    }
+
+    #[rstest]
+    fn poll_vote_received_upserts_vote(mut app: App) {
+        let ts = 1_700_000_012_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "vote!", ts);
+        app.handle_signal_event(SignalEvent::PollCreated {
+            conv_id: conv_id.clone(),
+            timestamp: ts,
+            poll_data: sample_poll(),
+        });
+
+        app.handle_signal_event(SignalEvent::PollVoteReceived {
+            conv_id: conv_id.clone(),
+            target_timestamp: ts,
+            voter: "+2".to_string(),
+            voter_name: Some("Bob".to_string()),
+            option_indexes: vec![0],
+            vote_count: 1,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        let votes = &conv.messages[idx].poll_votes;
+        assert_eq!(votes.len(), 1);
+        assert_eq!(votes[0].voter, "+2");
+        assert_eq!(votes[0].option_indexes, vec![0]);
+
+        // Upsert: same voter, different option, should replace not duplicate.
+        app.handle_signal_event(SignalEvent::PollVoteReceived {
+            conv_id: conv_id.clone(),
+            target_timestamp: ts,
+            voter: "+2".to_string(),
+            voter_name: Some("Bob".to_string()),
+            option_indexes: vec![1],
+            vote_count: 2,
+        });
+        let conv = &app.store.conversations[&conv_id];
+        let votes = &conv.messages[conv.find_msg_idx(ts).unwrap()].poll_votes;
+        assert_eq!(votes.len(), 1, "vote upserted, not duplicated");
+        assert_eq!(votes[0].option_indexes, vec![1]);
+    }
+
+    #[rstest]
+    fn poll_terminated_marks_closed(mut app: App) {
+        let ts = 1_700_000_013_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "vote!", ts);
+        app.handle_signal_event(SignalEvent::PollCreated {
+            conv_id: conv_id.clone(),
+            timestamp: ts,
+            poll_data: sample_poll(),
+        });
+
+        app.handle_signal_event(SignalEvent::PollTerminated {
+            conv_id: conv_id.clone(),
+            target_timestamp: ts,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        let poll = conv.messages[idx]
+            .poll_data
+            .as_ref()
+            .expect("poll attached");
+        assert!(poll.closed);
+    }
+
+    #[rstest]
+    fn identity_list_populates_trust_map(mut app: App) {
+        app.handle_signal_event(SignalEvent::IdentityList(vec![
+            IdentityInfo {
+                number: Some("+1".to_string()),
+                uuid: None,
+                fingerprint: "fp1".to_string(),
+                safety_number: "sn1".to_string(),
+                trust_level: TrustLevel::TrustedVerified,
+                added_timestamp: 0,
+            },
+            IdentityInfo {
+                number: Some("+2".to_string()),
+                uuid: None,
+                fingerprint: "fp2".to_string(),
+                safety_number: "sn2".to_string(),
+                trust_level: TrustLevel::Untrusted,
+                added_timestamp: 0,
+            },
+        ]));
+
+        assert_eq!(
+            app.identity_trust.get("+1").copied(),
+            Some(TrustLevel::TrustedVerified)
+        );
+        assert_eq!(
+            app.identity_trust.get("+2").copied(),
+            Some(TrustLevel::Untrusted)
+        );
+    }
+
+    #[rstest]
+    fn expiration_timer_changed_updates_conv_and_inserts_system_message(mut app: App) {
+        let ts = 1_700_000_020_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
+        let before = app.store.conversations[&conv_id].messages.len();
+
+        let later = chrono::DateTime::from_timestamp_millis(ts + 1000).unwrap();
+        app.handle_signal_event(SignalEvent::ExpirationTimerChanged {
+            conv_id: conv_id.clone(),
+            seconds: 300,
+            body: "Alice set the timer to 5 minutes".to_string(),
+            timestamp: later,
+            timestamp_ms: ts + 1000,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        assert_eq!(conv.expiration_timer, 300);
+        assert_eq!(conv.messages.len(), before + 1, "system message inserted");
+        let last = conv.messages.last().unwrap();
+        assert!(last.is_system);
+        assert!(last.body.contains("5 minutes"));
+    }
+
+    #[rstest]
+    fn receipt_viewed_upgrades_outgoing_status(mut app: App) {
+        let ts = 1_700_000_030_000;
+        // Outgoing message: handle_receipt only upgrades messages from "you".
+        let mut m = make_msg_with_ts("+10000000000", Some("hi"), None, true, ts);
+        m.destination = Some("+1".to_string());
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+        app.handle_signal_event(SignalEvent::ReceiptReceived {
+            sender: "+1".to_string(),
+            receipt_type: "VIEWED".to_string(),
+            timestamps: vec![ts],
+        });
+
+        let conv = &app.store.conversations["+1"];
+        let idx = conv.find_msg_idx(ts).expect("outgoing message present");
+        assert_eq!(conv.messages[idx].status, Some(MessageStatus::Viewed));
+    }
+
+    #[rstest]
+    fn receipt_falls_back_to_group_scan_when_sender_is_not_conv_id(mut app: App) {
+        let ts = 1_700_000_031_000;
+        // Outgoing message keyed to a group, sent by us. The receipt arrives
+        // from a member's phone (+2), which is NOT the conv key (the group id).
+        // handle_receipt's 1:1 lookup misses, so the group-scan fallback must
+        // find the message by timestamp across all conversations.
+        let mut m = make_msg_with_ts("+10000000000", Some("hey"), Some("group_a"), true, ts);
+        m.destination = Some("group_a".to_string());
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+        app.handle_signal_event(SignalEvent::ReceiptReceived {
+            sender: "+2".to_string(),
+            receipt_type: "READ".to_string(),
+            timestamps: vec![ts],
+        });
+
+        let conv = &app.store.conversations["group_a"];
+        let idx = conv.find_msg_idx(ts).expect("group message present");
+        assert_eq!(conv.messages[idx].status, Some(MessageStatus::Read));
     }
 }
