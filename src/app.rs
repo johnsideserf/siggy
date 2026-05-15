@@ -248,9 +248,13 @@ pub(crate) fn show_desktop_notification(
     });
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    Insert,
+}
+
 /// Tag identifying which overlay is currently active.
-///
-/// Stored on `App.current_overlay` as the single source of truth for overlay
 /// visibility. Adding a new overlay requires adding a variant here and
 /// handling it in `App::handle_overlay_key`, which the compiler enforces
 /// via the exhaustive match.
@@ -307,12 +311,6 @@ pub struct ImageRenderResult {
     pub pre_native_png: Option<(String, String, u32, u32)>,
     /// Pre-encoded full Sixel for sixel_cache: (path, sixel_string)
     pub pre_sixel: Option<(String, String)>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode {
-    Normal,
-    Insert,
 }
 
 /// Which sub-overlay of the /group menu is currently active.
