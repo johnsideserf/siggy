@@ -102,6 +102,7 @@ async fn main() -> Result<()> {
     let mut incognito = false;
     let mut debug = false;
     let mut debug_full = false;
+    let mut reset_lock = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -144,6 +145,10 @@ async fn main() -> Result<()> {
                 debug_full = true;
                 i += 1;
             }
+            "--reset-lock" => {
+                reset_lock = true;
+                i += 1;
+            }
             "--help" => {
                 eprintln!("siggy - Terminal Signal client");
                 eprintln!();
@@ -159,6 +164,7 @@ async fn main() -> Result<()> {
                 eprintln!("      --incognito         No local message storage (in-memory only)");
                 eprintln!("      --debug             Write debug log (PII redacted)");
                 eprintln!("      --debug-full        Write debug log (full, unredacted)");
+                eprintln!("      --reset-lock        Delete the session-lock passphrase and exit");
                 eprintln!("      --help              Show this help");
                 std::process::exit(0);
             }
@@ -182,6 +188,21 @@ async fn main() -> Result<()> {
         Some(p) => std::path::PathBuf::from(p),
         None => Config::default_config_path(),
     };
+
+    if reset_lock {
+        let hash_path = domain::lock_hash_path(&resolved_config_path);
+        if hash_path.exists() {
+            std::fs::remove_file(&hash_path)?;
+            println!("Removed lock hash: {}", hash_path.display());
+        } else {
+            println!(
+                "No lock hash to remove (looked for {})",
+                hash_path.display()
+            );
+        }
+        return Ok(());
+    }
+
     let mut config = Config::load(config_path)?;
     if let Some(acct) = account {
         config.account = acct;
