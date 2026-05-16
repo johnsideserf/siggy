@@ -165,13 +165,15 @@ All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via
 | `/contacts` | `/c` | Browse synced contacts |
 | `/settings` | | Open settings overlay |
 | `/lock` | | Lock the session |
-| `/lock-reset` | | Change the lock passphrase |
+| `/lock-reset` | | Change the lock passphrase (needs current passphrase) |
 | `/help` | `/h` | Show help overlay |
 | `/quit` | `/q` | Exit siggy |
 
 Type `/` to open the autocomplete popup. Use `Tab` to complete, arrow keys to navigate.
 
 To message a new contact: `/join +15551234567` (E.164 format).
+
+**Forgot your lock passphrase?** Quit siggy (or kill the process) and run `siggy --reset-lock`. It deletes the stored passphrase hash and prints the path it removed. The next `/lock` will set a fresh passphrase.
 
 ## Keyboard Shortcuts
 
