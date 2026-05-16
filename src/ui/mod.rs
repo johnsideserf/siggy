@@ -160,6 +160,10 @@ pub(super) fn centered_popup(
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if app.lock.is_locked() {
+        crate::ui::overlays::lock_screen::draw_lock_screen(frame, app, frame.area());
+        return;
+    }
     app.image.link_url_map.clear();
     app.image.visible_images.clear();
     let size = frame.area();
@@ -435,6 +439,7 @@ mod snapshot_tests {
     use crate::image_render::ImageProtocol;
     use chrono::NaiveDate;
     use ratatui::{Terminal, backend::TestBackend};
+    use tempfile::tempdir;
 
     /// Fixed date for deterministic timestamps in snapshots.
     fn fixed_date() -> NaiveDate {
@@ -443,8 +448,13 @@ mod snapshot_tests {
 
     /// Create a fully-populated demo App with deterministic data.
     fn demo_app() -> App {
+        let dir = tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        // Leak the tempdir so its drop doesn't reclaim the path mid-test.
+        // The OS reclaims temp dirs on process exit.
+        std::mem::forget(dir);
         let db = Database::open_in_memory().unwrap();
-        let mut app = App::new("+15559999999".to_string(), db);
+        let mut app = App::new("+15559999999".to_string(), db, &config_path);
         app.connected = true;
         app.loading = false;
         app.is_demo = true;
@@ -755,6 +765,17 @@ mod snapshot_tests {
         let mut app = demo_app();
         app.emoji_picker.open(EmojiPickerSource::Input, None);
         app.open_overlay(OverlayKind::EmojiPicker);
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn test_lock_screen() {
+        let mut app = demo_app();
+        // Pretend a hash already exists by jumping straight into LockEntry.
+        app.lock.phase = crate::domain::LockPhase::LockEntry;
+        // Pre-fill some input to verify masking.
+        app.lock.input_buffer = "hello".to_string();
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
     }

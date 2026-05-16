@@ -19,6 +19,7 @@ use std::collections::HashMap;
 pub enum KeyAction {
     // Global
     Quit,
+    Lock,
     NextConversation,
     PrevConversation,
     ResizeSidebarLeft,
@@ -472,6 +473,7 @@ pub const INSERT_ACTIONS: &[KeyAction] = &[
 pub fn action_label(action: KeyAction) -> &'static str {
     match action {
         KeyAction::Quit => "Quit",
+        KeyAction::Lock => "Lock session",
         KeyAction::NextConversation => "Next conversation",
         KeyAction::PrevConversation => "Previous conversation",
         KeyAction::ResizeSidebarLeft => "Shrink sidebar",
@@ -547,6 +549,12 @@ pub fn default_profile() -> KeyBindings {
         KeyModifiers::CONTROL,
         KeyCode::Char('c'),
         KeyAction::Quit,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('l'),
+        KeyAction::Lock,
     );
     bind(
         &mut global,
@@ -856,6 +864,12 @@ pub fn emacs_profile() -> KeyBindings {
     );
     bind(
         &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('l'),
+        KeyAction::Lock,
+    );
+    bind(
+        &mut global,
         KeyModifiers::NONE,
         KeyCode::Tab,
         KeyAction::NextConversation,
@@ -1086,6 +1100,12 @@ pub fn minimal_profile() -> KeyBindings {
         KeyModifiers::CONTROL,
         KeyCode::Char('c'),
         KeyAction::Quit,
+    );
+    bind(
+        &mut global,
+        KeyModifiers::CONTROL,
+        KeyCode::Char('l'),
+        KeyAction::Lock,
     );
     bind(
         &mut global,

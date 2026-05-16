@@ -159,6 +159,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Show help",
     },
     CommandInfo {
+        name: "/lock",
+        alias: "",
+        args: "",
+        description: "Lock the session (requires passphrase to resume)",
+    },
+    CommandInfo {
+        name: "/lock-reset",
+        alias: "",
+        args: "",
+        description: "Change the lock passphrase",
+    },
+    CommandInfo {
         name: "/quit",
         alias: "/q",
         args: "",
@@ -179,6 +191,10 @@ pub enum InputAction {
     DeleteConversation,
     /// Quit the application
     Quit,
+    /// Lock the session immediately (boss key as a command).
+    Lock,
+    /// Begin the passphrase-change flow (locks the screen, prompts for current).
+    LockReset,
     /// Toggle sidebar visibility
     ToggleSidebar,
     /// Toggle terminal bell notifications (None = both, Some("direct"/"group") = specific)
@@ -259,6 +275,8 @@ pub fn parse_input(input: &str) -> InputAction {
         "/part" | "/p" => InputAction::Part,
         "/delete" => InputAction::DeleteConversation,
         "/quit" | "/q" => InputAction::Quit,
+        "/lock" => InputAction::Lock,
+        "/lock-reset" => InputAction::LockReset,
         "/sidebar" | "/sb" => InputAction::ToggleSidebar,
         "/bell" | "/notify" => {
             if arg.is_empty() {

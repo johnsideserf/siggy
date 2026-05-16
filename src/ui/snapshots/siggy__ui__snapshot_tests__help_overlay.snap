@@ -16,19 +16,19 @@ expression: output
                      │││  /contacts           Browse contacts               │too                   │
                      │││  /settings           Open settings                 │                      │
                      │││  /keybindings        Configure keybindings         │                      │
-                     │││  /quit               Exit siggy                    │ocalmarket.example.com│
+                     │││  /lock               Lock the session              │ocalmarket.example.com│
+                     │││  /lock-reset         Change the lock passphrase    │                      │
+                     │││  /quit               Exit siggy                    │ Saturday…            │
                      │││                                                    │                      │
-                     │││  Shortcuts                                         │ Saturday…            │
-                     │││  Tab / Shift+Tab     Next / prev conversation      │                      │
+                     │││  Shortcuts                                         │                      │
+                     │││  Tab / Shift+Tab     Next / prev conversation      │ded.                  │
                      │││  Up / Down           Recall input history          │                      │
-                     │││  @                   Mention autocomplete          │ded.                  │
-                     │││  PgUp / PgDn         Scroll messages               │                      │
+                     │││  @                   Mention autocomplete          │                      │
+                     │││  PgUp / PgDn         Scroll messages               │ to browse early      │
                      │││  Ctrl+Left / Ctrl+RightResize sidebar              │                      │
-                     │││  Ctrl+c              Quit                          │ to browse early      │
-                     │││                                                    │                      │
+                     │││  Ctrl+l              Lock the session              │                      │
+                     │╰│  Ctrl+c              Quit                          │──────────────────────╯
+                     │╭│                                                    │──────────────────────╮
                      │││  Keybindings [Default]                             │                      │
-                     │╰│  Esc                 Normal mode                   │──────────────────────╯
-                     │╭│  i / a / I / A / o   Insert mode                   │──────────────────────╮
-                     │││  Shift+Enter         Insert newline in input       │                      │
                      │╰╰────────────────────────────────────────────────────╯──────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats

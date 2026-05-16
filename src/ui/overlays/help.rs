@@ -34,6 +34,8 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         ("/contacts", "Browse contacts"),
         ("/settings", "Open settings"),
         ("/keybindings", "Configure keybindings"),
+        ("/lock", "Lock the session"),
+        ("/lock-reset", "Change the lock passphrase"),
         ("/quit", "Exit siggy"),
     ];
 
@@ -55,12 +57,14 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         dk(KeyAction::ResizeSidebarRight)
     );
     let quit_key = dk(KeyAction::Quit);
+    let lock_key = dk(KeyAction::Lock);
     let shortcuts: Vec<(String, &str)> = vec![
         (nav_keys, "Next / prev conversation"),
         ("Up / Down".to_string(), "Recall input history"),
         ("@".to_string(), "Mention autocomplete"),
         (scroll_keys, "Scroll messages"),
         (resize_keys, "Resize sidebar"),
+        (lock_key, "Lock the session"),
         (quit_key, "Quit"),
     ];
 
