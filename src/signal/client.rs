@@ -392,30 +392,15 @@ impl SignalClient {
         target_timestamp: i64,
         remove: bool,
     ) -> Result<()> {
-        // sendReaction uses recipient as a bare string (not wrapped in array) for 1:1.
-        // Do not use set_target here — build inline to preserve the bare-string shape.
-        let mut params = if is_group {
-            serde_json::json!({
-                "groupId": recipient,
-                "emoji": emoji,
-                "targetAuthor": target_author,
-                "targetTimestamp": target_timestamp,
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": recipient,
-                "emoji": emoji,
-                "targetAuthor": target_author,
-                "targetTimestamp": target_timestamp,
-                "account": self.account,
-            })
-        };
-
-        if remove {
-            params["remove"] = serde_json::json!(true);
-        }
-
+        let params = build_send_reaction_params(
+            &self.account,
+            recipient,
+            is_group,
+            emoji,
+            target_author,
+            target_timestamp,
+            remove,
+        );
         self.send_rpc("sendReaction", params).await?;
         Ok(())
     }
@@ -433,13 +418,7 @@ impl SignalClient {
     /// Send a read receipt to a single recipient for one or more message timestamps.
     /// Fire-and-forget — no useful result is expected from signal-cli.
     pub async fn send_read_receipt(&self, recipient: &str, timestamps: &[i64]) -> Result<()> {
-        // target is a single recipient, no is_group branch — inline to preserve shape.
-        let params = serde_json::json!({
-            "recipient": [recipient],
-            "type": "read",
-            "targetTimestamp": timestamps,
-            "account": self.account,
-        });
+        let params = build_send_read_receipt_params(&self.account, recipient, timestamps);
         self.send_rpc("sendReceipt", params).await?;
         Ok(())
     }
@@ -466,12 +445,7 @@ impl SignalClient {
         recipient: &str,
         seconds: i64,
     ) -> Result<()> {
-        // updateContact uses recipient as a bare string (not array) — inline to preserve shape.
-        let params = serde_json::json!({
-            "recipient": recipient,
-            "expiration": seconds,
-            "account": self.account,
-        });
+        let params = build_update_contact_expiration_params(&self.account, recipient, seconds);
         self.send_rpc("updateContact", params).await?;
         Ok(())
     }
@@ -543,38 +517,14 @@ impl SignalClient {
 
     /// Block a contact or group.
     pub async fn block_contact(&self, recipient: &str, is_group: bool) -> Result<()> {
-        // block/unblock wrap groupId in a single-element array (not a bare string).
-        // Do not use set_target — build inline to preserve that shape.
-        let params = if is_group {
-            serde_json::json!({
-                "groupId": [recipient],
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "account": self.account,
-            })
-        };
+        let params = build_block_params(&self.account, recipient, is_group);
         self.send_rpc("block", params).await?;
         Ok(())
     }
 
     /// Unblock a contact or group.
     pub async fn unblock_contact(&self, recipient: &str, is_group: bool) -> Result<()> {
-        // block/unblock wrap groupId in a single-element array (not a bare string).
-        // Do not use set_target — build inline to preserve that shape.
-        let params = if is_group {
-            serde_json::json!({
-                "groupId": [recipient],
-                "account": self.account,
-            })
-        } else {
-            serde_json::json!({
-                "recipient": [recipient],
-                "account": self.account,
-            })
-        };
+        let params = build_block_params(&self.account, recipient, is_group);
         self.send_rpc("unblock", params).await?;
         Ok(())
     }
@@ -707,6 +657,88 @@ impl SignalClient {
     }
 }
 
+/// Build the params for `sendReaction`. Note: `recipient` is a bare string
+/// (not wrapped in an array) for 1:1, unlike most other send_* RPCs.
+/// signal-cli rejects the array form here.
+fn build_send_reaction_params(
+    account: &str,
+    recipient: &str,
+    is_group: bool,
+    emoji: &str,
+    target_author: &str,
+    target_timestamp: i64,
+    remove: bool,
+) -> serde_json::Value {
+    let mut params = if is_group {
+        serde_json::json!({
+            "groupId": recipient,
+            "emoji": emoji,
+            "targetAuthor": target_author,
+            "targetTimestamp": target_timestamp,
+            "account": account,
+        })
+    } else {
+        serde_json::json!({
+            "recipient": recipient,
+            "emoji": emoji,
+            "targetAuthor": target_author,
+            "targetTimestamp": target_timestamp,
+            "account": account,
+        })
+    };
+    if remove {
+        params["remove"] = serde_json::json!(true);
+    }
+    params
+}
+
+/// Build the params for `sendReceipt` (read receipts). `recipient` is wrapped
+/// in a single-element array; `targetTimestamp` is the array of message
+/// timestamps being acknowledged.
+fn build_send_read_receipt_params(
+    account: &str,
+    recipient: &str,
+    timestamps: &[i64],
+) -> serde_json::Value {
+    serde_json::json!({
+        "recipient": [recipient],
+        "type": "read",
+        "targetTimestamp": timestamps,
+        "account": account,
+    })
+}
+
+/// Build the params for `updateContact` (1:1 disappearing-message timer).
+/// `recipient` is a bare string (not array), unlike most other send_* RPCs.
+fn build_update_contact_expiration_params(
+    account: &str,
+    recipient: &str,
+    seconds: i64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "recipient": recipient,
+        "expiration": seconds,
+        "account": account,
+    })
+}
+
+/// Build the params for `block` and `unblock`. Both wrap the identifier in
+/// a single-element array (`groupId` for groups, `recipient` for contacts),
+/// unlike `sendReaction` and `updateContact` which use bare strings.
+fn build_block_params(account: &str, recipient: &str, is_group: bool) -> serde_json::Value {
+    if is_group {
+        serde_json::json!({
+            "groupId": [recipient],
+            "account": account,
+        })
+    } else {
+        serde_json::json!({
+            "recipient": [recipient],
+            "account": account,
+        })
+    }
+}
+
 /// Send a JSON-RPC envelope to signal-cli's stdin and register the rpc id
 /// with `method` for response correlation. Returns the rpc id.
 ///
@@ -829,6 +861,165 @@ mod tests {
         assert!(
             map.contains_key(&id),
             "pending_requests must contain the entry even after mutex was poisoned"
+        );
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    //! Lock in the JSON wire format for RPCs sent to signal-cli. These tests
+    //! catch silent regressions where a refactor "tidies up" a load-bearing
+    //! shape quirk (bare-string vs. array recipient, etc). See issue #433.
+    use super::*;
+    use serde_json::json;
+
+    /// set_target: 1:1 recipients are wrapped in a single-element array.
+    #[test]
+    fn set_target_wraps_recipient_in_array() {
+        let mut params = json!({});
+        SignalClient::set_target(&mut params, "+15551234567", false);
+        assert_eq!(
+            params,
+            json!({
+                "recipient": ["+15551234567"],
+            })
+        );
+    }
+
+    /// set_target: group recipients use a bare string under `groupId`.
+    #[test]
+    fn set_target_uses_bare_group_id() {
+        let mut params = json!({});
+        SignalClient::set_target(&mut params, "Z0VlVnFLbE...", true);
+        assert_eq!(
+            params,
+            json!({
+                "groupId": "Z0VlVnFLbE...",
+            })
+        );
+    }
+
+    /// sendReaction (1:1): bare-string recipient (NOT array). signal-cli
+    /// rejects the array form here. Distinct from set_target's behaviour.
+    #[test]
+    fn send_reaction_one_to_one_uses_bare_recipient() {
+        let params = build_send_reaction_params(
+            "+15550000000",
+            "+15551234567",
+            false,
+            "👍",
+            "+15559876543",
+            1_700_000_000_000,
+            false,
+        );
+        assert_eq!(
+            params,
+            json!({
+                "account": "+15550000000",
+                "recipient": "+15551234567",
+                "emoji": "👍",
+                "targetAuthor": "+15559876543",
+                "targetTimestamp": 1_700_000_000_000_i64,
+            })
+        );
+    }
+
+    /// sendReaction (group): bare-string groupId.
+    #[test]
+    fn send_reaction_group_uses_bare_group_id() {
+        let params = build_send_reaction_params(
+            "+15550000000",
+            "Z0VlVnFLbE...",
+            true,
+            "❤️",
+            "+15559876543",
+            1_700_000_000_000,
+            false,
+        );
+        assert_eq!(
+            params,
+            json!({
+                "account": "+15550000000",
+                "groupId": "Z0VlVnFLbE...",
+                "emoji": "❤️",
+                "targetAuthor": "+15559876543",
+                "targetTimestamp": 1_700_000_000_000_i64,
+            })
+        );
+    }
+
+    /// sendReaction with remove=true: adds top-level `remove: true` field.
+    #[test]
+    fn send_reaction_remove_sets_flag() {
+        let params = build_send_reaction_params(
+            "+15550000000",
+            "+15551234567",
+            false,
+            "👍",
+            "+15559876543",
+            1_700_000_000_000,
+            true,
+        );
+        assert_eq!(params.get("remove"), Some(&json!(true)));
+    }
+
+    /// sendReceipt: recipient wrapped in single-element array, targetTimestamp
+    /// is the message-timestamp array, type=read.
+    #[test]
+    fn send_read_receipt_wire_shape() {
+        let params = build_send_read_receipt_params(
+            "+15550000000",
+            "+15551234567",
+            &[1_700_000_000_000, 1_700_000_000_001],
+        );
+        assert_eq!(
+            params,
+            json!({
+                "account": "+15550000000",
+                "recipient": ["+15551234567"],
+                "type": "read",
+                "targetTimestamp": [1_700_000_000_000_i64, 1_700_000_000_001_i64],
+            })
+        );
+    }
+
+    /// updateContact (1:1 disappearing-message timer): bare-string recipient.
+    #[test]
+    fn update_contact_expiration_uses_bare_recipient() {
+        let params = build_update_contact_expiration_params("+15550000000", "+15551234567", 3600);
+        assert_eq!(
+            params,
+            json!({
+                "account": "+15550000000",
+                "recipient": "+15551234567",
+                "expiration": 3600_i64,
+            })
+        );
+    }
+
+    /// block/unblock: recipient or groupId wrapped in a single-element array.
+    /// Both methods share build_block_params; this covers both shapes.
+    #[test]
+    fn block_one_to_one_wraps_recipient_in_array() {
+        let params = build_block_params("+15550000000", "+15551234567", false);
+        assert_eq!(
+            params,
+            json!({
+                "account": "+15550000000",
+                "recipient": ["+15551234567"],
+            })
+        );
+    }
+
+    #[test]
+    fn block_group_wraps_group_id_in_array() {
+        let params = build_block_params("+15550000000", "Z0VlVnFLbE...", true);
+        assert_eq!(
+            params,
+            json!({
+                "account": "+15550000000",
+                "groupId": ["Z0VlVnFLbE..."],
+            })
         );
     }
 }
