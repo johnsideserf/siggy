@@ -1393,16 +1393,15 @@ impl App {
             KeyCode::Char('q') => KeyCode::Esc,
             other => other,
         };
-        match classify_list_key(code, false) {
-            ListKeyAction::Down
-                if self.theme_picker.index
-                    < self.theme_picker.available_themes.len().saturating_sub(1) =>
-            {
-                self.theme_picker.index += 1;
-            }
-            ListKeyAction::Up => {
-                self.theme_picker.index = self.theme_picker.index.saturating_sub(1);
-            }
+        let action = classify_list_key(code, false);
+        if list_overlay::apply_nav(
+            &action,
+            &mut self.theme_picker.index,
+            self.theme_picker.available_themes.len(),
+        ) {
+            return;
+        }
+        match action {
             ListKeyAction::Select => {
                 if let Some(selected) = self
                     .theme_picker
@@ -2342,17 +2341,11 @@ impl App {
             self.close_overlay();
             return None;
         }
-        match classify_list_key(code, false) {
-            ListKeyAction::Down => {
-                if self.action_menu.index < item_count - 1 {
-                    self.action_menu.index += 1;
-                }
-                None
-            }
-            ListKeyAction::Up => {
-                self.action_menu.index = self.action_menu.index.saturating_sub(1);
-                None
-            }
+        let action = classify_list_key(code, false);
+        if list_overlay::apply_nav(&action, &mut self.action_menu.index, item_count) {
+            return None;
+        }
+        match action {
             ListKeyAction::Select => {
                 let items = self.action_menu_items();
                 if let Some(action) = items.get(self.action_menu.index) {
@@ -2647,17 +2640,15 @@ impl App {
     }
 
     pub fn handle_forward_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match classify_list_key(code, true) {
-            ListKeyAction::Down => {
-                if !self.forward.filtered.is_empty()
-                    && self.forward.index < self.forward.filtered.len() - 1
-                {
-                    self.forward.index += 1;
-                }
-            }
-            ListKeyAction::Up => {
-                self.forward.index = self.forward.index.saturating_sub(1);
-            }
+        let action = classify_list_key(code, true);
+        if list_overlay::apply_nav(
+            &action,
+            &mut self.forward.index,
+            self.forward.filtered.len(),
+        ) {
+            return None;
+        }
+        match action {
             ListKeyAction::Select => {
                 if let Some((conv_id, name)) =
                     self.forward.filtered.get(self.forward.index).cloned()
@@ -2699,23 +2690,21 @@ impl App {
                 self.forward.filter.pop();
                 self.update_forward_filter();
             }
-            ListKeyAction::None => {}
+            ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
         }
         None
     }
 
     pub fn handle_contacts_key(&mut self, code: KeyCode) {
-        match classify_list_key(code, true) {
-            ListKeyAction::Down => {
-                if !self.contacts_overlay.filtered.is_empty()
-                    && self.contacts_overlay.index < self.contacts_overlay.filtered.len() - 1
-                {
-                    self.contacts_overlay.index += 1;
-                }
-            }
-            ListKeyAction::Up => {
-                self.contacts_overlay.index = self.contacts_overlay.index.saturating_sub(1);
-            }
+        let action = classify_list_key(code, true);
+        if list_overlay::apply_nav(
+            &action,
+            &mut self.contacts_overlay.index,
+            self.contacts_overlay.filtered.len(),
+        ) {
+            return;
+        }
+        match action {
             ListKeyAction::Select => {
                 if let Some((number, _)) = self
                     .contacts_overlay
@@ -2740,7 +2729,7 @@ impl App {
                 self.contacts_overlay.filter.pop();
                 self.refresh_contacts_filter();
             }
-            ListKeyAction::None => {}
+            ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
         }
     }
 

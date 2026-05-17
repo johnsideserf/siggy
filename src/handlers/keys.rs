@@ -78,17 +78,11 @@ pub(crate) fn execute_pin_toggle(app: &mut App) -> Option<SendRequest> {
 
 /// Handle a key press while the pin duration picker overlay is open.
 pub fn handle_pin_duration_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
-    match classify_list_key(code, false) {
-        ListKeyAction::Down => {
-            if app.pin_duration.index < PIN_DURATIONS.len() - 1 {
-                app.pin_duration.index += 1;
-            }
-            None
-        }
-        ListKeyAction::Up => {
-            app.pin_duration.index = app.pin_duration.index.saturating_sub(1);
-            None
-        }
+    let action = classify_list_key(code, false);
+    if crate::list_overlay::apply_nav(&action, &mut app.pin_duration.index, PIN_DURATIONS.len()) {
+        return None;
+    }
+    match action {
         ListKeyAction::Select => {
             let duration = PIN_DURATIONS[app.pin_duration.index].0;
             app.close_overlay();

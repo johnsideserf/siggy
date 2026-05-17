@@ -35,6 +35,28 @@ pub fn classify_list_key(code: KeyCode, filterable: bool) -> ListKeyAction {
     }
 }
 
+/// Apply the Up/Down arms of a `ListKeyAction` to a list overlay's cursor.
+/// Returns `true` if the action was a navigation arm (consumed), `false`
+/// otherwise so callers can fall through to mode-specific arms.
+///
+/// Down on an empty list (`len == 0`) is a consumed no-op rather than an
+/// underflow risk -- previous handlers had inconsistent empty-list guards.
+pub fn apply_nav(action: &ListKeyAction, index: &mut usize, len: usize) -> bool {
+    match action {
+        ListKeyAction::Up => {
+            *index = index.saturating_sub(1);
+            true
+        }
+        ListKeyAction::Down => {
+            if len > 0 {
+                *index = (*index + 1).min(len - 1);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Calculate visible rows and scroll offset for a list overlay.
 /// `inner_height` is the popup inner area height (after border subtraction).
 /// `footer_lines` is lines reserved for footer (typically 2: blank + help text).
@@ -187,5 +209,47 @@ mod tests {
         let mut idx = 15;
         clamp_index(&mut idx, 10);
         assert_eq!(idx, 9);
+    }
+
+    #[test]
+    fn apply_nav_up_decrements_with_floor() {
+        let mut idx = 3;
+        assert!(apply_nav(&ListKeyAction::Up, &mut idx, 10));
+        assert_eq!(idx, 2);
+
+        let mut idx = 0;
+        assert!(apply_nav(&ListKeyAction::Up, &mut idx, 10));
+        assert_eq!(idx, 0, "saturating: must not underflow");
+    }
+
+    #[test]
+    fn apply_nav_down_increments_with_ceiling() {
+        let mut idx = 3;
+        assert!(apply_nav(&ListKeyAction::Down, &mut idx, 10));
+        assert_eq!(idx, 4);
+
+        let mut idx = 9;
+        assert!(apply_nav(&ListKeyAction::Down, &mut idx, 10));
+        assert_eq!(idx, 9, "must clamp to len - 1");
+    }
+
+    #[test]
+    fn apply_nav_down_on_empty_list_is_noop() {
+        // Regression for the bug-risk flagged by the unification review:
+        // empty filtered list must not panic on a Down keypress.
+        let mut idx = 0;
+        assert!(apply_nav(&ListKeyAction::Down, &mut idx, 0));
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn apply_nav_non_nav_actions_return_false() {
+        let mut idx = 5;
+        assert!(!apply_nav(&ListKeyAction::Select, &mut idx, 10));
+        assert!(!apply_nav(&ListKeyAction::Close, &mut idx, 10));
+        assert!(!apply_nav(&ListKeyAction::FilterPush('a'), &mut idx, 10));
+        assert!(!apply_nav(&ListKeyAction::FilterPop, &mut idx, 10));
+        assert!(!apply_nav(&ListKeyAction::None, &mut idx, 10));
+        assert_eq!(idx, 5, "non-nav actions must not move the cursor");
     }
 }
