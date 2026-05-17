@@ -448,7 +448,7 @@ fn parse_data_message(
         }
     };
 
-    // Check for reaction before extracting body/attachments
+    // Reactions on incoming messages have a dedicated parser (sent-sync uses parse_reaction_sync).
     if let Some(reaction) = data.get("reaction") {
         let group_id = data
             .get("groupInfo")
@@ -457,73 +457,6 @@ fn parse_data_message(
         return parse_reaction(envelope, reaction, group_id);
     }
 
-    // Check for pin message
-    if let Some(pin) = data.get("pinMessage") {
-        let target_author = pin
-            .get("targetAuthor")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let target_timestamp = pin
-            .get("targetSentTimestamp")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let sender = envelope_source(envelope);
-        let sender_name = envelope
-            .get("sourceName")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-        let group_id = data
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .unwrap_or_else(|| sender.clone());
-        return Some(SignalEvent::PinReceived {
-            conv_id,
-            sender,
-            sender_name,
-            target_author,
-            target_timestamp,
-        });
-    }
-
-    // Check for unpin message
-    if let Some(unpin) = data.get("unpinMessage") {
-        let target_author = unpin
-            .get("targetAuthor")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let target_timestamp = unpin
-            .get("targetSentTimestamp")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let sender = envelope_source(envelope);
-        let sender_name = envelope
-            .get("sourceName")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
-        let group_id = data
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .unwrap_or_else(|| sender.clone());
-        return Some(SignalEvent::UnpinReceived {
-            conv_id,
-            sender,
-            sender_name,
-            target_author,
-            target_timestamp,
-        });
-    }
-
-    // Check for poll messages
     if let Some(poll_create) = data.get("pollCreate") {
         return parse_poll_create(envelope, data, poll_create);
     }
@@ -534,183 +467,38 @@ fn parse_data_message(
         return parse_poll_terminate(envelope, data, poll_terminate);
     }
 
-    // Check for remote delete
-    if let Some(remote_delete) = data.get("remoteDelete") {
-        let target_timestamp = remote_delete.get("timestamp").and_then(|v| v.as_i64())?;
-        let sender = envelope_source(envelope);
-        let group_id = data
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .unwrap_or_else(|| sender.clone());
-        return Some(SignalEvent::RemoteDeleteReceived {
-            conv_id,
-            sender,
-            target_timestamp,
-        });
-    }
-
-    // Expiration timer update → ExpirationTimerChanged event
-    if data
-        .get("isExpirationUpdate")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        let group_id = data
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .unwrap_or_else(|| envelope_source(envelope));
-        let seconds = data
-            .get("expiresInSeconds")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-        let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
-        return Some(SignalEvent::ExpirationTimerChanged {
-            conv_id,
-            seconds,
-            body: format_expiration(seconds),
-            timestamp,
-            timestamp_ms,
-        });
-    }
-
-    // Group update with no body/reaction/remoteDelete → system message
-    if let Some(group_info) = data.get("groupInfo") {
-        let group_type = group_info
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if group_type == "UPDATE"
-            && data.get("message").and_then(|v| v.as_str()).is_none()
-            && data.get("reaction").is_none()
-            && data.get("remoteDelete").is_none()
-        {
-            let conv_id = group_info
-                .get("groupId")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-            let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
-            return Some(SignalEvent::SystemMessage {
-                conv_id,
-                body: "Group updated".to_string(),
-                timestamp,
-                timestamp_ms,
-            });
-        }
+    // Shared early-return events (pin, unpin, remoteDelete, expirationUpdate, group UPDATE).
+    if let Some(event) = parse_data_payload_event(envelope, data, None) {
+        return Some(event);
     }
 
     let source = envelope_source(envelope);
-
     let source_name = envelope
         .get("sourceName")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-
     let source_uuid = envelope
         .get("sourceUuid")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-
-    let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-
-    let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
-
-    // Synthesize body for sticker messages
-    let sticker_body =
-        data.get("sticker").map(
-            |sticker| match sticker.get("emoji").and_then(|v| v.as_str()) {
-                Some(emoji) => format!("[Sticker: {}]", emoji),
-                None => "[Sticker]".to_string(),
-            },
-        );
-
-    let mut body = data
-        .get("message")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or(sticker_body);
-
-    let group_id = data
-        .get("groupInfo")
-        .and_then(|g| g.get("groupId"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let group_name = data
-        .get("groupInfo")
-        .and_then(|g| g.get("groupName"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let mut attachments = data
-        .get("attachments")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|a| parse_attachment(a, download_dir))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut previews = parse_link_previews(data, download_dir);
-
-    // View-once messages: replace content with placeholder
-    if data
-        .get("viewOnce")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        body = Some("[View-once message]".to_string());
-        attachments = Vec::new();
-        previews = Vec::new();
-    }
-
-    let mentions = parse_mentions(data);
-
-    let text_styles = parse_text_styles(data);
-
-    // Parse quoted reply (strip U+FFFC mention placeholders from quote text)
-    let quote = data.get("quote").and_then(|q| {
-        let q_ts = q.get("id").and_then(|v| v.as_i64())?;
-        let q_author = q.get("authorNumber").and_then(|v| v.as_str())?.to_string();
-        let q_body = q
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .replace('\u{FFFC}', "")
-            .to_string();
-        Some((q_ts, q_author, q_body))
-    });
-
-    let expires_in_seconds = data
-        .get("expiresInSeconds")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let common = parse_common_message_fields(data, download_dir);
 
     Some(SignalEvent::MessageReceived(SignalMessage {
         source,
         source_name,
         source_uuid,
-        timestamp,
-        body,
-        attachments,
-        group_id,
-        group_name,
+        timestamp: common.timestamp,
+        body: common.body,
+        attachments: common.attachments,
+        group_id: common.group_id,
+        group_name: common.group_name,
         is_outgoing: false,
         destination: None,
-        mentions,
-        text_styles,
-        quote,
-        expires_in_seconds,
-        previews,
+        mentions: common.mentions,
+        text_styles: common.text_styles,
+        quote: common.quote,
+        expires_in_seconds: common.expires_in_seconds,
+        previews: common.previews,
     }))
 }
 
@@ -842,12 +630,11 @@ fn parse_sent_sync(
     sent: &serde_json::Value,
     download_dir: &std::path::Path,
 ) -> Option<SignalEvent> {
-    // Check for synced reaction before extracting body/attachments
+    // Reaction sync has its own parser (incoming uses parse_reaction).
     if let Some(reaction) = sent.get("reaction") {
         return parse_reaction_sync(envelope, sent, reaction);
     }
 
-    // Check for synced poll messages
     if let Some(poll_create) = sent.get("pollCreate") {
         return parse_poll_create(envelope, sent, poll_create);
     }
@@ -858,8 +645,169 @@ fn parse_sent_sync(
         return parse_poll_terminate(envelope, sent, poll_terminate);
     }
 
-    // Check for synced pin message
-    if let Some(pin) = sent.get("pinMessage") {
+    let destination = sent_destination(sent);
+
+    // Shared early-return events. Pass destination so conv_id falls back through
+    // group_id -> destination -> sender (vs. group_id -> sender for receive).
+    if let Some(event) = parse_data_payload_event(envelope, sent, destination.clone()) {
+        return Some(event);
+    }
+
+    let source = envelope_source(envelope);
+    let common = parse_common_message_fields(sent, download_dir);
+
+    Some(SignalEvent::MessageReceived(SignalMessage {
+        source,
+        source_name: None,
+        source_uuid: None,
+        timestamp: common.timestamp,
+        body: common.body,
+        attachments: common.attachments,
+        group_id: common.group_id,
+        group_name: common.group_name,
+        is_outgoing: true,
+        destination,
+        mentions: common.mentions,
+        text_styles: common.text_styles,
+        quote: common.quote,
+        expires_in_seconds: common.expires_in_seconds,
+        previews: common.previews,
+    }))
+}
+
+/// Fields extracted from the body of a `dataMessage` / `sentMessage` payload.
+/// Identical between incoming and outgoing-sync; the wrapping function adds
+/// variant-specific fields (source/source_name vs. destination/is_outgoing).
+struct CommonMessageFields {
+    body: Option<String>,
+    attachments: Vec<crate::signal::types::Attachment>,
+    previews: Vec<crate::signal::types::LinkPreview>,
+    group_id: Option<String>,
+    group_name: Option<String>,
+    mentions: Vec<Mention>,
+    text_styles: Vec<TextStyle>,
+    quote: Option<(i64, String, String)>,
+    expires_in_seconds: i64,
+    timestamp: DateTime<chrono::Utc>,
+}
+
+fn parse_common_message_fields(
+    data: &serde_json::Value,
+    download_dir: &std::path::Path,
+) -> CommonMessageFields {
+    let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+    let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
+
+    let sticker_body =
+        data.get("sticker").map(
+            |sticker| match sticker.get("emoji").and_then(|v| v.as_str()) {
+                Some(emoji) => format!("[Sticker: {}]", emoji),
+                None => "[Sticker]".to_string(),
+            },
+        );
+
+    let mut body = data
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or(sticker_body);
+
+    let group_id = data
+        .get("groupInfo")
+        .and_then(|g| g.get("groupId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let group_name = data
+        .get("groupInfo")
+        .and_then(|g| g.get("groupName"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let mut attachments = data
+        .get("attachments")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| parse_attachment(a, download_dir))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut previews = parse_link_previews(data, download_dir);
+
+    // View-once messages: replace content with placeholder.
+    if data
+        .get("viewOnce")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        body = Some("[View-once message]".to_string());
+        attachments = Vec::new();
+        previews = Vec::new();
+    }
+
+    let mentions = parse_mentions(data);
+    let text_styles = parse_text_styles(data);
+
+    // Strip U+FFFC mention placeholders from quote text.
+    let quote = data.get("quote").and_then(|q| {
+        let q_ts = q.get("id").and_then(|v| v.as_i64())?;
+        let q_author = q.get("authorNumber").and_then(|v| v.as_str())?.to_string();
+        let q_body = q
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .replace('\u{FFFC}', "")
+            .to_string();
+        Some((q_ts, q_author, q_body))
+    });
+
+    let expires_in_seconds = data
+        .get("expiresInSeconds")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    CommonMessageFields {
+        body,
+        attachments,
+        previews,
+        group_id,
+        group_name,
+        mentions,
+        text_styles,
+        quote,
+        expires_in_seconds,
+        timestamp,
+    }
+}
+
+/// Match the shared early-return event types from a `dataMessage` /
+/// `sentMessage` payload: pinMessage, unpinMessage, remoteDelete,
+/// isExpirationUpdate, and group UPDATE-without-body.
+///
+/// `destination` is the precomputed `sent_destination` for the sync path
+/// (or `None` for the receive path). It is inserted into the conv_id
+/// fallback chain between `group_id` and `sender`, matching the pre-refactor
+/// behaviour of parse_sent_sync.
+fn parse_data_payload_event(
+    envelope: &serde_json::Value,
+    data: &serde_json::Value,
+    destination: Option<String>,
+) -> Option<SignalEvent> {
+    let group_id = data
+        .get("groupInfo")
+        .and_then(|g| g.get("groupId"))
+        .and_then(|v| v.as_str());
+
+    let resolve_conv_id = |sender: &str| -> String {
+        group_id
+            .map(|g| g.to_string())
+            .or_else(|| destination.clone())
+            .unwrap_or_else(|| sender.to_string())
+    };
+
+    if let Some(pin) = data.get("pinMessage") {
         let target_author = pin
             .get("targetAuthor")
             .and_then(|v| v.as_str())
@@ -875,16 +823,8 @@ fn parse_sent_sync(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        let group_id = sent
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .or_else(|| sent_destination(sent))
-            .unwrap_or_else(|| sender.clone());
         return Some(SignalEvent::PinReceived {
-            conv_id,
+            conv_id: resolve_conv_id(&sender),
             sender,
             sender_name,
             target_author,
@@ -892,8 +832,7 @@ fn parse_sent_sync(
         });
     }
 
-    // Check for synced unpin message
-    if let Some(unpin) = sent.get("unpinMessage") {
+    if let Some(unpin) = data.get("unpinMessage") {
         let target_author = unpin
             .get("targetAuthor")
             .and_then(|v| v.as_str())
@@ -909,16 +848,8 @@ fn parse_sent_sync(
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
-        let group_id = sent
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .or_else(|| sent_destination(sent))
-            .unwrap_or_else(|| sender.clone());
         return Some(SignalEvent::UnpinReceived {
-            conv_id,
+            conv_id: resolve_conv_id(&sender),
             sender,
             sender_name,
             target_author,
@@ -926,44 +857,28 @@ fn parse_sent_sync(
         });
     }
 
-    // Check for synced remote delete
-    if let Some(remote_delete) = sent.get("remoteDelete") {
+    if let Some(remote_delete) = data.get("remoteDelete") {
         let target_timestamp = remote_delete.get("timestamp").and_then(|v| v.as_i64())?;
         let sender = envelope_source(envelope);
-        let group_id = sent
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .or_else(|| sent_destination(sent))
-            .unwrap_or_else(|| sender.clone());
         return Some(SignalEvent::RemoteDeleteReceived {
-            conv_id,
+            conv_id: resolve_conv_id(&sender),
             sender,
             target_timestamp,
         });
     }
 
-    // Expiration timer update (synced) → ExpirationTimerChanged event
-    if sent
+    if data
         .get("isExpirationUpdate")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
-        let group_id = sent
-            .get("groupInfo")
-            .and_then(|g| g.get("groupId"))
-            .and_then(|v| v.as_str());
-        let conv_id = group_id
-            .map(|g| g.to_string())
-            .or_else(|| sent_destination(sent))
-            .unwrap_or_else(|| envelope_source(envelope));
-        let seconds = sent
+        let sender = envelope_source(envelope);
+        let conv_id = resolve_conv_id(&sender);
+        let seconds = data
             .get("expiresInSeconds")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
-        let timestamp_ms = sent.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+        let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
         let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
         return Some(SignalEvent::ExpirationTimerChanged {
             conv_id,
@@ -974,23 +889,25 @@ fn parse_sent_sync(
         });
     }
 
-    // Group update (synced) with no body/reaction/remoteDelete → system message
-    if let Some(group_info) = sent.get("groupInfo") {
+    // Group update with no body/reaction/remoteDelete -> system message.
+    // conv_id here always comes from the group_id directly (never sender or
+    // destination) since we are inside the groupInfo branch.
+    if let Some(group_info) = data.get("groupInfo") {
         let group_type = group_info
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if group_type == "UPDATE"
-            && sent.get("message").and_then(|v| v.as_str()).is_none()
-            && sent.get("reaction").is_none()
-            && sent.get("remoteDelete").is_none()
+            && data.get("message").and_then(|v| v.as_str()).is_none()
+            && data.get("reaction").is_none()
+            && data.get("remoteDelete").is_none()
         {
             let conv_id = group_info
                 .get("groupId")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let timestamp_ms = sent.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
             let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
             return Some(SignalEvent::SystemMessage {
                 conv_id,
@@ -1001,103 +918,7 @@ fn parse_sent_sync(
         }
     }
 
-    let source = envelope_source(envelope);
-
-    let destination = sent_destination(sent);
-
-    let timestamp_ms = sent.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
-
-    let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
-
-    // Synthesize body for sticker messages
-    let sticker_body =
-        sent.get("sticker").map(
-            |sticker| match sticker.get("emoji").and_then(|v| v.as_str()) {
-                Some(emoji) => format!("[Sticker: {}]", emoji),
-                None => "[Sticker]".to_string(),
-            },
-        );
-
-    let mut body = sent
-        .get("message")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .or(sticker_body);
-
-    let group_id = sent
-        .get("groupInfo")
-        .and_then(|g| g.get("groupId"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let group_name = sent
-        .get("groupInfo")
-        .and_then(|g| g.get("groupName"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let mut attachments = sent
-        .get("attachments")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|a| parse_attachment(a, download_dir))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut previews = parse_link_previews(sent, download_dir);
-
-    // View-once messages: replace content with placeholder
-    if sent
-        .get("viewOnce")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        body = Some("[View-once message]".to_string());
-        attachments = Vec::new();
-        previews = Vec::new();
-    }
-
-    let mentions = parse_mentions(sent);
-
-    let text_styles = parse_text_styles(sent);
-
-    // Parse quoted reply (strip U+FFFC mention placeholders from quote text)
-    let quote = sent.get("quote").and_then(|q| {
-        let q_ts = q.get("id").and_then(|v| v.as_i64())?;
-        let q_author = q.get("authorNumber").and_then(|v| v.as_str())?.to_string();
-        let q_body = q
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .replace('\u{FFFC}', "")
-            .to_string();
-        Some((q_ts, q_author, q_body))
-    });
-
-    let expires_in_seconds = sent
-        .get("expiresInSeconds")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-
-    Some(SignalEvent::MessageReceived(SignalMessage {
-        source,
-        source_name: None,
-        source_uuid: None,
-        timestamp,
-        body,
-        attachments,
-        group_id,
-        group_name,
-        is_outgoing: true,
-        destination,
-        mentions,
-        text_styles,
-        quote,
-        expires_in_seconds,
-        previews,
-    }))
+    None
 }
 
 fn parse_reaction(
