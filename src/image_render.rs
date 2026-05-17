@@ -481,17 +481,36 @@ pub fn render_image(path: &Path, max_width: u32) -> Option<Vec<Line<'static>>> {
         lines.push(Line::from(spans));
     }
 
+    let elapsed_ms = start.elapsed().as_millis();
     crate::debug_log::logf(format_args!(
-        "render_image done: path={} elapsed_ms={} src={}x{} out={}x{}",
+        "render_image done: path={} elapsed_ms={elapsed_ms} src={}x{} out={}x{}",
         path.display(),
-        start.elapsed().as_millis(),
         orig_w,
         orig_h,
         new_w,
         new_h
     ));
+    if elapsed_ms > SLOW_DECODE_WARN_MS {
+        // Always-on warning regardless of --debug: a pathologically slow
+        // decode is the symptom of a hostile or broken file, and the user
+        // needs the path + size to triage even without opting into the
+        // full debug log. See issue #444.
+        crate::debug_log::warnf(format_args!(
+            "slow image decode: path={} elapsed_ms={elapsed_ms} src={}x{} out={}x{}",
+            path.display(),
+            orig_w,
+            orig_h,
+            new_w,
+            new_h
+        ));
+    }
     Some(lines)
 }
+
+/// Threshold (ms) above which `render_image` emits an always-on warning,
+/// independent of the --debug flag. 5s is roughly the point at which the
+/// user notices a stall and starts wondering what is hung.
+const SLOW_DECODE_WARN_MS: u128 = 5_000;
 
 #[cfg(test)]
 mod tests {

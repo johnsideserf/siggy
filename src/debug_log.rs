@@ -118,3 +118,23 @@ pub fn logf(args: std::fmt::Arguments<'_>) {
     }
     log(&format!("{args}"));
 }
+
+/// Always-on warning log: writes to the debug log file regardless of whether
+/// --debug is enabled. Used for diagnostics the user should see even without
+/// opting into full debug logging (e.g. pathologically slow image decodes
+/// surfaced by issue #444).
+///
+/// Lazy-initialises the log file on first call so the warning lands somewhere
+/// inspectable. Subsequent warnings reuse the open handle.
+pub fn warnf(args: std::fmt::Arguments<'_>) {
+    if FILE.lock().map(|g| g.is_none()).unwrap_or(true) {
+        setup_file();
+    }
+    let msg = format!("WARN: {args}");
+    if let Ok(mut guard) = FILE.lock()
+        && let Some(ref mut f) = *guard
+    {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let _ = writeln!(f, "[{now}] {msg}");
+    }
+}
