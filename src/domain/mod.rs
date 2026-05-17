@@ -31,7 +31,7 @@ pub use notification::NotificationState;
 pub use overlays::{
     ActionMenuState, ContactsOverlayState, ForwardOverlayState, GroupMenuOverlayState,
     KeybindingsOverlayState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState,
-    SettingsProfileOverlayState, ThemePickerState, VerifyOverlayState,
+    SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState, VerifyOverlayState,
 };
 pub use pending::PendingState;
 pub use reaction::ReactionState;

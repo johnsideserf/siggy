@@ -13,10 +13,12 @@
 #
 # Baseline history:
 #   66 -> 67: added lock: LockState for session-lock / boss-key feature (#261)
+#   67 -> 65: extracted SettingsOverlayState (settings_index, customize_index,
+#             settings_mouse_snapshot -> settings_overlay) from final-sweep review.
 #
 set -euo pipefail
 
-BASELINE=67
+BASELINE=65
 
 count=$(awk '
   /^pub struct App \{/ { inside=1; next }

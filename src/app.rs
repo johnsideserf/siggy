@@ -25,8 +25,8 @@ use crate::domain::{
     FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, InputState,
     KeybindingsOverlayState, LockState, MouseState, NotificationState, PendingState,
     PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, ScrollState,
-    SearchAction, SearchState, SettingsProfileOverlayState, ThemePickerState, TypingState,
-    VerifyOverlayState,
+    SearchAction, SearchState, SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState,
+    TypingState, VerifyOverlayState,
 };
 use crate::image_render;
 use crate::image_render::ImageProtocol;
@@ -526,10 +526,8 @@ pub struct App {
     pub blocked_conversations: HashSet<String>,
     /// Autocomplete popup state: candidates, selection, pending mentions.
     pub autocomplete: AutocompleteState,
-    /// Cursor position in settings list
-    pub settings_index: usize,
-    /// Cursor position in customize sub-menu
-    pub customize_index: usize,
+    /// Settings overlay state (cursor, customize sub-menu cursor, mouse snapshot)
+    pub settings_overlay: SettingsOverlayState,
     /// State for the contacts list overlay
     pub contacts_overlay: ContactsOverlayState,
     /// State for the identity verification overlay
@@ -607,8 +605,6 @@ pub struct App {
     pub profile: ProfileOverlayState,
     /// Settings profile overlay state
     pub settings_profiles: SettingsProfileOverlayState,
-    /// Mouse enabled state when settings overlay opened (for deferred toggle)
-    pub settings_mouse_snapshot: bool,
     /// Sync state: tracks the initial message burst on startup.
     pub sync: SyncState,
     /// Currently active overlay, when one is open.
@@ -777,7 +773,6 @@ pub struct SettingDef {
     get: fn(&App) -> bool,
     set: fn(&mut App, bool),
     save: Option<fn(&mut crate::config::Config, bool)>,
-    on_toggle: Option<fn(&mut App)>,
 }
 
 /// Section boundary indices within the SETTINGS array.
@@ -808,7 +803,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.notify_direct,
         set: |a, v| a.notifications.notify_direct = v,
         save: Some(|c, v| c.notify_direct = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Group message notifications",
@@ -816,7 +810,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.notify_group,
         set: |a, v| a.notifications.notify_group = v,
         save: Some(|c, v| c.notify_group = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Desktop notifications",
@@ -824,7 +817,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.desktop_notifications,
         set: |a, v| a.notifications.desktop_notifications = v,
         save: Some(|c, v| c.desktop_notifications = v),
-        on_toggle: None,
     },
     // — Display (3–8) —
     SettingDef {
@@ -833,7 +825,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.image.show_link_previews,
         set: |a, v| a.image.show_link_previews = v,
         save: Some(|c, v| c.show_link_previews = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Date separators",
@@ -841,7 +832,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.date_separators,
         set: |a, v| a.date_separators = v,
         save: Some(|c, v| c.date_separators = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Read receipts",
@@ -849,7 +839,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.show_receipts,
         set: |a, v| a.show_receipts = v,
         save: Some(|c, v| c.show_receipts = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Receipt colors",
@@ -857,7 +846,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.color_receipts,
         set: |a, v| a.color_receipts = v,
         save: Some(|c, v| c.color_receipts = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Nerd Font icons",
@@ -865,7 +853,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.nerd_fonts,
         set: |a, v| a.nerd_fonts = v,
         save: Some(|c, v| c.nerd_fonts = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Emoji to text",
@@ -873,7 +860,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.emoji_to_text,
         set: |a, v| a.reactions.emoji_to_text = v,
         save: Some(|c, v| c.emoji_to_text = v),
-        on_toggle: None,
     },
     // — Messages (9–11) —
     SettingDef {
@@ -882,7 +868,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.show_reactions,
         set: |a, v| a.reactions.show_reactions = v,
         save: Some(|c, v| c.show_reactions = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Verbose reactions",
@@ -890,7 +875,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.verbose,
         set: |a, v| a.reactions.verbose = v,
         save: Some(|c, v| c.reaction_verbose = v),
-        on_toggle: None,
     },
     SettingDef {
         label: "Send read receipts",
@@ -898,7 +882,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.send_read_receipts,
         set: |a, v| a.send_read_receipts = v,
         save: Some(|c, v| c.send_read_receipts = v),
-        on_toggle: None,
     },
     // — Interface (12–14) —
     SettingDef {
@@ -907,7 +890,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.sidebar_visible,
         set: |a, v| a.sidebar_visible = v,
         save: None, // runtime-only, not persisted
-        on_toggle: None,
     },
     SettingDef {
         label: "Mouse support",
@@ -915,9 +897,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.mouse.enabled,
         set: |a, v| a.mouse.enabled = v,
         save: Some(|c, v| c.mouse_enabled = v),
-        on_toggle: Some(|a| {
-            a.mouse.pending_toggle = Some(a.mouse.enabled);
-        }),
     },
     SettingDef {
         label: "Sidebar on right",
@@ -925,7 +904,6 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.sidebar_on_right,
         set: |a, v| a.sidebar_on_right = v,
         save: Some(|c, v| c.sidebar_on_right = v),
-        on_toggle: None,
     },
 ];
 
@@ -934,9 +912,6 @@ impl App {
         if let Some(def) = SETTINGS.get(index) {
             let cur = (def.get)(self);
             (def.set)(self, !cur);
-            if let Some(hook) = def.on_toggle {
-                hook(self);
-            }
         }
     }
 
@@ -1129,35 +1104,35 @@ impl App {
         // Find current position in visual order
         let visual_pos = SETTINGS_VISUAL_ORDER
             .iter()
-            .position(|&i| i == self.settings_index)
+            .position(|&i| i == self.settings_overlay.index)
             .unwrap_or(0);
 
         match code {
             KeyCode::Char('j') | KeyCode::Down if visual_pos + 1 < SETTINGS_VISUAL_ORDER.len() => {
-                self.settings_index = SETTINGS_VISUAL_ORDER[visual_pos + 1];
+                self.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos + 1];
             }
             KeyCode::Char('k') | KeyCode::Up if visual_pos > 0 => {
-                self.settings_index = SETTINGS_VISUAL_ORDER[visual_pos - 1];
+                self.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos - 1];
             }
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
-                if self.settings_index == preview_index {
+                if self.settings_overlay.index == preview_index {
                     self.notifications.notification_preview =
                         match self.notifications.notification_preview.as_str() {
                             "full" => "sender".to_string(),
                             "sender" => "minimal".to_string(),
                             _ => "full".to_string(),
                         };
-                } else if self.settings_index == image_mode_index {
+                } else if self.settings_overlay.index == image_mode_index {
                     self.image.image_mode = match self.image.image_mode.as_str() {
                         "native" => "halfblock".to_string(),
                         "halfblock" => "none".to_string(),
                         _ => "native".to_string(),
                     };
-                } else if self.settings_index == customize_index {
+                } else if self.settings_overlay.index == customize_index {
                     self.open_overlay(OverlayKind::Customize);
-                    self.customize_index = 0;
+                    self.settings_overlay.customize_index = 0;
                 } else {
-                    self.toggle_setting(self.settings_index);
+                    self.toggle_setting(self.settings_overlay.index);
                 }
             }
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -1173,16 +1148,19 @@ impl App {
     pub fn handle_customize_key(&mut self, code: KeyCode) {
         const ITEMS: usize = 3; // Theme, Keybindings, Profile
         match code {
-            KeyCode::Char('j') | KeyCode::Down if self.customize_index + 1 < ITEMS => {
-                self.customize_index += 1;
+            KeyCode::Char('j') | KeyCode::Down
+                if self.settings_overlay.customize_index + 1 < ITEMS =>
+            {
+                self.settings_overlay.customize_index += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.customize_index = self.customize_index.saturating_sub(1);
+                self.settings_overlay.customize_index =
+                    self.settings_overlay.customize_index.saturating_sub(1);
             }
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
                 self.close_overlay();
                 self.save_settings();
-                match self.customize_index {
+                match self.settings_overlay.customize_index {
                     0 => {
                         self.open_overlay(OverlayKind::ThemePicker);
                         self.theme_picker.index = self
@@ -1219,9 +1197,12 @@ impl App {
         self.settings_profiles.name = profile.name.clone();
     }
 
-    /// Fire on_toggle hooks only for settings that changed since the overlay opened.
+    /// Fire deferred side-effects for settings that changed since the overlay opened.
+    /// Currently just the mouse-capture toggle: applying it immediately on each
+    /// keystroke would clobber input mid-edit, so we queue the new state and
+    /// `main.rs` flips the terminal mode on the next tick.
     fn fire_deferred_settings_hooks(&mut self) {
-        if self.mouse.enabled != self.settings_mouse_snapshot {
+        if self.mouse.enabled != self.settings_overlay.mouse_snapshot {
             self.mouse.pending_toggle = Some(self.mouse.enabled);
         }
     }
@@ -2976,8 +2957,10 @@ impl App {
             muted_conversations: HashMap::new(),
             blocked_conversations: HashSet::new(),
             autocomplete: AutocompleteState::new(),
-            settings_index: 0,
-            customize_index: 0,
+            settings_overlay: SettingsOverlayState {
+                mouse_snapshot: true,
+                ..Default::default()
+            },
             contacts_overlay: ContactsOverlayState::default(),
             verify: VerifyOverlayState::default(),
             identity_trust: HashMap::new(),
@@ -3041,7 +3024,6 @@ impl App {
                 available: crate::settings_profile::all_settings_profiles(),
                 ..Default::default()
             },
-            settings_mouse_snapshot: true,
             sync: SyncState::new(),
             current_overlay: None,
             lock: LockState {
@@ -9554,11 +9536,11 @@ mod tests {
     #[rstest]
     fn mouse_overlay_scroll_navigates_list(mut app: App) {
         app.open_overlay(OverlayKind::Settings);
-        app.settings_index = 0;
+        app.settings_overlay.index = 0;
         app.mouse.messages_area = Rect::new(0, 0, 80, 20);
         // Scroll down in overlay should navigate settings list (j), not scroll messages
         app.handle_mouse_event(mouse_scroll_down(10, 10));
-        assert_eq!(app.settings_index, 1);
+        assert_eq!(app.settings_overlay.index, 1);
         assert_eq!(app.scroll.offset, 0); // messages not scrolled
     }
 

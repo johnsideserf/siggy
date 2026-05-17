@@ -25,6 +25,20 @@ pub struct ActionMenuState {
     pub index: usize,
 }
 
+/// State for the settings overlay and its Customize sub-overlay.
+#[derive(Default)]
+pub struct SettingsOverlayState {
+    /// Cursor position in the settings list
+    pub index: usize,
+    /// Cursor position in the Customize sub-menu (spawned from the
+    /// "Customize..." row in the settings overlay)
+    pub customize_index: usize,
+    /// Snapshot of `mouse.enabled` at overlay-open time, used by
+    /// `fire_deferred_settings_hooks` to decide whether to queue the
+    /// mouse-capture toggle on close.
+    pub mouse_snapshot: bool,
+}
+
 /// State for the contacts list overlay.
 #[derive(Default)]
 pub struct ContactsOverlayState {

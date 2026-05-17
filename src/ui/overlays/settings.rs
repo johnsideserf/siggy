@@ -45,7 +45,7 @@ pub(in crate::ui) fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     let render_toggle = |lines: &mut Vec<Line>, i: usize, def: &SettingDef| {
         let enabled = app.setting_value(i);
         let checkbox = if enabled { "[x]" } else { "[ ]" };
-        let is_selected = i == app.settings_index;
+        let is_selected = i == app.settings_overlay.index;
         let style = if is_selected {
             Style::default()
                 .bg(theme.bg_selected)
@@ -72,7 +72,7 @@ pub(in crate::ui) fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
 
     // Render a special (non-toggle) row
     let render_special = |lines: &mut Vec<Line>, label: &str, value: &str, index: usize| {
-        let is_selected = app.settings_index == index;
+        let is_selected = app.settings_overlay.index == index;
         let label_style = if is_selected {
             Style::default()
                 .bg(theme.bg_selected)
@@ -146,10 +146,10 @@ pub(in crate::ui) fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     render_special(&mut lines, "Customize...", "", customize_index);
 
     // Hint line for the currently selected item
-    let hint = if app.settings_index < SETTINGS.len() {
-        SETTINGS[app.settings_index].hint
+    let hint = if app.settings_overlay.index < SETTINGS.len() {
+        SETTINGS[app.settings_overlay.index].hint
     } else {
-        match app.settings_index - SETTINGS.len() {
+        match app.settings_overlay.index - SETTINGS.len() {
             0 => "Control message content in notifications",
             1 => "native (terminal protocol), halfblock, or none",
             2 => "Theme, keybindings, and settings profiles",
@@ -174,7 +174,7 @@ pub(in crate::ui) fn draw_customize(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, label) in items.iter().enumerate() {
-        let is_selected = i == app.customize_index;
+        let is_selected = i == app.settings_overlay.customize_index;
         let style = if is_selected {
             Style::default()
                 .bg(theme.bg_selected)

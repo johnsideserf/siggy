@@ -100,8 +100,8 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
         InputAction::Unblock => unblock(app),
         InputAction::Settings => {
             app.open_overlay(OverlayKind::Settings);
-            app.settings_index = 0;
-            app.settings_mouse_snapshot = app.mouse.enabled;
+            app.settings_overlay.index = 0;
+            app.settings_overlay.mouse_snapshot = app.mouse.enabled;
             None
         }
         InputAction::Attach => {
