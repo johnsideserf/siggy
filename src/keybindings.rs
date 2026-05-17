@@ -528,748 +528,204 @@ pub fn action_label(action: KeyAction) -> &'static str {
 // Built-in profiles
 // ---------------------------------------------------------------------------
 
-fn bind(
-    map: &mut HashMap<KeyCombo, KeyAction>,
-    modifiers: KeyModifiers,
-    code: KeyCode,
-    action: KeyAction,
-) {
-    map.insert(KeyCombo { modifiers, code }, action);
+/// One row of a profile's binding table: (scope, modifier flags, key code,
+/// action). Bundled into static slices below so each profile is a single
+/// scannable list rather than 200+ lines of `bind(&mut map, ...)` calls.
+type BindingRow = (BindingMode, KeyModifiers, KeyCode, KeyAction);
+
+/// Build a `KeyBindings` instance from a static binding table. Sorts each
+/// row into the global/normal/insert maps based on its declared scope.
+fn build_profile(profile_name: &str, table: &[BindingRow]) -> KeyBindings {
+    let mut global = HashMap::new();
+    let mut normal = HashMap::new();
+    let mut insert = HashMap::new();
+    for &(scope, modifiers, code, action) in table {
+        let target = match scope {
+            BindingMode::Global => &mut global,
+            BindingMode::Normal => &mut normal,
+            BindingMode::Insert => &mut insert,
+        };
+        target.insert(KeyCombo { modifiers, code }, action);
+    }
+    KeyBindings {
+        profile_name: profile_name.into(),
+        global,
+        normal,
+        insert,
+    }
 }
 
-/// The Default profile — exact reproduction of all current hardcoded bindings.
+/// The Default profile -- vim-style modal with j/k navigation and Normal-mode
+/// actions on letter keys.
 pub fn default_profile() -> KeyBindings {
-    let mut global = HashMap::new();
-    let mut normal = HashMap::new();
-    let mut insert = HashMap::new();
-
-    // --- Global ---
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('c'),
-        KeyAction::Quit,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('l'),
-        KeyAction::Lock,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::Tab,
-        KeyAction::NextConversation,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::SHIFT,
-        KeyCode::BackTab,
-        KeyAction::PrevConversation,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Left,
-        KeyAction::ResizeSidebarLeft,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Right,
-        KeyAction::ResizeSidebarRight,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::PageUp,
-        KeyAction::PageScrollUp,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::PageDown,
-        KeyAction::PageScrollDown,
-    );
-
-    // --- Normal: scroll ---
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('j'),
-        KeyAction::FocusNextMessage,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('k'),
-        KeyAction::FocusPrevMessage,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('d'),
-        KeyAction::HalfPageDown,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('u'),
-        KeyAction::HalfPageUp,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('e'),
-        KeyAction::ScrollDown,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('y'),
-        KeyAction::ScrollUp,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('G'),
-        KeyAction::ScrollToBottom,
-    );
-
-    // --- Normal: edit/mode-switch ---
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('i'),
-        KeyAction::InsertAtCursor,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('a'),
-        KeyAction::InsertAfterCursor,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('I'),
-        KeyAction::InsertLineStart,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('A'),
-        KeyAction::InsertLineEnd,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('o'),
-        KeyAction::OpenLineBelow,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('h'),
-        KeyAction::CursorLeft,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('l'),
-        KeyAction::CursorRight,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('0'),
-        KeyAction::LineStart,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('$'),
-        KeyAction::LineEnd,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('w'),
-        KeyAction::WordForward,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('b'),
-        KeyAction::WordBack,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('x'),
-        KeyAction::DeleteChar,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('D'),
-        KeyAction::DeleteToEnd,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('/'),
-        KeyAction::StartSearch,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Esc,
-        KeyAction::ClearInput,
-    );
-
-    // --- Normal: actions ---
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('y'),
-        KeyAction::CopyMessage,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('Y'),
-        KeyAction::CopyAllMessages,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('r'),
-        KeyAction::React,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('q'),
-        KeyAction::Quote,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('e'),
-        KeyAction::EditMessage,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('f'),
-        KeyAction::ForwardMessage,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('n'),
-        KeyAction::NextSearchResult,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('N'),
-        KeyAction::PrevSearchResult,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Enter,
-        KeyAction::OpenActionMenu,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('p'),
-        KeyAction::PinMessage,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('Q'),
-        KeyAction::JumpToQuote,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('o'),
-        KeyAction::JumpBack,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('s'),
-        KeyAction::SidebarSearch,
-    );
-
-    // --- Insert ---
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::Esc,
-        KeyAction::ExitInsert,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::Enter,
-        KeyAction::SendMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Enter,
-        KeyAction::InsertNewline,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::SHIFT,
-        KeyCode::Enter,
-        KeyAction::InsertNewline,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('w'),
-        KeyAction::DeleteWordBack,
-    );
-
-    KeyBindings {
-        profile_name: "Default".into(),
-        global,
-        normal,
-        insert,
-    }
+    build_profile("Default", DEFAULT_BINDINGS)
 }
 
-/// Emacs-style profile — no Normal mode, Ctrl-based shortcuts.
+const DEFAULT_BINDINGS: &[BindingRow] = {
+    use BindingMode::{Global, Insert, Normal};
+    use KeyAction::*;
+    use KeyCode::{BackTab, Char, Enter, Esc, PageDown, PageUp, Tab};
+    use KeyModifiers as M;
+
+    &[
+        // Global
+        (Global, M::CONTROL, Char('c'), Quit),
+        (Global, M::CONTROL, Char('l'), Lock),
+        (Global, M::NONE, Tab, NextConversation),
+        (Global, M::SHIFT, BackTab, PrevConversation),
+        (Global, M::CONTROL, KeyCode::Left, ResizeSidebarLeft),
+        (Global, M::CONTROL, KeyCode::Right, ResizeSidebarRight),
+        (Global, M::NONE, PageUp, PageScrollUp),
+        (Global, M::NONE, PageDown, PageScrollDown),
+        // Normal: scroll
+        (Normal, M::NONE, Char('j'), FocusNextMessage),
+        (Normal, M::NONE, Char('k'), FocusPrevMessage),
+        (Normal, M::CONTROL, Char('d'), HalfPageDown),
+        (Normal, M::CONTROL, Char('u'), HalfPageUp),
+        (Normal, M::CONTROL, Char('e'), ScrollDown),
+        (Normal, M::CONTROL, Char('y'), ScrollUp),
+        (Normal, M::NONE, Char('G'), ScrollToBottom),
+        // Normal: edit/mode-switch
+        (Normal, M::NONE, Char('i'), InsertAtCursor),
+        (Normal, M::NONE, Char('a'), InsertAfterCursor),
+        (Normal, M::NONE, Char('I'), InsertLineStart),
+        (Normal, M::NONE, Char('A'), InsertLineEnd),
+        (Normal, M::NONE, Char('o'), OpenLineBelow),
+        (Normal, M::NONE, Char('h'), CursorLeft),
+        (Normal, M::NONE, Char('l'), CursorRight),
+        (Normal, M::NONE, Char('0'), LineStart),
+        (Normal, M::NONE, Char('$'), LineEnd),
+        (Normal, M::NONE, Char('w'), WordForward),
+        (Normal, M::NONE, Char('b'), WordBack),
+        (Normal, M::NONE, Char('x'), DeleteChar),
+        (Normal, M::NONE, Char('D'), DeleteToEnd),
+        (Normal, M::NONE, Char('/'), StartSearch),
+        (Normal, M::NONE, Esc, ClearInput),
+        // Normal: actions
+        (Normal, M::NONE, Char('y'), CopyMessage),
+        (Normal, M::NONE, Char('Y'), CopyAllMessages),
+        (Normal, M::NONE, Char('r'), React),
+        (Normal, M::NONE, Char('q'), Quote),
+        (Normal, M::NONE, Char('e'), EditMessage),
+        (Normal, M::NONE, Char('f'), ForwardMessage),
+        (Normal, M::NONE, Char('n'), NextSearchResult),
+        (Normal, M::NONE, Char('N'), PrevSearchResult),
+        (Normal, M::NONE, Enter, OpenActionMenu),
+        (Normal, M::NONE, Char('p'), PinMessage),
+        (Normal, M::NONE, Char('Q'), JumpToQuote),
+        (Normal, M::CONTROL, Char('o'), JumpBack),
+        (Normal, M::NONE, Char('s'), SidebarSearch),
+        // Insert
+        (Insert, M::NONE, Esc, ExitInsert),
+        (Insert, M::NONE, Enter, SendMessage),
+        (Insert, M::ALT, Enter, InsertNewline),
+        (Insert, M::SHIFT, Enter, InsertNewline),
+        (Insert, M::CONTROL, Char('w'), DeleteWordBack),
+    ]
+};
+
+/// Emacs-style profile -- no Normal mode, Ctrl-based shortcuts.
 pub fn emacs_profile() -> KeyBindings {
-    let mut global = HashMap::new();
-    let mut normal = HashMap::new();
-    let mut insert = HashMap::new();
-
-    // --- Global ---
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('c'),
-        KeyAction::Quit,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('l'),
-        KeyAction::Lock,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::Tab,
-        KeyAction::NextConversation,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::SHIFT,
-        KeyCode::BackTab,
-        KeyAction::PrevConversation,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Left,
-        KeyAction::ResizeSidebarLeft,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Right,
-        KeyAction::ResizeSidebarRight,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::PageUp,
-        KeyAction::PageScrollUp,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::PageDown,
-        KeyAction::PageScrollDown,
-    );
-
-    // --- Normal: essentially a stripped-down version ---
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('i'),
-        KeyAction::InsertAtCursor,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Esc,
-        KeyAction::ClearInput,
-    );
-
-    // --- Insert (primary mode) ---
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::Esc,
-        KeyAction::ExitInsert,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::Enter,
-        KeyAction::SendMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Enter,
-        KeyAction::InsertNewline,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::SHIFT,
-        KeyCode::Enter,
-        KeyAction::InsertNewline,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('w'),
-        KeyAction::DeleteWordBack,
-    );
-    // Emacs scroll
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('p'),
-        KeyAction::ScrollUp,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('n'),
-        KeyAction::ScrollDown,
-    );
-    // Emacs cursor
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('a'),
-        KeyAction::LineStart,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('e'),
-        KeyAction::LineEnd,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('f'),
-        KeyAction::CursorRight,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('b'),
-        KeyAction::CursorLeft,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('d'),
-        KeyAction::DeleteChar,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('k'),
-        KeyAction::DeleteToEnd,
-    );
-    // Emacs actions via Alt
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('r'),
-        KeyAction::React,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('q'),
-        KeyAction::Quote,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('e'),
-        KeyAction::EditMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('f'),
-        KeyAction::ForwardMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('d'),
-        KeyAction::DeleteMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('y'),
-        KeyAction::CopyMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('n'),
-        KeyAction::NextSearchResult,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('p'),
-        KeyAction::PrevSearchResult,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('m'),
-        KeyAction::OpenActionMenu,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Char('Q'),
-        KeyAction::JumpToQuote,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('o'),
-        KeyAction::JumpBack,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::ALT,
-        KeyCode::Char('s'),
-        KeyAction::SidebarSearch,
-    );
-
-    KeyBindings {
-        profile_name: "Emacs".into(),
-        global,
-        normal,
-        insert,
-    }
+    build_profile("Emacs", EMACS_BINDINGS)
 }
 
-/// Minimal profile — arrow-key centric, no modal concept needed.
+const EMACS_BINDINGS: &[BindingRow] = {
+    use BindingMode::{Global, Insert, Normal};
+    use KeyAction::*;
+    use KeyCode::{BackTab, Char, Enter, Esc, PageDown, PageUp, Tab};
+    use KeyModifiers as M;
+
+    &[
+        // Global
+        (Global, M::CONTROL, Char('c'), Quit),
+        (Global, M::CONTROL, Char('l'), Lock),
+        (Global, M::NONE, Tab, NextConversation),
+        (Global, M::SHIFT, BackTab, PrevConversation),
+        (Global, M::CONTROL, KeyCode::Left, ResizeSidebarLeft),
+        (Global, M::CONTROL, KeyCode::Right, ResizeSidebarRight),
+        (Global, M::NONE, PageUp, PageScrollUp),
+        (Global, M::NONE, PageDown, PageScrollDown),
+        (Global, M::ALT, Char('s'), SidebarSearch),
+        // Normal (essentially a stripped-down version)
+        (Normal, M::NONE, Char('i'), InsertAtCursor),
+        (Normal, M::NONE, Esc, ClearInput),
+        // Insert (primary mode for Emacs)
+        (Insert, M::NONE, Esc, ExitInsert),
+        (Insert, M::NONE, Enter, SendMessage),
+        (Insert, M::ALT, Enter, InsertNewline),
+        (Insert, M::SHIFT, Enter, InsertNewline),
+        (Insert, M::CONTROL, Char('w'), DeleteWordBack),
+        // Emacs scroll
+        (Insert, M::CONTROL, Char('p'), ScrollUp),
+        (Insert, M::CONTROL, Char('n'), ScrollDown),
+        // Emacs cursor
+        (Insert, M::CONTROL, Char('a'), LineStart),
+        (Insert, M::CONTROL, Char('e'), LineEnd),
+        (Insert, M::CONTROL, Char('f'), CursorRight),
+        (Insert, M::CONTROL, Char('b'), CursorLeft),
+        (Insert, M::CONTROL, Char('d'), DeleteChar),
+        (Insert, M::CONTROL, Char('k'), DeleteToEnd),
+        // Emacs actions via Alt
+        (Insert, M::ALT, Char('r'), React),
+        (Insert, M::ALT, Char('q'), Quote),
+        (Insert, M::ALT, Char('e'), EditMessage),
+        (Insert, M::ALT, Char('f'), ForwardMessage),
+        (Insert, M::ALT, Char('d'), DeleteMessage),
+        (Insert, M::ALT, Char('y'), CopyMessage),
+        (Insert, M::ALT, Char('n'), NextSearchResult),
+        (Insert, M::ALT, Char('p'), PrevSearchResult),
+        (Insert, M::ALT, Char('m'), OpenActionMenu),
+        (Insert, M::ALT, Char('Q'), JumpToQuote),
+        (Insert, M::CONTROL, Char('o'), JumpBack),
+    ]
+};
+
+/// Minimal profile -- arrow-key centric, no modal concept needed.
 pub fn minimal_profile() -> KeyBindings {
-    let mut global = HashMap::new();
-    let mut normal = HashMap::new();
-    let mut insert = HashMap::new();
-
-    // --- Global ---
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('q'),
-        KeyAction::Quit,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('c'),
-        KeyAction::Quit,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('l'),
-        KeyAction::Lock,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::Tab,
-        KeyAction::NextConversation,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::SHIFT,
-        KeyCode::BackTab,
-        KeyAction::PrevConversation,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Left,
-        KeyAction::ResizeSidebarLeft,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Right,
-        KeyAction::ResizeSidebarRight,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::PageUp,
-        KeyAction::PageScrollUp,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::NONE,
-        KeyCode::PageDown,
-        KeyAction::PageScrollDown,
-    );
-
-    // --- Normal: arrow-key navigation ---
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Up,
-        KeyAction::ScrollUp,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Down,
-        KeyAction::ScrollDown,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Char('i'),
-        KeyAction::InsertAtCursor,
-    );
-    bind(
-        &mut normal,
-        KeyModifiers::NONE,
-        KeyCode::Esc,
-        KeyAction::ClearInput,
-    );
-
-    // --- Insert ---
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::Esc,
-        KeyAction::ExitInsert,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::Enter,
-        KeyAction::SendMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::ALT,
-        KeyCode::Enter,
-        KeyAction::InsertNewline,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::SHIFT,
-        KeyCode::Enter,
-        KeyAction::InsertNewline,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('w'),
-        KeyAction::DeleteWordBack,
-    );
-    // F-key actions
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(2),
-        KeyAction::React,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(3),
-        KeyAction::Quote,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(4),
-        KeyAction::EditMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(5),
-        KeyAction::CopyMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(6),
-        KeyAction::DeleteMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(7),
-        KeyAction::ForwardMessage,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(8),
-        KeyAction::OpenActionMenu,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(9),
-        KeyAction::JumpToQuote,
-    );
-    bind(
-        &mut insert,
-        KeyModifiers::NONE,
-        KeyCode::F(10),
-        KeyAction::JumpBack,
-    );
-    bind(
-        &mut global,
-        KeyModifiers::CONTROL,
-        KeyCode::Char('s'),
-        KeyAction::SidebarSearch,
-    );
-
-    KeyBindings {
-        profile_name: "Minimal".into(),
-        global,
-        normal,
-        insert,
-    }
+    build_profile("Minimal", MINIMAL_BINDINGS)
 }
+
+const MINIMAL_BINDINGS: &[BindingRow] = {
+    use BindingMode::{Global, Insert, Normal};
+    use KeyAction::*;
+    use KeyCode::{BackTab, Char, Enter, Esc, F, PageDown, PageUp, Tab};
+    use KeyModifiers as M;
+
+    &[
+        // Global
+        (Global, M::CONTROL, Char('q'), Quit),
+        (Global, M::CONTROL, Char('c'), Quit),
+        (Global, M::CONTROL, Char('l'), Lock),
+        (Global, M::NONE, Tab, NextConversation),
+        (Global, M::SHIFT, BackTab, PrevConversation),
+        (Global, M::CONTROL, KeyCode::Left, ResizeSidebarLeft),
+        (Global, M::CONTROL, KeyCode::Right, ResizeSidebarRight),
+        (Global, M::NONE, PageUp, PageScrollUp),
+        (Global, M::NONE, PageDown, PageScrollDown),
+        (Global, M::CONTROL, Char('s'), SidebarSearch),
+        // Normal (arrow-key navigation)
+        (Normal, M::NONE, KeyCode::Up, ScrollUp),
+        (Normal, M::NONE, KeyCode::Down, ScrollDown),
+        (Normal, M::NONE, Char('i'), InsertAtCursor),
+        (Normal, M::NONE, Esc, ClearInput),
+        // Insert
+        (Insert, M::NONE, Esc, ExitInsert),
+        (Insert, M::NONE, Enter, SendMessage),
+        (Insert, M::ALT, Enter, InsertNewline),
+        (Insert, M::SHIFT, Enter, InsertNewline),
+        (Insert, M::CONTROL, Char('w'), DeleteWordBack),
+        // F-key actions
+        (Insert, M::NONE, F(2), React),
+        (Insert, M::NONE, F(3), Quote),
+        (Insert, M::NONE, F(4), EditMessage),
+        (Insert, M::NONE, F(5), CopyMessage),
+        (Insert, M::NONE, F(6), DeleteMessage),
+        (Insert, M::NONE, F(7), ForwardMessage),
+        (Insert, M::NONE, F(8), OpenActionMenu),
+        (Insert, M::NONE, F(9), JumpToQuote),
+        (Insert, M::NONE, F(10), JumpBack),
+    ]
+};
 
 // ---------------------------------------------------------------------------
 // Profile discovery (mirrors theme.rs pattern)
