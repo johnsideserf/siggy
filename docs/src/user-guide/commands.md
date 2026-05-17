@@ -29,7 +29,7 @@ All commands start with `/`. Type `/` in Insert mode to open the autocomplete po
 | `/contacts` | `/c` | | Browse synced contacts |
 | `/settings` | | | Open settings overlay |
 | `/lock` | | | Lock the session |
-| `/lock-reset` | | | Change the lock passphrase |
+| `/lock-reset` | | | Change the lock passphrase (needs current passphrase) |
 | `/help` | `/h` | | Show help overlay |
 | `/quit` | `/q` | | Exit siggy |
 
