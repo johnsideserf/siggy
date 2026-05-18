@@ -100,6 +100,23 @@ Unix systems, the log file and directory are created with restrictive permission
 Copied message content is automatically cleared from the system clipboard after
 30 seconds (configurable via `clipboard_clear_seconds` in config).
 
+### Session lock
+
+`Ctrl-L` (or `/lock`) blanks the chat behind a passphrase prompt for the
+"someone walked up to my terminal" case. The passphrase is stored as an argon2
+PHC hash at `{config_dir}/lock_hash`, never as plaintext. While locked:
+
+- Keyboard input is intercepted; nothing reaches the composer
+- Terminal bell and OS desktop notifications are suppressed
+- Window title is clamped to bare `siggy` so the unread count does not leak
+
+**Threat model.** Session lock is a deterrent against casual on-screen
+snooping, not a defence against an attacker with shell access. Anyone who can
+read your home directory can also delete `lock_hash` and bypass the prompt,
+which is the same escape hatch the maintainer uses to recover from a
+forgotten passphrase (`siggy --reset-lock`). If you need stronger
+at-rest protection for the message DB, rely on full-disk encryption.
+
 ## Recommendations
 
 - **Enable full-disk encryption** on your device (BitLocker, LUKS, FileVault).

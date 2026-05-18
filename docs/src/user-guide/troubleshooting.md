@@ -58,9 +58,36 @@ the install script uses the native signal-cli build which does not require Java.
 
 **Symptom:** images show as `[attachment: image.jpg]` instead of inline previews.
 
-**Fix:** make sure `inline_images = true` in your config (this is the default).
-Also check that your terminal supports 256 colors or truecolor. Halfblock
-rendering requires a terminal with proper Unicode support.
+**Fix:** make sure `image_mode` in your config is not set to `"none"`. The
+default `"halfblock"` works in any terminal with truecolor / 256-color and
+proper Unicode support. `"native"` uses the Kitty / iTerm2 graphics protocol
+where supported, with automatic fallback otherwise.
+
+## Native images render as halfblock inside tmux
+
+**Symptom:** outside tmux, image attachments render as actual pixels. Inside
+tmux they fall back to halfblock even though the outer terminal supports a
+native protocol.
+
+**Why:** tmux strips Kitty (`ESC _G...`) and iTerm2 (`ESC ]1337;...`) escapes
+unless they are wrapped in tmux's DCS passthrough envelope, and
+`TERM_PROGRAM` becomes `tmux` so auto-detection cannot see the outer terminal.
+
+**Fix:** two steps. First, in your `~/.tmux.conf`:
+
+```
+set -g allow-passthrough on
+```
+
+(Older tmux uses `set -g allow-passthrough all`. Requires tmux 3.3+.) Then
+launch siggy with an explicit protocol override that names the outer
+terminal:
+
+```sh
+SIGGY_IMAGE_PROTOCOL=kitty siggy        # or iterm2 / sixel / halfblock
+```
+
+Sixel passes through tmux 3.4+ natively and does not need the env var.
 
 ## Sidebar disappeared
 

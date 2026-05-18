@@ -28,9 +28,8 @@ notify_group = true
 desktop_notifications = false
 notification_preview = "full"
 clipboard_clear_seconds = 30
-inline_images = true
+image_mode = "halfblock"
 show_link_previews = true
-native_images = false
 date_separators = true
 show_receipts = true
 color_receipts = true
@@ -59,9 +58,8 @@ proxy = ""
 | `desktop_notifications` | bool | `false` | OS-level desktop notifications for incoming messages |
 | `notification_preview` | string | `"full"` | Notification content level: `full`, `sender`, or `minimal` |
 | `clipboard_clear_seconds` | int | `30` | Seconds before clipboard auto-clears after copying (0 = disabled) |
-| `inline_images` | bool | `true` | Render image attachments as halfblock art |
+| `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
 | `show_link_previews` | bool | `true` | Show link preview cards for URLs in messages |
-| `native_images` | bool | `false` | Use native terminal image protocols (Kitty/iTerm2) |
 | `date_separators` | bool | `true` | Show date separator lines between messages from different days |
 | `show_receipts` | bool | `true` | Show delivery/read receipt status symbols |
 | `color_receipts` | bool | `true` | Colored receipt status symbols (vs monochrome) |
@@ -86,6 +84,17 @@ CLI flags override config file values for the current session:
 | `-a +15551234567` | `account` |
 | `-c /path/to/config.toml` | Config file path |
 | `--incognito` | Uses in-memory database (no persistence) |
+| `--demo` | Launch with dummy data (no signal-cli needed) |
+| `--setup` | Re-run the first-time setup wizard |
+| `--debug` | Write debug log to `~/.cache/siggy/debug.log` (PII redacted) |
+| `--debug-full` | Same as `--debug` but without redaction |
+| `--reset-lock` | Delete the session-lock passphrase hash and exit |
+
+## Environment variables
+
+| Var | Effect |
+|---|---|
+| `SIGGY_IMAGE_PROTOCOL` | Force image protocol selection (`kitty` / `iterm2` / `sixel` / `halfblock`). Useful inside tmux where auto-detection cannot see the outer terminal. |
 
 ## Settings overlay
 
@@ -95,9 +104,9 @@ Press `/settings` inside the app to open the settings overlay. This provides
 toggles for runtime settings:
 
 - Notification toggles (direct / group / desktop)
-- Notification preview level
+- Notification preview level (cycles full / sender / minimal)
 - Sidebar visibility / position
-- Inline image previews / link previews / native images
+- Image mode (cycles native / halfblock / none) and link previews
 - Date separators
 - Show read receipts / receipt colors / nerd font icons
 - Emoji-to-text mode

@@ -67,8 +67,25 @@
 - [x] Multi-line message input (Alt+Enter / Shift+Enter for newlines)
 - [x] Message history pagination (scroll-up to load older messages)
 - [x] Configurable keybindings (profiles, in-app rebinding, TOML overrides)
+- [x] Export chat history (`/export` to a plain text file)
+- [x] Sidebar filter (type-to-filter from Normal mode)
+- [x] Jump to quoted message (`Q` to jump, `Ctrl+O` to jump back)
+- [x] Delete conversations (`/delete` removes locally + declines message requests)
+- [x] Session lock + boss key (`Ctrl-L`, `/lock`, `/lock-reset`, `--reset-lock`)
+- [x] Native inline images inside tmux (DCS passthrough wrapping, `SIGGY_IMAGE_PROTOCOL` override) -- thanks @cultlead3r
 
 ## Future
 
-*No planned features at this time. Have an idea?
-[Open an issue](https://github.com/johnsideserf/siggy/issues).*
+Tracked in GitHub issues:
+
+- [Auto-lock idle timer (#438)](https://github.com/johnsideserf/siggy/issues/438) -- round out the session-lock feature with a configurable idle timeout
+- [Multi-account switching (#260)](https://github.com/johnsideserf/siggy/issues/260)
+- [Voice message playback (#199)](https://github.com/johnsideserf/siggy/issues/199)
+- [Scheduled messages via OS scheduler (#259)](https://github.com/johnsideserf/siggy/issues/259)
+- [Non-interactive CLI mode for scripting (#257)](https://github.com/johnsideserf/siggy/issues/257)
+- [Claude Code skill for siggy CLI (#258)](https://github.com/johnsideserf/siggy/issues/258)
+- [Bridge keybinding system to support command actions (#202)](https://github.com/johnsideserf/siggy/issues/202)
+- [Link Previews enhancement (#267)](https://github.com/johnsideserf/siggy/issues/267)
+- [Translations of README and docs site (#353)](https://github.com/johnsideserf/siggy/issues/353)
+
+Have an idea? [Open an issue](https://github.com/johnsideserf/siggy/issues).

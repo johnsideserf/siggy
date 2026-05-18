@@ -7,10 +7,16 @@ linked devices) sync into the TUI automatically.
 
 ## Attachments
 
-- **Images** -- rendered inline as halfblock art when `inline_images = true`
-- **Native image protocols** -- for terminals that support Kitty or iTerm2
-  graphics, enable `/settings` > "Native images" for higher-fidelity rendering
-  with proper cropping and flicker-free scrolling
+- **Images** -- rendered inline based on the `image_mode` setting:
+  - `halfblock` (default) -- Unicode halfblock art, universal fallback
+  - `native` -- Kitty / iTerm2 / Sixel graphics protocols for higher-fidelity
+    pixel rendering with proper cropping and flicker-free scrolling
+  - `none` -- skip image rendering entirely
+- **Native images inside tmux** -- Kitty and iTerm2 escapes are wrapped in
+  tmux's DCS passthrough envelope so attachments still render as actual pixels.
+  Requires tmux 3.3+ with `set -g allow-passthrough on` plus the
+  `SIGGY_IMAGE_PROTOCOL` env var to name the outer terminal (auto-detection
+  cannot see through tmux). See the Troubleshooting page.
 - **Other files** -- shown as `[attachment: filename]` with the download path
 - **Send files** -- use `/attach` to open a file browser and attach a file to
   your next message
@@ -102,6 +108,30 @@ siggy --incognito
 Uses an in-memory database instead of on-disk SQLite. No messages, conversations,
 or read markers are written to disk. The status bar shows a bold magenta
 **incognito** indicator. When you exit, everything is gone.
+
+## Session lock + boss key
+
+`Ctrl-L` (or `/lock`) blanks the visible chat behind a passphrase prompt --
+think "boss key" for terminal sessions. The passphrase is stored as an
+argon2 PHC hash, never as plaintext. While locked, terminal bells and
+desktop notifications are suppressed and the window title is clamped to
+bare `siggy` so no unread count leaks. Unlock by typing the passphrase
+followed by Enter.
+
+The first time you `/lock`, you set the passphrase. After that, lock is
+instant. Use `/lock-reset` (from inside the app, requires the current
+passphrase) to change it.
+
+**Forgot the passphrase?** Quit siggy and run:
+
+```sh
+siggy --reset-lock
+```
+
+This deletes the stored hash file (`{config_dir}/lock_hash`) and prints the
+path it removed. The next `/lock` sets a fresh passphrase. By design there
+is no in-app recovery -- the lock is a casual-snooping deterrent, not a
+defence against filesystem access.
 
 ## Message reactions
 

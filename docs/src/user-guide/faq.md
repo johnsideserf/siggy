@@ -46,6 +46,31 @@ siggy -a +15559876543
 
 Each account needs its own device linking via signal-cli.
 
+## I locked the session and forgot my passphrase. Now what?
+
+Quit siggy (or kill the process if the lock screen is in the way) and run:
+
+```sh
+siggy --reset-lock
+```
+
+The flag deletes the stored passphrase hash file and prints the path it
+removed. The next time you `/lock`, you will be prompted to set a fresh
+passphrase. By design there is no in-app recovery -- the lock is a
+casual-snooping deterrent, not protection against file-system access.
+
+## Images aren't rendering as native pixels inside tmux
+
+tmux strips the Kitty / iTerm2 graphics escapes unless you opt into
+passthrough, and `TERM_PROGRAM` becomes `tmux` so siggy cannot auto-detect
+the outer terminal. Two steps:
+
+1. In `~/.tmux.conf`: `set -g allow-passthrough on` (requires tmux 3.3+).
+2. Launch siggy with the outer terminal's protocol named:
+   `SIGGY_IMAGE_PROTOCOL=kitty siggy` (or `iterm2`, `sixel`, `halfblock`).
+
+See the Troubleshooting page for details.
+
 ## How do I update siggy?
 
 Re-run the install script, or download the latest binary from the
