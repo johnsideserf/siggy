@@ -29,7 +29,21 @@ pub enum ImageProtocol {
 }
 
 /// Detect the best available image protocol by checking environment variables.
+///
+/// Honors an explicit `SIGGY_IMAGE_PROTOCOL` override
+/// (`kitty` | `iterm2` | `sixel` | `halfblock`) which is most useful inside
+/// tmux, where `TERM_PROGRAM` becomes `tmux` and `KITTY_WINDOW_ID` is not
+/// propagated by default.
 pub fn detect_protocol() -> ImageProtocol {
+    if let Ok(p) = std::env::var("SIGGY_IMAGE_PROTOCOL") {
+        match p.trim().to_ascii_lowercase().as_str() {
+            "kitty" => return ImageProtocol::Kitty,
+            "iterm2" | "iterm" => return ImageProtocol::Iterm2,
+            "sixel" => return ImageProtocol::Sixel,
+            "halfblock" | "none" => return ImageProtocol::Halfblock,
+            _ => {}
+        }
+    }
     if std::env::var("KITTY_WINDOW_ID").is_ok() {
         return ImageProtocol::Kitty;
     }
@@ -44,6 +58,30 @@ pub fn detect_protocol() -> ImageProtocol {
         return ImageProtocol::Sixel;
     }
     ImageProtocol::Halfblock
+}
+
+/// Returns true if running inside a tmux session.
+pub fn in_tmux() -> bool {
+    std::env::var("TMUX").is_ok_and(|v| !v.is_empty())
+}
+
+/// Wrap a terminal escape sequence in tmux's DCS passthrough envelope.
+///
+/// tmux 3.3+ with `set -g allow-passthrough on` (or `all`) will unwrap this
+/// and forward the inner bytes to the outer terminal. Every inner ESC
+/// (0x1B) byte is doubled so tmux's parser does not terminate the DCS early.
+pub fn wrap_for_tmux(seq: &str) -> String {
+    let mut out = String::with_capacity(seq.len() + 16);
+    out.push_str("\x1bPtmux;");
+    for c in seq.chars() {
+        if c == '\x1b' {
+            out.push_str("\x1b\x1b");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push_str("\x1b\\");
+    out
 }
 
 /// Pre-resize an image and encode as PNG for native terminal protocol rendering.
@@ -669,5 +707,35 @@ mod tests {
         let pixel_data = &body[preamble_end..];
         let band_count = pixel_data.split('-').count();
         assert_eq!(band_count, 100);
+    }
+
+    #[test]
+    fn wrap_for_tmux_kitty_graphics() {
+        // A representative Kitty graphics escape: \x1b_G<params>;<payload>\x1b\\
+        let inner = "\x1b_Gf=100,a=t,i=1;abcd\x1b\\";
+        let wrapped = wrap_for_tmux(inner);
+        // Every inner ESC is doubled, whole thing wrapped in DCS passthrough.
+        assert_eq!(
+            wrapped,
+            "\x1bPtmux;\x1b\x1b_Gf=100,a=t,i=1;abcd\x1b\x1b\\\x1b\\"
+        );
+    }
+
+    #[test]
+    fn wrap_for_tmux_iterm2_osc_with_bel() {
+        // iTerm2 inline image escape: \x1b]1337;...\x07 (BEL-terminated OSC).
+        // Only the leading ESC needs doubling; BEL passes through unchanged.
+        let inner = "\x1b]1337;File=inline=1:abc\x07";
+        let wrapped = wrap_for_tmux(inner);
+        assert_eq!(
+            wrapped,
+            "\x1bPtmux;\x1b\x1b]1337;File=inline=1:abc\x07\x1b\\"
+        );
+    }
+
+    #[test]
+    fn wrap_for_tmux_passes_non_escape_bytes_through() {
+        let wrapped = wrap_for_tmux("plain ascii");
+        assert_eq!(wrapped, "\x1bPtmux;plain ascii\x1b\\");
     }
 }

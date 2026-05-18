@@ -548,6 +548,22 @@ fn get_or_cache_png(
     Some(b64)
 }
 
+/// Write a single native-image escape sequence, wrapping it in tmux's DCS
+/// passthrough envelope when `in_tmux` is true. Outside tmux this is a plain
+/// pass-through (byte-for-byte equivalent to `write!(backend, "{seq}")`).
+fn emit_passthrough_seq(
+    backend: &mut CrosstermBackend<io::Stdout>,
+    seq: &str,
+    in_tmux: bool,
+) -> io::Result<()> {
+    use std::io::Write;
+    if in_tmux {
+        backend.write_all(image_render::wrap_for_tmux(seq).as_bytes())
+    } else {
+        backend.write_all(seq.as_bytes())
+    }
+}
+
 /// Write native terminal image protocol escape sequences.
 ///
 /// For Kitty: process `kitty_pending_transmits` — transmit image data and create
@@ -556,6 +572,11 @@ fn get_or_cache_png(
 ///
 /// For iTerm2: overlay pre-resized images on top of the halfblock placeholders
 /// using cursor-positioned inline image sequences.
+///
+/// When running inside tmux (`$TMUX` set), every Kitty (`\x1b_G…\x1b\\`) and
+/// iTerm2 (`\x1b]1337;…\x07`) escape is wrapped in tmux's DCS passthrough
+/// envelope so the outer terminal can still see it. Requires `tmux 3.3+` with
+/// `set -g allow-passthrough on` (or `all`).
 fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App) -> Result<()> {
     let protocol = app.image.image_protocol;
     if protocol == image_render::ImageProtocol::Halfblock {
@@ -563,6 +584,7 @@ fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App)
     }
 
     use std::io::Write;
+    let tmux = image_render::in_tmux();
 
     if protocol == image_render::ImageProtocol::Kitty {
         // Kitty Unicode Placeholders: transmit pending images and create virtual placements.
@@ -588,18 +610,17 @@ fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App)
             for (i, chunk) in chunks.iter().enumerate() {
                 let m = if i == chunks.len() - 1 { 0 } else { 1 };
                 let chunk_str = std::str::from_utf8(chunk).unwrap_or("");
-                if i == 0 {
-                    write!(
-                        backend,
-                        "\x1b_Gf=100,a=t,i={id},q=2,m={m};{chunk_str}\x1b\\",
-                    )?;
+                let seq = if i == 0 {
+                    format!("\x1b_Gf=100,a=t,i={id},q=2,m={m};{chunk_str}\x1b\\")
                 } else {
-                    write!(backend, "\x1b_Gm={m};{chunk_str}\x1b\\")?;
-                }
+                    format!("\x1b_Gm={m};{chunk_str}\x1b\\")
+                };
+                emit_passthrough_seq(backend, &seq, tmux)?;
             }
 
             // Create virtual placement (U=1 enables Unicode Placeholder mode)
-            write!(backend, "\x1b_Ga=p,U=1,i={id},c={cols},r={rows},q=2\x1b\\",)?;
+            let placement = format!("\x1b_Ga=p,U=1,i={id},c={cols},r={rows},q=2\x1b\\");
+            emit_passthrough_seq(backend, &placement, tmux)?;
 
             app.image.kitty_transmitted.insert(*id);
         }
@@ -703,11 +724,11 @@ fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App)
 
         queue!(backend, MoveTo(img.x, img.y))?;
 
-        write!(
-            backend,
+        let seq = format!(
             "\x1b]1337;File=inline=1;width={};height={};preserveAspectRatio=0:{b64}\x07",
             img.width, img.height
-        )?;
+        );
+        emit_passthrough_seq(backend, &seq, tmux)?;
     }
 
     queue!(backend, RestorePosition)?;
