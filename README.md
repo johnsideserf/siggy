@@ -110,6 +110,26 @@ proxy = ""
 
 All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via PATH), and `download_dir` defaults to `~/signal-downloads/`. On Windows, use the full path to `signal-cli.bat` if it isn't in your PATH.
 
+### Inline images inside tmux
+
+Outside tmux, siggy auto-detects Kitty / iTerm2 / WezTerm / Ghostty and renders attachments as native pixel images. Inside tmux, two things have to be set up because tmux hides the outer terminal from siggy:
+
+1. Tell tmux to forward unknown escape sequences. Requires tmux 3.3+:
+
+   ```
+   set -g allow-passthrough on
+   ```
+
+   Older tmux uses `set -g allow-passthrough all`.
+
+2. Tell siggy which protocol the outer terminal speaks (auto-detection sees only tmux):
+
+   ```sh
+   SIGGY_IMAGE_PROTOCOL=kitty siggy        # or iterm2 / sixel / halfblock
+   ```
+
+If `SIGGY_IMAGE_PROTOCOL` is unset, the existing auto-detection runs (correct outside tmux, falls back to halfblock inside it). Sixel passes through tmux 3.4+ natively and does not need the env var.
+
 ## Features
 
 - **Messaging** -- Send and receive 1:1 and group messages
