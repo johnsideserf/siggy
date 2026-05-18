@@ -1,5 +1,118 @@
 # Changelog
 
+## v1.8.0
+
+A maintenance-and-cleanup release: one big new feature (session lock + boss key), one notable contributor PR (native inline images inside tmux), substantial idle-CPU and image-decode fixes, plus a deep tech-debt sweep across the codebase.
+
+### New features
+
+- **Session lock + boss key** -- `Ctrl-L` or `/lock` blanks the chat behind an
+  argon2-hashed passphrase prompt. `/lock-reset` changes the passphrase from
+  inside the app (requires the current one). A new `siggy --reset-lock` CLI
+  flag deletes the stored hash for forgotten-passphrase recovery (closes
+  #261, #442).
+- **Native inline images inside tmux** -- Kitty and iTerm2 image escapes are
+  now wrapped in tmux's DCS passthrough envelope so attachments render as
+  actual pixels rather than halfblock approximations. New
+  `SIGGY_IMAGE_PROTOCOL` env override (`kitty` / `iterm2` / `sixel` /
+  `halfblock`) covers the case where tmux hides the outer terminal from
+  auto-detection. Requires tmux 3.3+ with `set -g allow-passthrough on`
+  (closes #466). Thanks to [@cultlead3r](https://github.com/cultlead3r) for
+  this contribution.
+- **Conversation delete** -- new `/delete` command removes the current
+  conversation locally and declines pending message requests so the sender
+  stops appearing (closes #312).
+
+### Bug fixes
+
+- **Idle CPU pinning** -- skip per-tick housekeeping on bare mouse motion,
+  cache the `SetTitle` payload, and drop unrecognised events without going
+  around the loop. Resolves the "100% core idle" report on Alacritty + qtile
+  + X11 (closes #408).
+- **Image-decode hang** -- defensive 8192-pixel cap before decode (via
+  `image::Limits`) plus start/done diagnostics so pathological link-preview
+  images can no longer pin a background thread (closes #408).
+- **send_rpc ordering** -- register the pending RPC entry after the stdin
+  write succeeds, not before. Eliminates a 60s-TTL leak when serialize or
+  channel-send fails (REL-001), and recovers from a poisoned mutex instead
+  of silently dropping the registration (REL-002). Closes #434.
+- **Welcome spinner freeze** -- the spinner counter now advances on the 80
+  ms wall-clock cadence whenever the app is loading, regardless of sync
+  state. Previously paused entirely during the initial sync burst, which
+  looked like a hung process on slow hardware (closes #426).
+- **rand 0.8.6** -- patches GHSA-cq8v-f236-94qc (build-time only impact for
+  siggy, but bumping anyway to clear the advisory).
+
+### Diagnostics
+
+- **Slow-decode warning** -- `render_image` now writes a `WARN:` line to the
+  debug log file when any single decode exceeds 5000 ms, regardless of
+  whether `--debug` was passed. Future "my CPU is pinned" reports land with
+  the offending file path already on disk (closes #444).
+- **Loop-rate digest** -- under `--debug`, the event loop emits a 5-second
+  `loop 5s: iter=N render=N term_ev=N sig_ev=N bg_in_flight=N` summary that
+  pinpoints whether CPU is going to terminal events, signal events, redraws,
+  or background image decodes (#408 / #414).
+- **Wire-format snapshot tests** -- the 5 special-shape send_* RPCs (bare
+  recipient vs. wrapped array) now have JSON-shape regression tests so a
+  future "tidy-up" refactor can't silently break sends (closes #433).
+
+### Refactors
+
+The codebase landed a substantial structural cleanup. None of these change
+behaviour for users; they make future feature work cheaper.
+
+- **handlers/ extraction** -- `handle_signal_event` and friends extracted
+  out of `app.rs` into `handlers/signal.rs`, `handlers/input.rs`,
+  `handlers/keys.rs` (closes #399, #415, #417, #454).
+- **signal/ split** -- `signal/client.rs` split along the parser seam,
+  26 `send_*` methods deduped via a shared `send_rpc` helper, and
+  `signal/parse.rs` (2758 LOC) split into a 5-file submodule (closes
+  #400, #435, #455).
+- **Data-driven tables** -- db schema migrations and the three keybinding
+  profiles converted from imperative builders to static tables (closes
+  #402 items B and C).
+- **App field-count ratchet** -- new `SettingsOverlayState` consolidates the
+  last loose overlay fields; baseline dropped 67 -> 65 (#352).
+- **Typed enums replace stringly-typed fields** -- `notification_preview`
+  and `image_mode` config fields, the `"you"` sender sentinel, and the
+  action-menu key-hint are now compiler-enforced enums (closes #401, #453,
+  #458).
+- **SignalMessage::default** -- collapses 14 test fixtures from ~12 lines
+  each to one or two non-default fields plus `..Default::default()`.
+- **action_menu key handlers, list-overlay nav** -- shared helpers replace
+  the copy-pasted Up/Down/FilterPush/FilterPop arms across 5 overlays, also
+  fixing a latent empty-list underflow risk (closes #456).
+- **Wire-quote dedup** -- quotes persisted only on the body row, not also
+  on attachment rows (closes #423).
+- **push_resolved decomposition** -- 185-line god function split into a
+  thin orchestrator + 6 focused helpers (closes #454).
+
+### Internal
+
+- **+25 tests** since v1.7.1 (576 total -> 579 with #466). New coverage on
+  send_rpc ordering edge cases, wire-format snapshots, 12 previously-
+  untested SignalEvent dispatch paths, list-overlay nav, and the lock
+  state machine.
+- **Module docstrings backfilled** across `src/domain/` (closes #361).
+- **Dependency bumps** -- tokio, tempfile, emojis, open, notify-rust, plus
+  the rand security bump above.
+
+### Acknowledgements
+
+Thanks to:
+
+- [@cultlead3r](https://github.com/cultlead3r) for #466 (native inline
+  images inside tmux). First-time contributor and a meaty PR.
+- [@pcrockett](https://github.com/pcrockett) for the detailed CPU-pinning
+  report, debug logs, and confirmation testing on #408. The diagnostics
+  this drove (loop-rate digest + slow-decode warning) will pay off long
+  after the original incident.
+- [@shwoop](https://github.com/shwoop) for the passphrase-recovery review
+  feedback on #437 that led directly to the `--reset-lock` flag.
+
+---
+
 ## v1.5.0
 
 ### New features
