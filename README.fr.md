@@ -1,5 +1,5 @@
 > This is the French translation of the siggy README.
-> Last updated against English commit: 7a8d221
+> Last updated against English commit: 8b5890e
 > The [English version](README.md) is authoritative. If this translation has drifted, trust the English.
 
 <p align="center">
@@ -19,7 +19,27 @@
 <p align="center">
   <a href="README.md">English</a>
   &nbsp;|&nbsp;
+  <a href="README.da.md">Dansk</a>
+  &nbsp;|&nbsp;
+  <a href="README.de.md">Deutsch</a>
+  &nbsp;|&nbsp;
+  <a href="README.es.md">Español</a>
+  &nbsp;|&nbsp;
   <b>Français</b>
+  &nbsp;|&nbsp;
+  <a href="README.it.md">Italiano</a>
+  &nbsp;|&nbsp;
+  <a href="README.nl.md">Nederlands</a>
+  &nbsp;|&nbsp;
+  <a href="README.pt-BR.md">Português</a>
+  &nbsp;|&nbsp;
+  <a href="README.fi.md">Suomi</a>
+  &nbsp;|&nbsp;
+  <a href="README.sv.md">Svenska</a>
+  &nbsp;|&nbsp;
+  <a href="README.ru.md">Русский</a>
+  &nbsp;|&nbsp;
+  <a href="README.uk.md">Українська</a>
   &nbsp;|&nbsp;
   <a href="README.zh-CN.md">简体中文</a>
   &nbsp;|&nbsp;
@@ -43,7 +63,7 @@ brew install siggy
 
 Téléchargez la dernière version pour votre plateforme depuis la page [Releases](https://github.com/johnsideserf/siggy/releases).
 
-**Linux / macOS**:
+**Linux / macOS** (en une ligne):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/johnsideserf/siggy/master/install.sh | bash
@@ -116,6 +136,26 @@ proxy = ""
 
 Tous les champs sont facultatifs. La valeur par défaut de `signal_cli_path` est `"signal-cli"` (recherché via le PATH), et celle de `download_dir` est `~/signal-downloads/`. Sous Windows, indiquez le chemin d'accès complet vers `signal-cli.bat` s'il ne figure pas dans votre PATH.
 
+### Images intégrées dans tmux
+
+En dehors de tmux, siggy détecte automatiquement Kitty / iTerm2 / WezTerm / Ghostty et affiche les pièces jointes sous forme d'images natives en pixels. Dans tmux, deux réglages sont nécessaires, car tmux masque le terminal extérieur à siggy :
+
+1. Demandez à tmux de transmettre les séquences d'échappement inconnues. Nécessite tmux 3.3+ :
+
+   ```
+   set -g allow-passthrough on
+   ```
+
+   Les versions plus anciennes de tmux utilisent `set -g allow-passthrough all`.
+
+2. Indiquez à siggy quel protocole utilise le terminal extérieur (la détection automatique ne voit que tmux) :
+
+   ```sh
+   SIGGY_IMAGE_PROTOCOL=kitty siggy        # ou iterm2 / sixel / halfblock
+   ```
+
+Si `SIGGY_IMAGE_PROTOCOL` n'est pas définie, la détection automatique existante s'applique (correcte en dehors de tmux, repli sur halfblock à l'intérieur). Le sixel traverse tmux 3.4+ nativement et ne nécessite pas cette variable d'environnement.
+
 ## Caractéristiques
 
 - **Messagerie** -- Envoi et réception de messages privés et de groupe
@@ -131,6 +171,7 @@ Tous les champs sont facultatifs. La valeur par défaut de `signal_cli_path` est
 - **Répondre / citer** -- Appuyez sur la touche `q` sur un message sélectionné pour répondre en citant le contexte
 - **Modifier les messages** -- Appuyez sur `e` pour modifier vos propres messages envoyés
 - **Supprimer des messages** -- Appuyez sur `d` pour supprimer localement ou à distance (vos propres messages)
+- **Supprimer des conversations** -- Utilisez `/delete` pour supprimer localement la conversation en cours (refuse les demandes de messages en attente)
 - **Recherche de messages** -- `/search <requête>` avec `n`/`N` pour passer d'un résultat à l'autre
 - **@mentions** -- Tapez `@` dans les discussions de groupe pour mentionner des membres grâce à l'autocomplétion
 - **Sélection de messages** -- Mise en surbrillance du message sélectionné lors du défilement ; utilisez les touches `J`/`K` pour passer d'un message à l'autre
@@ -156,6 +197,7 @@ Tous les champs sont facultatifs. La valeur par défaut de `signal_cli_path` est
 |---|---|---|
 | `/join <nom>` | `/j` | Rejoindre une conversation par nom de contact, numéro ou groupe |
 | `/part` | `/p` | Quitter la conversation en cours |
+| `/delete` | | Supprimer la conversation en cours (refuse les demandes de messages en attente) |
 | `/attach` | `/a` | Ouvrir le navigateur de fichiers pour joindre un fichier |
 | `/search <requête>` | `/s` | Rechercher des messages dans la conversation en cours (ou toutes les conversations) |
 | `/sidebar` | `/sb` | Afficher/masquer la barre latérale |
@@ -168,12 +210,16 @@ Tous les champs sont facultatifs. La valeur par défaut de `signal_cli_path` est
 | `/theme` | `/t` | Ouvrir le sélecteur de thème |
 | `/contacts` | `/c` | Parcourir les contacts synchronisés |
 | `/settings` | | Ouvrir l'overlay des paramètres |
+| `/lock` | | Verrouiller la session |
+| `/lock-reset` | | Changer la phrase secrète de verrouillage (nécessite la phrase secrète actuelle) |
 | `/help` | `/h` | Afficher l'overlay d'aide |
 | `/quit` | `/q` | Quitter siggy |
 
 Tapez `/` pour ouvrir l'overlay d'autocomplétion. Utilisez la touche `Tab` pour valider, et les touches fléchées pour naviguer.
 
 Pour envoyer un message à un nouveau contact : `/join +15551234567` (format E.164).
+
+**Vous avez oublié votre phrase secrète de verrouillage ?** Quittez siggy (ou tuez le processus) et exécutez `siggy --reset-lock`. Cette commande supprime le hash de la phrase secrète stockée et affiche le chemin du fichier supprimé. Le prochain `/lock` définira une nouvelle phrase secrète.
 
 ## Raccourcis clavier
 

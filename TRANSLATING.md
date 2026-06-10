@@ -36,6 +36,7 @@ Translated READMEs live in the repo root with a two-letter [ISO 639-1](https://e
 - `README.de.md` (German)
 - `README.fr.md` (French)
 - `README.zh-CN.md` (Simplified Chinese - use `zh-CN` / `zh-TW` when a distinction matters)
+- `README.pt-BR.md` (Brazilian Portuguese - same rule when a regional distinction matters)
 
 Always link back to the English authoritative version from the top of your translation.
 
@@ -79,6 +80,18 @@ Mirror the same switcher in each translated README, with the current language in
 - Technical terms (signal-cli, TUI, JSON-RPC, crates.io, Homebrew) stay in English.
 - Code blocks and CLI commands stay in English.
 - Image alt text should be translated.
+
+## Maintainer-provided translations
+
+Some translations are seeded by the maintainer (with AI assistance) rather than written by native speakers. These are clearly labeled with an extra header line:
+
+```markdown
+> This translation is maintainer-provided and awaiting native-speaker review. Corrections welcome - see issue #353.
+```
+
+If you are a native speaker, reviewing one of these is the highest-value translation contribution you can make, and it is a much smaller job than translating from scratch: read it end-to-end, fix anything unnatural or wrong, and remove the header line above in your PR. That marks the translation as native-reviewed. If you want to own the language long-term afterwards, say so in the PR.
+
+The native-speakers-only rule below applies to contributor submissions. It exists to stop unreviewed machine output landing silently, not to block transparent, clearly-labeled seeds.
 
 ## Maintaining a translation
 

@@ -15,7 +15,27 @@
 <p align="center">
   <b>English</b>
   &nbsp;|&nbsp;
+  <a href="README.da.md">Dansk</a>
+  &nbsp;|&nbsp;
+  <a href="README.de.md">Deutsch</a>
+  &nbsp;|&nbsp;
+  <a href="README.es.md">Español</a>
+  &nbsp;|&nbsp;
   <a href="README.fr.md">Français</a>
+  &nbsp;|&nbsp;
+  <a href="README.it.md">Italiano</a>
+  &nbsp;|&nbsp;
+  <a href="README.nl.md">Nederlands</a>
+  &nbsp;|&nbsp;
+  <a href="README.pt-BR.md">Português</a>
+  &nbsp;|&nbsp;
+  <a href="README.fi.md">Suomi</a>
+  &nbsp;|&nbsp;
+  <a href="README.sv.md">Svenska</a>
+  &nbsp;|&nbsp;
+  <a href="README.ru.md">Русский</a>
+  &nbsp;|&nbsp;
+  <a href="README.uk.md">Українська</a>
   &nbsp;|&nbsp;
   <a href="README.zh-CN.md">简体中文</a>
   &nbsp;|&nbsp;
