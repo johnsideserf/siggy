@@ -585,7 +585,9 @@ fn string_to_color(s: &str) -> Result<Color, String> {
     let s = s.trim();
     // Hex: #rrggbb
     if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
+        // is_ascii guard: len() is bytes, and slicing below would panic on a
+        // multibyte char whose UTF-8 encoding happens to total 6 bytes.
+        if hex.len() == 6 && hex.is_ascii() {
             let r = u8::from_str_radix(&hex[0..2], 16).map_err(|e| format!("bad hex red: {e}"))?;
             let g =
                 u8::from_str_radix(&hex[2..4], 16).map_err(|e| format!("bad hex green: {e}"))?;
@@ -661,6 +663,37 @@ mod tests {
         assert_eq!(s, expected_str);
         let c = string_to_color(&s).unwrap();
         assert_eq!(c, color);
+    }
+
+    // Reproduces #487: a multibyte char can bring the byte length to exactly
+    // 6, and byte-slicing the hex pairs then panicked mid-character. Every
+    // malformed color must come back as Err so the theme is skipped, never
+    // a startup crash.
+    #[rstest]
+    #[case("#€abc")] // 3-byte euro + 3 ASCII = 6 bytes, not char-boundary safe
+    #[case("#ééé")] // three 2-byte chars = 6 bytes
+    #[case("#12345")]
+    #[case("#1234567")]
+    #[case("#12345g")]
+    #[case("#")]
+    #[case("")]
+    #[case("indexed(999)")]
+    #[case("indexed(")]
+    #[case("not_a_color")]
+    fn string_to_color_rejects_malformed_input(#[case] input: &str) {
+        assert!(
+            string_to_color(input).is_err(),
+            "expected Err for {input:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_hex_in_theme_toml_is_an_error_not_a_panic() {
+        let toml_str = r##"
+name = "Bad"
+bg = "#€abc"
+"##;
+        assert!(toml::from_str::<Theme>(toml_str).is_err());
     }
 
     #[test]
