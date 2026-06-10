@@ -1204,6 +1204,10 @@ impl MessagingBackend<'_> {
             return false;
         };
         let mut changed = false;
+        // Batch every DB write from this drain into one transaction. During
+        // the initial sync burst this turns thousands of per-message
+        // autocommits into a single commit per loop iteration (#489).
+        app.db.begin_batch();
         loop {
             match sc.event_rx.try_recv() {
                 Ok(ev) => {
@@ -1235,6 +1239,7 @@ impl MessagingBackend<'_> {
                 Err(_) => break,
             }
         }
+        app.db.commit_batch();
         changed
     }
 }

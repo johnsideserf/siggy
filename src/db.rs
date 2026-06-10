@@ -222,6 +222,11 @@ impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        // The standard WAL pairing: commits stop fsyncing the WAL (the sync
+        // happens at checkpoint instead). Without this SQLite defaults to
+        // FULL, which paid one fsync per inserted message during sync bursts
+        // (#489). Durability loss is limited to power failure, not app crash.
+        conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch("PRAGMA secure_delete=ON;")?;
         let db = Self { conn };
@@ -235,6 +240,23 @@ impl Database {
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
+    }
+
+    /// Open a transaction for batching a burst of writes (e.g. the signal
+    /// event drain loop, #489). Pairs with [`Self::commit_batch`]; both are
+    /// best-effort because the writes inside carry their own error handling
+    /// (`db_warn_visible`) and must still execute if batching fails.
+    pub fn begin_batch(&self) {
+        if let Err(e) = self.conn.execute_batch("BEGIN IMMEDIATE;") {
+            crate::debug_log::logf(format_args!("begin_batch failed: {e}"));
+        }
+    }
+
+    /// Commit a batch opened by [`Self::begin_batch`].
+    pub fn commit_batch(&self) {
+        if let Err(e) = self.conn.execute_batch("COMMIT;") {
+            crate::debug_log::logf(format_args!("commit_batch failed: {e}"));
+        }
     }
 
     fn migrate(&self) -> Result<()> {
@@ -1056,6 +1078,34 @@ mod tests {
     #[fixture]
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    // #489: drain_events wraps its writes in begin_batch/commit_batch. The
+    // wrapper must be transparent (writes persist) and resilient to
+    // unbalanced calls (a failed BEGIN means COMMIT runs with no open txn).
+    #[rstest]
+    fn batch_wrapped_writes_persist_and_unbalanced_calls_are_safe(db: Database) {
+        db.begin_batch();
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "hi",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
+        db.commit_batch();
+        let msgs = db.load_messages_page("+1", 10, 0).unwrap();
+        assert_eq!(msgs.len(), 1);
+
+        // Unbalanced commit and empty batch must not panic or poison the conn
+        db.commit_batch();
+        db.begin_batch();
+        db.commit_batch();
+        assert_eq!(db.load_messages_page("+1", 10, 0).unwrap().len(), 1);
     }
 
     #[rstest]
