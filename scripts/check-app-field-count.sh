@@ -15,10 +15,13 @@
 #   66 -> 67: added lock: LockState for session-lock / boss-key feature (#261)
 #   67 -> 65: extracted SettingsOverlayState (settings_index, customize_index,
 #             settings_mouse_snapshot -> settings_overlay) from final-sweep review.
+#   65 -> 66: added download_dir for the open-attachment containment check
+#             (security fix; App had no way to know where attachments live).
+#             To be reclaimed by the #352 cluster extractions.
 #
 set -euo pipefail
 
-BASELINE=65
+BASELINE=66
 
 count=$(awk '
   /^pub struct App \{/ { inside=1; next }
