@@ -1340,22 +1340,30 @@ fn handle_send_failed(app: &mut App, rpc_id: &str) {
         );
     }
     if let Some((conv_id, local_ts)) = app.pending.sends.remove(rpc_id) {
-        let mut found = false;
-        if let Some(conv) = app.store.conversations.get_mut(&conv_id)
-            && let Some(idx) = conv
-                .find_msg_idx(local_ts)
-                .filter(|&idx| conv.messages[idx].is_outgoing())
-        {
-            conv.messages[idx].status = Some(MessageStatus::Failed);
-            found = true;
-        }
-        if found {
-            app.db_warn_visible(
-                app.db
-                    .update_message_status(&conv_id, local_ts, MessageStatus::Failed.to_i32()),
-                "update_message_status",
-            );
-        }
+        mark_send_failed(app, &conv_id, local_ts);
+    }
+}
+
+/// Mark an outgoing message Failed in memory and in the DB. Shared by the
+/// RPC SendFailed path above and by dispatch_send's local-failure path
+/// (stdin channel closed before the request ever reached signal-cli, #486).
+pub(crate) fn mark_send_failed(app: &mut App, conv_id: &str, local_ts: i64) {
+    let mut found = false;
+    if let Some(conv) = app.store.conversations.get_mut(conv_id)
+        && let Some(idx) = conv
+            .find_msg_idx(local_ts)
+            .filter(|&idx| conv.messages[idx].is_outgoing())
+    {
+        conv.messages[idx].status = Some(MessageStatus::Failed);
+        found = true;
+    }
+    if found {
+        // Not update_message_status: its monotonic guard rejects the
+        // Sending -> Failed transition (Failed sorts below Sending).
+        app.db_warn_visible(
+            app.db.mark_message_failed(conv_id, local_ts),
+            "mark_message_failed",
+        );
     }
 }
 
