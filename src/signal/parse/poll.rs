@@ -9,6 +9,7 @@ pub(super) fn parse_poll_create(
     envelope: &serde_json::Value,
     data: &serde_json::Value,
     poll_create: &serde_json::Value,
+    destination: Option<String>,
 ) -> Option<SignalEvent> {
     let question = poll_create
         .get("question")
@@ -37,9 +38,13 @@ pub(super) fn parse_poll_create(
         .get("groupInfo")
         .and_then(|g| g.get("groupId"))
         .and_then(|v| v.as_str());
+    // Conversation fallback chain: group_id -> destination -> sender. For a
+    // sync envelope the source is this account, so without the destination
+    // a 1:1 poll event would be filed under your own number (#485).
     let sender = envelope_source(envelope);
     let conv_id = group_id
         .map(|g| g.to_string())
+        .or(destination)
         .unwrap_or_else(|| sender.clone());
     let timestamp = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
 
@@ -62,6 +67,7 @@ pub(super) fn parse_poll_vote(
     envelope: &serde_json::Value,
     data: &serde_json::Value,
     poll_vote: &serde_json::Value,
+    destination: Option<String>,
 ) -> Option<SignalEvent> {
     let target_timestamp = poll_vote
         .get("targetSentTimestamp")
@@ -90,9 +96,13 @@ pub(super) fn parse_poll_vote(
         .get("groupInfo")
         .and_then(|g| g.get("groupId"))
         .and_then(|v| v.as_str());
+    // Conversation fallback chain: group_id -> destination -> sender. For a
+    // sync envelope the source is this account, so without the destination
+    // a 1:1 poll event would be filed under your own number (#485).
     let sender = envelope_source(envelope);
     let conv_id = group_id
         .map(|g| g.to_string())
+        .or(destination)
         .unwrap_or_else(|| sender.clone());
 
     Some(SignalEvent::PollVoteReceived {
@@ -109,6 +119,7 @@ pub(super) fn parse_poll_terminate(
     envelope: &serde_json::Value,
     data: &serde_json::Value,
     poll_terminate: &serde_json::Value,
+    destination: Option<String>,
 ) -> Option<SignalEvent> {
     let target_timestamp = poll_terminate
         .get("targetSentTimestamp")
@@ -117,9 +128,13 @@ pub(super) fn parse_poll_terminate(
         .get("groupInfo")
         .and_then(|g| g.get("groupId"))
         .and_then(|v| v.as_str());
+    // Conversation fallback chain: group_id -> destination -> sender. For a
+    // sync envelope the source is this account, so without the destination
+    // a 1:1 poll event would be filed under your own number (#485).
     let sender = envelope_source(envelope);
     let conv_id = group_id
         .map(|g| g.to_string())
+        .or(destination)
         .unwrap_or_else(|| sender.clone());
 
     Some(SignalEvent::PollTerminated {

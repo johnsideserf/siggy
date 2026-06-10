@@ -11107,6 +11107,36 @@ mod tests {
         );
     }
 
+    // #485: the buffer-insert used to sit inside the conversation lookup,
+    // so a poll event arriving before its conversation even existed
+    // (first-ever contact, poll event ordered before its companion
+    // message) was dropped and the poll rendered as bare text until
+    // restart.
+    #[rstest]
+    fn poll_created_before_conversation_exists_still_buffers(mut app: App) {
+        let ts = 1_700_000_013_000;
+        app.handle_signal_event(SignalEvent::PollCreated {
+            conv_id: "+brandnew".to_string(),
+            timestamp: ts,
+            poll_data: sample_poll(),
+        });
+        assert!(
+            app.poll_vote
+                .pending_polls
+                .contains_key(&("+brandnew".to_string(), ts))
+        );
+
+        let m = make_msg_with_ts("+brandnew", Some("vote!"), None, false, ts);
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+        let conv = &app.store.conversations["+brandnew"];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert!(
+            conv.messages[idx].poll_data.is_some(),
+            "poll must attach when the conversation and message arrive"
+        );
+    }
+
     #[rstest]
     fn poll_vote_received_upserts_vote(mut app: App) {
         let ts = 1_700_000_012_000;
