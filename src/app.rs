@@ -2368,82 +2368,18 @@ impl App {
     /// Normal-mode keybinds. Exhaustive match: adding a variant to
     /// [`ActionMenuHint`] is a compiler error here until handled.
     fn execute_action_by_hint(&mut self, hint: ActionMenuHint) -> Option<SendRequest> {
+        use crate::handlers::keys;
         match hint {
-            ActionMenuHint::Reply => {
-                // Reply — same as Normal 'q'
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    let phone = msg.route_author(&self.account).to_string();
-                    let snippet: String = if msg.body.chars().count() > 50 {
-                        format!("{}…", msg.body.chars().take(50).collect::<String>())
-                    } else {
-                        msg.body.clone()
-                    };
-                    let ts = msg.timestamp_ms;
-                    self.reply_target = Some((phone, snippet, ts));
-                    self.mode = InputMode::Insert;
-                }
-                None
-            }
-            ActionMenuHint::Edit => {
-                // Edit — same as Normal 'e'
-                if let Some(msg) = self.selected_message()
-                    && msg.is_outgoing()
-                    && !msg.is_deleted
-                    && !msg.is_system
-                {
-                    let ts = msg.timestamp_ms;
-                    let body = msg.body.clone();
-                    if let Some(ref conv_id) = self.active_conversation {
-                        let conv_id = conv_id.clone();
-                        self.editing_message = Some((ts, conv_id));
-                        self.input.buffer = body;
-                        self.input.cursor = self.input.buffer.len();
-                        self.mode = InputMode::Insert;
-                    }
-                }
-                None
-            }
-            ActionMenuHint::React => {
-                // React — open reaction picker
-                if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.open_overlay(OverlayKind::ReactionPicker);
-                    self.reactions.picker_index = 0;
-                }
-                None
-            }
-            ActionMenuHint::Forward => {
-                // Forward — open conversation picker
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    self.forward.body = msg.body.clone();
-                    self.open_forward_picker();
-                }
-                None
-            }
+            ActionMenuHint::Reply => keys::execute_reply(self),
+            ActionMenuHint::Edit => keys::execute_edit(self),
+            ActionMenuHint::React => keys::execute_react(self),
+            ActionMenuHint::Forward => keys::execute_forward(self),
             ActionMenuHint::Copy => {
-                // Copy
                 self.copy_selected_message(false);
                 None
             }
-            ActionMenuHint::Delete => {
-                // Delete — open delete confirm
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    self.open_overlay(OverlayKind::DeleteConfirm);
-                }
-                None
-            }
-            ActionMenuHint::PinToggle => {
-                // Pin/Unpin
-                crate::handlers::keys::execute_pin_toggle(self)
-            }
+            ActionMenuHint::Delete => keys::execute_delete_confirm(self),
+            ActionMenuHint::PinToggle => keys::execute_pin_toggle(self),
             ActionMenuHint::Vote => {
                 // Vote on poll
                 if let Some(msg) = self.selected_message()
@@ -2582,7 +2518,7 @@ impl App {
         None
     }
 
-    fn open_forward_picker(&mut self) {
+    pub(crate) fn open_forward_picker(&mut self) {
         self.open_overlay(OverlayKind::Forward);
         self.forward.index = 0;
         self.forward.filter.clear();
@@ -2792,7 +2728,7 @@ impl App {
     }
 
     /// Jump to the next/previous search result in the active conversation.
-    fn jump_to_search_result(&mut self, forward: bool) {
+    pub(crate) fn jump_to_search_result(&mut self, forward: bool) {
         let active = self.active_conversation.as_deref();
         let action = self.search.jump_to_result(forward, active);
         self.dispatch_search_action(action);
@@ -3812,13 +3748,7 @@ impl App {
                 }
                 ('d', KeyCode::Char('d')) => {
                     // dd = delete message
-                    if let Some(msg) = self.selected_message()
-                        && !msg.is_system
-                        && !msg.is_deleted
-                    {
-                        self.open_overlay(OverlayKind::DeleteConfirm);
-                    }
-                    return None;
+                    return crate::handlers::keys::execute_delete_confirm(self);
                 }
                 (_, KeyCode::Esc) => {
                     // Esc cancels pending prefix
@@ -4005,76 +3935,18 @@ impl App {
                 self.copy_selected_message(true);
                 None
             }
-            Some(KeyAction::React) => {
-                if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.open_overlay(OverlayKind::ReactionPicker);
-                    self.reactions.picker_index = 0;
-                }
-                None
-            }
-            Some(KeyAction::Quote) => {
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    let phone = msg.route_author(&self.account).to_string();
-                    let snippet: String = if msg.body.chars().count() > 50 {
-                        format!("{}…", msg.body.chars().take(50).collect::<String>())
-                    } else {
-                        msg.body.clone()
-                    };
-                    let ts = msg.timestamp_ms;
-                    self.reply_target = Some((phone, snippet, ts));
-                    self.mode = InputMode::Insert;
-                }
-                None
-            }
-            Some(KeyAction::EditMessage) => {
-                if let Some(msg) = self.selected_message()
-                    && msg.is_outgoing()
-                    && !msg.is_deleted
-                    && !msg.is_system
-                {
-                    let ts = msg.timestamp_ms;
-                    let body = msg.body.clone();
-                    if let Some(ref conv_id) = self.active_conversation {
-                        let conv_id = conv_id.clone();
-                        self.editing_message = Some((ts, conv_id));
-                        self.input.buffer = body;
-                        self.input.cursor = self.input.buffer.len();
-                        self.mode = InputMode::Insert;
-                    }
-                }
-                None
-            }
-            Some(KeyAction::ForwardMessage) => {
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    self.forward.body = msg.body.clone();
-                    self.open_forward_picker();
-                }
-                None
-            }
+            Some(KeyAction::React) => crate::handlers::keys::execute_react(self),
+            Some(KeyAction::Quote) => crate::handlers::keys::execute_reply(self),
+            Some(KeyAction::EditMessage) => crate::handlers::keys::execute_edit(self),
+            Some(KeyAction::ForwardMessage) => crate::handlers::keys::execute_forward(self),
             Some(KeyAction::NextSearchResult) => {
-                if !self.search.results.is_empty() {
-                    self.jump_to_search_result(true);
-                }
-                None
+                crate::handlers::keys::execute_search_jump(self, true)
             }
             Some(KeyAction::PrevSearchResult) => {
-                if !self.search.results.is_empty() {
-                    self.jump_to_search_result(false);
-                }
-                None
+                crate::handlers::keys::execute_search_jump(self, false)
             }
             Some(KeyAction::OpenActionMenu) => {
-                if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.open_overlay(OverlayKind::ActionMenu);
-                    self.action_menu.index = 0;
-                }
-                None
+                crate::handlers::keys::execute_open_action_menu(self)
             }
             Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
             Some(KeyAction::JumpToQuote) => {
@@ -4199,83 +4071,19 @@ impl App {
                 self.copy_selected_message(true);
                 None
             }
-            Some(KeyAction::React) => {
-                if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.open_overlay(OverlayKind::ReactionPicker);
-                    self.reactions.picker_index = 0;
-                }
-                None
-            }
-            Some(KeyAction::Quote) => {
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    let phone = msg.route_author(&self.account).to_string();
-                    let snippet: String = if msg.body.chars().count() > 50 {
-                        format!("{}…", msg.body.chars().take(50).collect::<String>())
-                    } else {
-                        msg.body.clone()
-                    };
-                    let ts = msg.timestamp_ms;
-                    self.reply_target = Some((phone, snippet, ts));
-                }
-                None
-            }
-            Some(KeyAction::EditMessage) => {
-                if let Some(msg) = self.selected_message()
-                    && msg.is_outgoing()
-                    && !msg.is_deleted
-                    && !msg.is_system
-                {
-                    let ts = msg.timestamp_ms;
-                    let body = msg.body.clone();
-                    if let Some(ref conv_id) = self.active_conversation {
-                        let conv_id = conv_id.clone();
-                        self.editing_message = Some((ts, conv_id));
-                        self.input.buffer = body;
-                        self.input.cursor = self.input.buffer.len();
-                    }
-                }
-                None
-            }
-            Some(KeyAction::ForwardMessage) => {
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    self.forward.body = msg.body.clone();
-                    self.open_forward_picker();
-                }
-                None
-            }
-            Some(KeyAction::DeleteMessage) => {
-                if let Some(msg) = self.selected_message()
-                    && !msg.is_system
-                    && !msg.is_deleted
-                {
-                    self.open_overlay(OverlayKind::DeleteConfirm);
-                }
-                None
-            }
+            Some(KeyAction::React) => crate::handlers::keys::execute_react(self),
+            Some(KeyAction::Quote) => crate::handlers::keys::execute_reply(self),
+            Some(KeyAction::EditMessage) => crate::handlers::keys::execute_edit(self),
+            Some(KeyAction::ForwardMessage) => crate::handlers::keys::execute_forward(self),
+            Some(KeyAction::DeleteMessage) => crate::handlers::keys::execute_delete_confirm(self),
             Some(KeyAction::NextSearchResult) => {
-                if !self.search.results.is_empty() {
-                    self.jump_to_search_result(true);
-                }
-                None
+                crate::handlers::keys::execute_search_jump(self, true)
             }
             Some(KeyAction::PrevSearchResult) => {
-                if !self.search.results.is_empty() {
-                    self.jump_to_search_result(false);
-                }
-                None
+                crate::handlers::keys::execute_search_jump(self, false)
             }
             Some(KeyAction::OpenActionMenu) => {
-                if self.selected_message().is_some_and(|m| !m.is_system) {
-                    self.open_overlay(OverlayKind::ActionMenu);
-                    self.action_menu.index = 0;
-                }
-                None
+                crate::handlers::keys::execute_open_action_menu(self)
             }
             Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
             Some(KeyAction::JumpToQuote) => {

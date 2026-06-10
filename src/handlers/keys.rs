@@ -11,8 +11,113 @@
 use chrono::Utc;
 use crossterm::event::KeyCode;
 
-use crate::app::{App, OverlayKind, PIN_DURATIONS, PinPending, SendRequest};
+use crate::app::{App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, SendRequest};
 use crate::list_overlay::{ListKeyAction, classify_list_key};
+
+// ---------------------------------------------------------------------------
+// Shared message actions (#493)
+//
+// Each action below is reachable three ways: a Normal-mode key, an
+// Insert-mode key (in alternative keybinding profiles), and the per-message
+// action menu. They were previously copy-pasted at all three call sites with
+// subtle drift; these are the single implementations. All return
+// Option<SendRequest> so call-site match arms stay single expressions, even
+// though most never dispatch anything.
+//
+// Mode note: actions that move the user into the composer set
+// `mode = InputMode::Insert` unconditionally. From Normal mode and the
+// action menu that is the intended transition; from Insert mode it is an
+// idempotent no-op, which is why one implementation serves all three sites.
+// ---------------------------------------------------------------------------
+
+/// Start a quoted reply to the focused message and enter the composer.
+pub(crate) fn execute_reply(app: &mut App) -> Option<SendRequest> {
+    if let Some(msg) = app.selected_message()
+        && !msg.is_system
+        && !msg.is_deleted
+    {
+        let phone = msg.route_author(&app.account).to_string();
+        let snippet: String = if msg.body.chars().count() > 50 {
+            format!("{}…", msg.body.chars().take(50).collect::<String>())
+        } else {
+            msg.body.clone()
+        };
+        let ts = msg.timestamp_ms;
+        app.reply_target = Some((phone, snippet, ts));
+        app.mode = InputMode::Insert;
+    }
+    None
+}
+
+/// Start editing the focused message (own, non-deleted messages only) with
+/// its body pre-loaded into the composer.
+pub(crate) fn execute_edit(app: &mut App) -> Option<SendRequest> {
+    if let Some(msg) = app.selected_message()
+        && msg.is_outgoing()
+        && !msg.is_deleted
+        && !msg.is_system
+    {
+        let ts = msg.timestamp_ms;
+        let body = msg.body.clone();
+        if let Some(ref conv_id) = app.active_conversation {
+            let conv_id = conv_id.clone();
+            app.editing_message = Some((ts, conv_id));
+            app.input.buffer = body;
+            app.input.cursor = app.input.buffer.len();
+            app.mode = InputMode::Insert;
+        }
+    }
+    None
+}
+
+/// Open the reaction picker for the focused message.
+pub(crate) fn execute_react(app: &mut App) -> Option<SendRequest> {
+    if app.selected_message().is_some_and(|m| !m.is_system) {
+        app.open_overlay(OverlayKind::ReactionPicker);
+        app.reactions.picker_index = 0;
+    }
+    None
+}
+
+/// Open the forward-to-conversation picker for the focused message.
+pub(crate) fn execute_forward(app: &mut App) -> Option<SendRequest> {
+    if let Some(msg) = app.selected_message()
+        && !msg.is_system
+        && !msg.is_deleted
+    {
+        app.forward.body = msg.body.clone();
+        app.open_forward_picker();
+    }
+    None
+}
+
+/// Open the delete-confirmation overlay for the focused message.
+pub(crate) fn execute_delete_confirm(app: &mut App) -> Option<SendRequest> {
+    if let Some(msg) = app.selected_message()
+        && !msg.is_system
+        && !msg.is_deleted
+    {
+        app.open_overlay(OverlayKind::DeleteConfirm);
+    }
+    None
+}
+
+/// Jump to the next (`forward`) or previous search result, if any.
+pub(crate) fn execute_search_jump(app: &mut App, forward: bool) -> Option<SendRequest> {
+    if !app.search.results.is_empty() {
+        app.jump_to_search_result(forward);
+    }
+    None
+}
+
+/// Open the per-message action menu for the focused message.
+pub(crate) fn execute_open_action_menu(app: &mut App) -> Option<SendRequest> {
+    if app.selected_message().is_some_and(|m| !m.is_system) {
+        app.open_overlay(OverlayKind::ActionMenu);
+        app.action_menu.index = 0;
+    }
+    None
+}
 
 /// Toggle the pinned state of the currently focused message. For unpinning,
 /// this runs the local update immediately. For pinning, it opens the duration
