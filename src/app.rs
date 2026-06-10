@@ -5223,14 +5223,26 @@ impl App {
         }
     }
 
-    pub(crate) fn join_conversation(&mut self, target: &str) {
+    /// Shared preamble for every conversation switch: persists read/scroll
+    /// state and clears all composer state aimed at the outgoing
+    /// conversation. `reply_target` and `editing_message` carry
+    /// (timestamp, conv_id) pairs targeting the old conversation; if they
+    /// survive a switch, the next Enter sends the new text as an edit or
+    /// quoted reply in the wrong chat (#481).
+    fn leave_active_conversation(&mut self) {
         self.mark_read();
         self.save_scroll_position();
         self.pending_attachment = None;
+        self.reply_target = None;
+        self.editing_message = None;
         self.reset_typing_with_stop();
         self.input.reset_for_conv_switch();
         self.sync.pin = None;
         self.clear_kitty_placements();
+    }
+
+    pub(crate) fn join_conversation(&mut self, target: &str) {
+        self.leave_active_conversation();
 
         // Try exact match first
         if self.store.conversations.contains_key(target) {
@@ -5328,13 +5340,7 @@ impl App {
             return;
         }
         self.clear_sidebar_filter();
-        self.mark_read();
-        self.save_scroll_position();
-        self.pending_attachment = None;
-        self.reset_typing_with_stop();
-        self.input.reset_for_conv_switch();
-        self.sync.pin = None;
-        self.clear_kitty_placements();
+        self.leave_active_conversation();
         let idx = self
             .active_conversation
             .as_ref()
@@ -5363,13 +5369,7 @@ impl App {
             return;
         }
         self.clear_sidebar_filter();
-        self.mark_read();
-        self.save_scroll_position();
-        self.pending_attachment = None;
-        self.reset_typing_with_stop();
-        self.input.reset_for_conv_switch();
-        self.sync.pin = None;
-        self.clear_kitty_placements();
+        self.leave_active_conversation();
         let len = self.store.conversation_order.len();
         let idx = self
             .active_conversation
@@ -8341,6 +8341,51 @@ mod tests {
             .get_or_create_conversation("+2", "Bob", false, &app.db);
         app.next_conversation();
         assert!(app.pending_attachment.is_none());
+    }
+
+    // Reproduces #481: an edit or reply started in conversation A must not
+    // survive a switch, or the next Enter sends the new text as an edit /
+    // quoted reply in A instead of a plain message in B.
+    #[rstest]
+    fn clears_edit_and_reply_targets_on_next_conversation(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store
+            .get_or_create_conversation("+2", "Bob", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.editing_message = Some((1000, "+1".to_string()));
+        app.reply_target = Some(("+1".to_string(), "hi".to_string(), 1000));
+        app.next_conversation();
+        assert!(app.editing_message.is_none());
+        assert!(app.reply_target.is_none());
+    }
+
+    #[rstest]
+    fn clears_edit_and_reply_targets_on_prev_conversation(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store
+            .get_or_create_conversation("+2", "Bob", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.editing_message = Some((1000, "+1".to_string()));
+        app.reply_target = Some(("+1".to_string(), "hi".to_string(), 1000));
+        app.prev_conversation();
+        assert!(app.editing_message.is_none());
+        assert!(app.reply_target.is_none());
+    }
+
+    #[rstest]
+    fn clears_edit_and_reply_targets_on_join_conversation(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store
+            .get_or_create_conversation("+2", "Bob", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.editing_message = Some((1000, "+1".to_string()));
+        app.reply_target = Some(("+1".to_string(), "hi".to_string(), 1000));
+        app.join_conversation("+2");
+        assert!(app.editing_message.is_none());
+        assert!(app.reply_target.is_none());
     }
 
     #[rstest]
