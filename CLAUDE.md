@@ -55,6 +55,10 @@ Notifications (incoming messages, typing, receipts) arrive as JSON-RPC requests 
 
 Insert mode (default) for typing messages. Normal mode (Esc) for vim-style navigation: j/k scroll, h/l cursor, w/b word movement, i/a/I/A/o to re-enter Insert.
 
+## Documented Solutions
+
+`docs/solutions/` holds documented solutions to past problems (bugs, conventions, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in areas that have bitten us before.
+
 ## Git Workflow
 
 Never commit directly to master. Always follow this process:
