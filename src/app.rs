@@ -4181,18 +4181,67 @@ impl App {
 
         let now_ms = Utc::now().timestamp_millis();
         let mut removed_count: usize = 0;
+        let expired = |m: &DisplayMessage| {
+            m.expires_in_seconds > 0
+                && m.expiration_start_ms > 0
+                && m.expiration_start_ms + m.expires_in_seconds * 1000 < now_ms
+        };
 
-        for conv in self.store.conversations.values_mut() {
-            let before = conv.messages.len();
-            conv.messages.retain(|m| {
-                if m.expires_in_seconds > 0 && m.expiration_start_ms > 0 {
-                    let expiry = m.expiration_start_ms + m.expires_in_seconds * 1000;
-                    expiry >= now_ms
-                } else {
-                    true
+        // Split-borrow the store so the read markers can be adjusted while
+        // iterating the conversations mutably.
+        let crate::conversation_store::ConversationStore {
+            conversations,
+            last_read_index,
+            ..
+        } = &mut self.store;
+
+        for (conv_id, conv) in conversations.iter_mut() {
+            // Pre-removal indices of the messages about to expire, ascending.
+            let removed_idxs: Vec<usize> = conv
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| expired(m))
+                .map(|(i, _)| i)
+                .collect();
+            if removed_idxs.is_empty() {
+                continue;
+            }
+            // How many removals sit strictly below a pre-removal index.
+            let removed_below = |idx: usize| removed_idxs.partition_point(|&r| r < idx);
+
+            conv.messages.retain(|m| !expired(m));
+            removed_count += removed_idxs.len();
+
+            // last_read_index, scroll.focused_index, and saved positions are
+            // positions into conv.messages; removals below them shift every
+            // later index down (#483). load_more_messages does the mirror
+            // adjustment on prepend.
+            if let Some(read_idx) = last_read_index.get_mut(conv_id) {
+                *read_idx = read_idx
+                    .saturating_sub(removed_below(*read_idx))
+                    .min(conv.messages.len());
+            }
+            if self.active_conversation.as_deref() == Some(conv_id) {
+                if let Some(fi) = self.scroll.focused_index {
+                    self.scroll.focused_index = if removed_idxs.binary_search(&fi).is_ok() {
+                        // The focused message itself expired: drop focus
+                        // rather than silently moving it to a neighbor (the
+                        // delete-confirm overlay targets this index).
+                        None
+                    } else {
+                        Some(fi - removed_below(fi))
+                    };
                 }
-            });
-            removed_count += before - conv.messages.len();
+            } else if let Some(pos) = self.scroll.positions.get_mut(conv_id)
+                && let Some(fi) = pos.1
+            {
+                pos.1 = if removed_idxs.binary_search(&fi).is_ok() {
+                    None
+                } else {
+                    Some(fi - removed_below(fi))
+                };
+            }
         }
 
         self.expiring_msg_count = self.expiring_msg_count.saturating_sub(removed_count);
@@ -7285,6 +7334,101 @@ mod tests {
         app.next_conversation();
         assert_eq!(app.scroll.window_extra, 0);
         assert!(!app.scroll.can_extend_in_memory);
+    }
+
+    // --- #483: expiry sweep must fix positional indices ---
+    //
+    // last_read_index, scroll.focused_index, and saved scroll positions are
+    // positions into conv.messages. Removing expired messages without
+    // shifting them leaves focus (and the delete-confirm target) pointing
+    // at the WRONG message and misplaces the unread divider.
+
+    /// A message with disappearing-message fields set. `expired` backdates
+    /// the expiration so the next sweep removes it.
+    fn expiring_msg(ts_ms: i64, body: &str, expired: bool) -> DisplayMessage {
+        let mut m = outgoing_sending_msg(ts_ms, body);
+        m.status = None;
+        m.sender = "Alice".to_string();
+        m.expires_in_seconds = 1;
+        m.expiration_start_ms = if expired { 1 } else { i64::MAX / 2 };
+        m
+    }
+
+    #[rstest]
+    fn sweep_shifts_focused_index_when_older_message_expires(mut app: App) {
+        let conv_id = "+1";
+        app.store
+            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+            conv.messages.push(expiring_msg(1000, "oldest", true));
+            conv.messages.push(expiring_msg(2000, "middle", false));
+            conv.messages.push(expiring_msg(3000, "newest", false));
+        }
+        app.active_conversation = Some(conv_id.to_string());
+        app.scroll.focused_index = Some(2); // focused on "newest"
+        app.expiring_msg_count = 3;
+
+        app.sweep_expired_messages();
+
+        let conv = &app.store.conversations[conv_id];
+        assert_eq!(conv.messages.len(), 2);
+        assert_eq!(
+            app.scroll.focused_index,
+            Some(1),
+            "focus must follow the same message after the shift"
+        );
+        assert_eq!(conv.messages[1].body, "newest");
+    }
+
+    #[rstest]
+    fn sweep_clears_focus_when_the_focused_message_expires(mut app: App) {
+        let conv_id = "+1";
+        app.store
+            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+            conv.messages.push(expiring_msg(1000, "doomed", true));
+            conv.messages.push(expiring_msg(2000, "keep", false));
+        }
+        app.active_conversation = Some(conv_id.to_string());
+        app.scroll.focused_index = Some(0);
+        app.expiring_msg_count = 2;
+
+        app.sweep_expired_messages();
+
+        assert_eq!(app.scroll.focused_index, None);
+    }
+
+    #[rstest]
+    fn sweep_shifts_and_clamps_last_read_index(mut app: App) {
+        let conv_id = "+1";
+        app.store
+            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+            conv.messages.push(expiring_msg(1000, "read+expired", true));
+            conv.messages.push(expiring_msg(2000, "read", false));
+            conv.messages.push(expiring_msg(3000, "unread", false));
+        }
+        app.store.last_read_index.insert(conv_id.to_string(), 2);
+        app.expiring_msg_count = 3;
+
+        app.sweep_expired_messages();
+
+        assert_eq!(
+            app.store.last_read_index.get(conv_id).copied(),
+            Some(1),
+            "marker shifts with the removal below it"
+        );
+
+        // Now expire everything; the marker must clamp to the new length.
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+            for m in &mut conv.messages {
+                m.expiration_start_ms = 1;
+            }
+        }
+        app.expiring_msg_count = 2;
+        app.sweep_expired_messages();
+        assert_eq!(app.store.conversations[conv_id].messages.len(), 0);
+        assert_eq!(app.store.last_read_index.get(conv_id).copied(), Some(0));
     }
 
     #[rstest]
