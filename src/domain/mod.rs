@@ -33,7 +33,7 @@ pub use overlays::{
     KeybindingsOverlayState, PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState,
     SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState, VerifyOverlayState,
 };
-pub use pending::PendingState;
+pub use pending::{BufferedReceipt, PendingState};
 pub use reaction::ReactionState;
 pub use scroll::ScrollState;
 pub use search::{SearchAction, SearchState};

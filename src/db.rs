@@ -646,6 +646,21 @@ impl Database {
         Ok(row)
     }
 
+    /// Upgrade an outgoing message's status by timestamp alone, across all
+    /// conversations. Fallback for buffered receipts whose target is not in
+    /// the loaded message page (#484): receipts carry no conversation id,
+    /// and outgoing timestamps are server-assigned and unique in practice.
+    /// `status > 0` restricts to outgoing rows; `status < ?2` keeps the
+    /// write upgrade-only, so a stray collision cannot downgrade anything.
+    pub fn update_outgoing_status_any_conv(&self, timestamp_ms: i64, status: i32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET status = ?2
+             WHERE timestamp_ms = ?1 AND sender = 'you' AND status > 0 AND status < ?2",
+            params![timestamp_ms, status],
+        )?;
+        Ok(())
+    }
+
     /// Mark an outgoing message Failed. Needs its own method because
     /// `update_message_status` only allows upward transitions and Failed (1)
     /// sits below Sending (2), so a failure write through it was silently
@@ -713,9 +728,15 @@ impl Database {
             |row| row.get(0),
         )?;
 
+        // Incoming only (status = 0, sender filter for legacy/demo rows):
+        // your own sent messages are never "unread". Mirrors the in-memory
+        // recompute in handle_read_sync, which filters status.is_none();
+        // without this, sending N messages and restarting showed an unread
+        // badge of N with the divider above your own messages (#484).
         let count: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM messages
-             WHERE conversation_id = ?1 AND rowid > ?2 AND is_system = 0",
+             WHERE conversation_id = ?1 AND rowid > ?2 AND is_system = 0
+               AND status = 0 AND sender != 'you'",
             params![conv_id, last_read],
             |row| row.get(0),
         )?;
@@ -1134,6 +1155,36 @@ mod tests {
     #[fixture]
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    // #484: your own sent messages are never "unread". Without the
+    // incoming-only filter, sending N messages and restarting showed an
+    // unread badge of N with the divider above your own messages.
+    #[rstest]
+    fn unread_count_excludes_outgoing_messages(db: Database) {
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "incoming",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
+        db.insert_message(
+            "+1",
+            "you",
+            "2025-01-01T00:01:00Z",
+            "outgoing",
+            false,
+            Some(MessageStatus::Sent),
+            2000,
+        )
+        .unwrap();
+
+        assert_eq!(db.unread_count("+1").unwrap(), 1);
     }
 
     // #489: drain_events wraps its writes in begin_batch/commit_batch. The

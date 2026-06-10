@@ -10,6 +10,20 @@ use std::collections::HashMap;
 
 use crate::app::SendRequest;
 
+/// A receipt that arrived before the message it targets was matchable
+/// (typically before the `SendTimestamp` that rewrites the local timestamp
+/// to the server one). Replayed after each subsequent `SendTimestamp`;
+/// `attempts` counts failed replays so an entry that can never match is
+/// eventually resolved against the DB and dropped instead of re-buffering
+/// forever (#484).
+pub struct BufferedReceipt {
+    pub sender: String,
+    pub receipt_type: String,
+    /// Only the timestamps that have not matched yet.
+    pub timestamps: Vec<i64>,
+    pub attempts: u8,
+}
+
 /// State for in-flight signal-cli work awaiting confirmation or dispatch.
 #[derive(Default)]
 pub struct PendingState {
@@ -21,9 +35,10 @@ pub struct PendingState {
     pub sends: HashMap<String, (String, i64)>,
     /// Receipts that arrived before their matching `SendTimestamp`.
     ///
-    /// Populated by `handle_receipt()` when no matching pending send exists
-    /// yet. Drained immediately after each `SendTimestamp` confirms a send.
-    pub receipts: Vec<(String, String, Vec<i64>)>,
+    /// Populated by `handle_receipt()` for timestamps with no matching
+    /// message yet. Replayed after each `SendTimestamp`; bounded by attempt
+    /// count and buffer size with a direct-DB fallback (#484).
+    pub receipts: Vec<BufferedReceipt>,
     /// Queued typing-stop request from conversation switches.
     ///
     /// Drained by the main loop.

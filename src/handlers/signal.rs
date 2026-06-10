@@ -707,6 +707,10 @@ fn persist_message_extras(app: &mut App, r: &ResolvedMessage) {
 /// or when the contact is blocked), advance the in-memory read marker, and
 /// persist the on-disk read marker so reloads see the new position.
 fn update_active_read_state(app: &mut App, r: &ResolvedMessage, conv_accepted: bool) {
+    // Everything here is gated on !sync.active, including the on-disk
+    // marker: persisting it mid-burst marks messages the user never saw as
+    // read if the app dies before end_sync reconciles (#484). end_sync's
+    // mark_read persists the marker once the burst completes.
     if !app.sync.active {
         if !r.is_outgoing && conv_accepted && !app.blocked_conversations.contains(&r.conv_id) {
             app.queue_single_read_receipt(&r.sender_id, r.msg_ts_ms);
@@ -716,12 +720,12 @@ fn update_active_read_state(app: &mut App, r: &ResolvedMessage, conv_accepted: b
                 .last_read_index
                 .insert(r.conv_id.clone(), conv.messages.len());
         }
-    }
-    if let Ok(Some(rowid)) = app.db.last_message_rowid(&r.conv_id) {
-        db_warn(
-            app.db.save_read_marker(&r.conv_id, rowid),
-            "save_read_marker",
-        );
+        if let Ok(Some(rowid)) = app.db.last_message_rowid(&r.conv_id) {
+            db_warn(
+                app.db.save_read_marker(&r.conv_id, rowid),
+                "save_read_marker",
+            );
+        }
     }
 }
 
@@ -1388,11 +1392,26 @@ fn handle_send_timestamp(app: &mut App, rpc_id: &str, server_ts: i64) {
             );
         }
 
-        // Replay any buffered receipts that may have arrived before this SendTimestamp
+        // Replay any buffered receipts that may have arrived before this
+        // SendTimestamp. Entries that still don't match re-buffer with a
+        // bumped attempt count; at the cap they are resolved against the DB
+        // and dropped, so a receipt whose target is outside the loaded page
+        // cannot re-buffer forever with its status update lost (#484).
         if !app.pending.receipts.is_empty() {
-            let receipts = std::mem::take(&mut app.pending.receipts);
-            for (sender, receipt_type, timestamps) in receipts {
-                handle_receipt(app, &sender, &receipt_type, &timestamps);
+            let buffered = std::mem::take(&mut app.pending.receipts);
+            for b in buffered {
+                let Some(status) = receipt_status(&b.receipt_type) else {
+                    continue;
+                };
+                let unmatched = apply_receipt(app, &b.sender, status, &b.timestamps);
+                if unmatched.is_empty() {
+                    continue;
+                }
+                if b.attempts + 1 >= MAX_RECEIPT_REPLAYS {
+                    resolve_receipt_against_db(app, status, &unmatched);
+                } else {
+                    buffer_receipt(app, &b.sender, &b.receipt_type, unmatched, b.attempts + 1);
+                }
             }
         }
     }
@@ -1464,56 +1483,113 @@ fn try_upgrade_receipt(
     false
 }
 
-fn handle_receipt(app: &mut App, sender: &str, receipt_type: &str, timestamps: &[i64]) {
-    let receipt_upper = receipt_type.to_uppercase();
-    let new_status = match receipt_upper.as_str() {
-        "DELIVERY" => MessageStatus::Delivered,
-        "READ" => MessageStatus::Read,
-        "VIEWED" => MessageStatus::Viewed,
-        _ => return,
-    };
+/// Failed replays before a buffered receipt is resolved against the DB and
+/// dropped. Each in-flight send triggers one replay, so this bounds how many
+/// other sends can confirm while a receipt's own target is still pending.
+const MAX_RECEIPT_REPLAYS: u8 = 8;
+/// Hard cap on the receipt buffer; the oldest entry is DB-resolved and
+/// evicted when full.
+const MAX_BUFFERED_RECEIPTS: usize = 64;
 
-    let mut matched_any = false;
-
-    // Try matching in the 1:1 conversation keyed by the receipt sender
-    let conv_id = sender.to_string();
-    if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
-        for ts in timestamps {
-            if try_upgrade_receipt(&app.db, &conv_id, conv, *ts, new_status) {
-                matched_any = true;
-            }
-        }
+fn receipt_status(receipt_type: &str) -> Option<MessageStatus> {
+    match receipt_type.to_uppercase().as_str() {
+        "DELIVERY" => Some(MessageStatus::Delivered),
+        "READ" => Some(MessageStatus::Read),
+        "VIEWED" => Some(MessageStatus::Viewed),
+        _ => None,
     }
+}
 
-    // If no match in 1:1, scan all conversations (handles group receipts
-    // where sender is a member but conv is keyed by group ID)
-    if !matched_any {
-        for ts in timestamps {
+/// Apply a receipt to in-memory messages, per timestamp: try the 1:1
+/// conversation keyed by the receipt sender first, then scan all
+/// conversations (group receipts come from a member but the conv is keyed
+/// by group ID). Returns the timestamps that matched nothing.
+fn apply_receipt(
+    app: &mut App,
+    sender: &str,
+    new_status: MessageStatus,
+    timestamps: &[i64],
+) -> Vec<i64> {
+    let mut unmatched = Vec::new();
+    let sender_conv = sender.to_string();
+    for &ts in timestamps {
+        let mut matched = false;
+        if let Some(conv) = app.store.conversations.get_mut(&sender_conv) {
+            matched = try_upgrade_receipt(&app.db, &sender_conv, conv, ts, new_status);
+        }
+        if !matched {
             for (cid, conv) in &mut app.store.conversations {
-                if try_upgrade_receipt(&app.db, cid, conv, *ts, new_status) {
-                    matched_any = true;
+                if try_upgrade_receipt(&app.db, cid, conv, ts, new_status) {
+                    matched = true;
                     break;
                 }
             }
         }
+        if !matched {
+            unmatched.push(ts);
+        }
     }
+    unmatched
+}
 
-    // If still no match, the receipt may have arrived before the SendTimestamp
-    // that assigns the server timestamp. Buffer it for replay.
-    if !matched_any && !timestamps.is_empty() {
-        crate::debug_log::logf(format_args!(
-            "receipt: buffering {receipt_type} from {} (no matching ts)",
-            crate::debug_log::mask_phone(sender)
-        ));
-        app.pending.receipts.push((
-            sender.to_string(),
-            receipt_type.to_string(),
-            timestamps.to_vec(),
-        ));
-    } else if matched_any {
+/// Resolve a receipt that will never match in memory directly against the
+/// DB: the target may simply be outside the loaded message page (#484).
+/// The monotonic guard in the UPDATE keeps this upgrade-only.
+fn resolve_receipt_against_db(app: &App, new_status: MessageStatus, timestamps: &[i64]) {
+    for &ts in timestamps {
+        db_warn(
+            app.db
+                .update_outgoing_status_any_conv(ts, new_status.to_i32()),
+            "update_outgoing_status_any_conv",
+        );
+    }
+}
+
+/// Buffer the unmatched timestamps of a receipt for replay after the next
+/// SendTimestamp, evicting (with DB resolution) the oldest entry when full.
+fn buffer_receipt(
+    app: &mut App,
+    sender: &str,
+    receipt_type: &str,
+    timestamps: Vec<i64>,
+    attempts: u8,
+) {
+    if app.pending.receipts.len() >= MAX_BUFFERED_RECEIPTS {
+        let evicted = app.pending.receipts.remove(0);
+        if let Some(status) = receipt_status(&evicted.receipt_type) {
+            resolve_receipt_against_db(app, status, &evicted.timestamps);
+        }
+    }
+    app.pending.receipts.push(crate::domain::BufferedReceipt {
+        sender: sender.to_string(),
+        receipt_type: receipt_type.to_string(),
+        timestamps,
+        attempts,
+    });
+}
+
+fn handle_receipt(app: &mut App, sender: &str, receipt_type: &str, timestamps: &[i64]) {
+    let Some(new_status) = receipt_status(receipt_type) else {
+        return;
+    };
+
+    let unmatched = apply_receipt(app, sender, new_status, timestamps);
+
+    if unmatched.is_empty() {
         crate::debug_log::logf(format_args!(
             "receipt: {receipt_type} from {} -> {new_status:?}",
             crate::debug_log::mask_phone(sender)
         ));
+    } else {
+        // The receipt may predate the SendTimestamp that assigns the server
+        // timestamp; buffer ONLY the unmatched timestamps for replay. (The
+        // old per-event flag dropped unmatched timestamps whenever any
+        // sibling timestamp in the same event matched, #484.)
+        crate::debug_log::logf(format_args!(
+            "receipt: buffering {} unmatched {receipt_type} ts from {}",
+            unmatched.len(),
+            crate::debug_log::mask_phone(sender)
+        ));
+        buffer_receipt(app, sender, receipt_type, unmatched, 0);
     }
 }
