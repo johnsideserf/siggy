@@ -1251,6 +1251,7 @@ async fn run_app(
     app.image.image_mode = config.image_mode.unwrap_or_default();
     app.image.show_link_previews = config.show_link_previews;
     app.incognito = incognito;
+    app.download_dir = config.download_dir.clone();
     app.date_separators = config.date_separators;
     app.show_receipts = config.show_receipts;
     app.color_receipts = config.color_receipts;

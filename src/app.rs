@@ -532,6 +532,9 @@ pub struct App {
     pub prev_active_conversation: Option<String>,
     /// Incognito mode — in-memory DB, no local persistence
     pub incognito: bool,
+    /// Directory attachments are downloaded to. "Open attachment" refuses any
+    /// path outside this directory (message bodies are remote-controlled text).
+    pub download_dir: PathBuf,
     /// Show date separator lines between messages from different days
     pub date_separators: bool,
     /// Show delivery/read receipt status symbols on outgoing messages
@@ -2929,6 +2932,7 @@ impl App {
             image: ImageState::new(image_render_tx, image_render_rx),
             prev_active_conversation: None,
             incognito: false,
+            download_dir: PathBuf::new(),
             date_separators: true,
             show_receipts: true,
             color_receipts: true,
@@ -5673,17 +5677,29 @@ impl App {
 
     fn open_file(&mut self, uri: &str) {
         let path = file_uri_to_path(uri);
-        if !std::path::Path::new(&path).exists() {
-            self.status_message = format!("File not found: {path}");
-            return;
-        }
-        let filename = std::path::Path::new(&path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(&path);
-        match open::that(&path) {
-            Ok(()) => self.status_message = format!("Opened {filename}"),
-            Err(e) => self.status_message = format!("Failed to open: {e}"),
+        match classify_file_open(&path, &self.download_dir) {
+            OpenFileDecision::NotFound => {
+                self.status_message = format!("File not found: {path}");
+            }
+            OpenFileDecision::OutsideDownloadDir => {
+                self.status_message =
+                    "Refusing to open a file outside the download directory".to_string();
+            }
+            OpenFileDecision::UnsafeType => {
+                self.status_message =
+                    format!("Not opening this file type automatically; saved at {path}");
+            }
+            OpenFileDecision::Allow(canon) => {
+                let filename = canon
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| path.clone());
+                match open::that(&canon) {
+                    Ok(()) => self.status_message = format!("Opened {filename}"),
+                    Err(e) => self.status_message = format!("Failed to open: {e}"),
+                }
+            }
         }
     }
 
@@ -5799,8 +5815,56 @@ fn file_uri_to_path(uri: &str) -> String {
     }
 }
 
+/// File extensions safe to hand to the OS shell-open handler. Anything not on
+/// this list (executables, scripts, shortcuts, unknown types) is shown but not
+/// opened, because attachment filenames are chosen by the remote sender.
+const SAFE_OPEN_EXTENSIONS: &[&str] = &[
+    // images
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "avif", // video
+    "mp4", "mov", "webm", "mkv", "avi", "m4v", // audio
+    "mp3", "ogg", "oga", "m4a", "wav", "flac", "opus", "aac", // documents
+    "pdf", "txt", "md", "log", "csv", "vcf",
+];
+
+/// Outcome of vetting a local file path extracted from a message body.
+#[derive(Debug, PartialEq, Eq)]
+enum OpenFileDecision {
+    /// Safe to open: canonical path, inside the download dir, allowlisted type.
+    Allow(PathBuf),
+    NotFound,
+    OutsideDownloadDir,
+    UnsafeType,
+}
+
+/// Vet a file path before shell-opening it. Message bodies are remote-
+/// controlled text, so the path must canonicalize inside `download_dir` and
+/// carry an allowlisted extension; the OS open handler would otherwise
+/// execute attacker-named files (.hta, .lnk, .desktop) on a keypress.
+fn classify_file_open(path: &str, download_dir: &Path) -> OpenFileDecision {
+    let Ok(canon) = Path::new(path).canonicalize() else {
+        return OpenFileDecision::NotFound;
+    };
+    let Ok(canon_dir) = download_dir.canonicalize() else {
+        // No usable download dir (empty/missing): never open anything.
+        return OpenFileDecision::OutsideDownloadDir;
+    };
+    if !canon.starts_with(&canon_dir) {
+        return OpenFileDecision::OutsideDownloadDir;
+    }
+    let ext = canon
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some(e) if SAFE_OPEN_EXTENSIONS.contains(&e) => OpenFileDecision::Allow(canon),
+        _ => OpenFileDecision::UnsafeType,
+    }
+}
+
 /// Extract the first `file:///` URI from a message body.
 /// Stops at whitespace or `)` to handle `[image: name](file:///path)` format.
+/// Anything extracted here is untrusted; `open_file` vets it via
+/// `classify_file_open` before handing it to the OS.
 fn extract_file_uri(body: &str) -> Option<String> {
     let pos = body.find("file:///")?;
     let rest = &body[pos..];
@@ -10144,6 +10208,77 @@ mod tests {
     #[test]
     fn extract_file_uri_none_for_plain_text() {
         assert_eq!(extract_file_uri("hello world"), None);
+    }
+
+    #[test]
+    fn classify_file_open_allows_safe_type_in_download_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("photo.jpg");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(matches!(
+            classify_file_open(file.to_str().unwrap(), dir.path()),
+            OpenFileDecision::Allow(_)
+        ));
+    }
+
+    #[test]
+    fn classify_file_open_allows_uppercase_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("PHOTO.JPG");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(matches!(
+            classify_file_open(file.to_str().unwrap(), dir.path()),
+            OpenFileDecision::Allow(_)
+        ));
+    }
+
+    #[test]
+    fn classify_file_open_rejects_path_outside_download_dir() {
+        let download = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let file = elsewhere.path().join("doc.pdf");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            classify_file_open(file.to_str().unwrap(), download.path()),
+            OpenFileDecision::OutsideDownloadDir
+        );
+    }
+
+    #[test]
+    fn classify_file_open_rejects_executable_and_unknown_types() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [
+            "evil.hta", "evil.exe", "evil.lnk", "evil.bat", "evil.ps1", "noext",
+        ] {
+            let file = dir.path().join(name);
+            std::fs::write(&file, b"x").unwrap();
+            assert_eq!(
+                classify_file_open(file.to_str().unwrap(), dir.path()),
+                OpenFileDecision::UnsafeType,
+                "expected UnsafeType for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_file_open_missing_file_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.png");
+        assert_eq!(
+            classify_file_open(path.to_str().unwrap(), dir.path()),
+            OpenFileDecision::NotFound
+        );
+    }
+
+    #[test]
+    fn classify_file_open_rejects_everything_when_download_dir_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("photo.jpg");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            classify_file_open(file.to_str().unwrap(), Path::new("")),
+            OpenFileDecision::OutsideDownloadDir
+        );
     }
 
     #[test]
