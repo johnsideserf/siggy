@@ -1,9 +1,9 @@
 > This is the French translation of the siggy README.
 > Last updated against English commit: 8b5890e
-> The [English version](README.md) is authoritative. If this translation has drifted, trust the English.
+> The [English version](../README.md) is authoritative. If this translation has drifted, trust the English.
 
 <p align="center">
-  <img src="siggy-banner.png" alt="siggy" width="600">
+  <img src="../siggy-banner.png" alt="siggy" width="600">
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a>
+  <a href="../README.md">English</a>
   &nbsp;|&nbsp;
   <a href="README.da.md">Dansk</a>
   &nbsp;|&nbsp;
@@ -43,12 +43,12 @@
   &nbsp;|&nbsp;
   <a href="README.zh-CN.md">简体中文</a>
   &nbsp;|&nbsp;
-  <a href="TRANSLATING.md">Proposez une traduction</a>
+  <a href="../TRANSLATING.md">Proposez une traduction</a>
 </p>
 
 Un client de messagerie Signal pour terminal, dans un style IRC. Enveloppe [signal-cli](https://github.com/AsamK/signal-cli) via JSON-RPC pour le backend de messagerie.
 
-![siggy capture](screenshot.png)
+![siggy capture](../screenshot.png)
 
 ## Installer
 
@@ -299,4 +299,4 @@ Développé avec [Ratatui](https://ratatui.rs/) + [Crossterm](https://github.com
 
 ## License
 
-[GPL-3.0](LICENSE)
+[GPL-3.0](../LICENSE)

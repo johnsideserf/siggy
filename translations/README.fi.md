@@ -1,10 +1,10 @@
 > This is the Finnish translation of the siggy README.
 > Last updated against English commit: 8b5890e
-> The [English version](README.md) is authoritative. If this translation has drifted, trust the English.
+> The [English version](../README.md) is authoritative. If this translation has drifted, trust the English.
 > This translation is maintainer-provided and awaiting native-speaker review. Corrections welcome - see issue #353.
 
 <p align="center">
-  <img src="siggy-banner.png" alt="siggy" width="600">
+  <img src="../siggy-banner.png" alt="siggy" width="600">
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a>
+  <a href="../README.md">English</a>
   &nbsp;|&nbsp;
   <a href="README.da.md">Dansk</a>
   &nbsp;|&nbsp;
@@ -44,12 +44,12 @@
   &nbsp;|&nbsp;
   <a href="README.zh-CN.md">简体中文</a>
   &nbsp;|&nbsp;
-  <a href="TRANSLATING.md">Osallistu kääntämiseen</a>
+  <a href="../TRANSLATING.md">Osallistu kääntämiseen</a>
 </p>
 
 Päätteessä toimiva Signal-viestintäsovellus IRC-henkisellä ulkoasulla. Käyttää [signal-cli](https://github.com/AsamK/signal-cli)-ohjelmaa JSON-RPC:n kautta viestinnän taustapalveluna.
 
-![Kuvakaappaus siggystä](screenshot.png)
+![Kuvakaappaus siggystä](../screenshot.png)
 
 ## Asennus
 
@@ -300,4 +300,4 @@ Toteutettu [Ratatui](https://ratatui.rs/)- ja [Crossterm](https://github.com/cro
 
 ## Lisenssi
 
-[GPL-3.0](LICENSE)
+[GPL-3.0](../LICENSE)
