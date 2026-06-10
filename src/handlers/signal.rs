@@ -1300,8 +1300,18 @@ fn handle_send_timestamp(app: &mut App, rpc_id: &str, server_ts: i64) {
                 .find_msg_idx(local_ts)
                 .filter(|&idx| conv.messages[idx].is_outgoing())
             {
-                conv.messages[idx].timestamp_ms = effective_ts;
-                conv.messages[idx].status = Some(MessageStatus::Sent);
+                // Rewrite AND re-position: the server timestamp is typically
+                // later than the local one, so mutating in place can leave
+                // the vec unsorted, and every later find_msg_idx binary
+                // search (receipts, reactions, edits, the next
+                // SendTimestamp) then misses (#480).
+                let mut msg = conv.messages.remove(idx);
+                msg.timestamp_ms = effective_ts;
+                msg.status = Some(MessageStatus::Sent);
+                let new_idx = conv
+                    .messages
+                    .partition_point(|m| m.timestamp_ms <= effective_ts);
+                conv.messages.insert(new_idx, msg);
                 found = true;
             }
         }

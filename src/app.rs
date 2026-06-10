@@ -7509,6 +7509,94 @@ mod tests {
         );
     }
 
+    /// Build an outgoing message in the Sending state, as send_text's
+    /// optimistic insert would (appended with the local clock).
+    fn outgoing_sending_msg(ts_ms: i64, body: &str) -> DisplayMessage {
+        DisplayMessage {
+            sender: "you".to_string(),
+            timestamp: chrono::Utc::now(),
+            body: body.to_string(),
+            is_system: false,
+            image_lines: None,
+            image_path: None,
+            status: Some(MessageStatus::Sending),
+            timestamp_ms: ts_ms,
+            reactions: Vec::new(),
+            mention_ranges: Vec::new(),
+            style_ranges: Vec::new(),
+            body_raw: None,
+            mentions: Vec::new(),
+            quote: None,
+            is_edited: false,
+            is_deleted: false,
+            is_pinned: false,
+            sender_id: String::new(),
+            expires_in_seconds: 0,
+            expiration_start_ms: 0,
+            poll_data: None,
+            poll_votes: Vec::new(),
+            preview: None,
+            preview_image_lines: None,
+            preview_image_path: None,
+        }
+    }
+
+    // Reproduces #480: two quick consecutive sends. msg1's SendTimestamp
+    // rewrites its timestamp PAST msg2's local timestamp; if the rewrite
+    // happens in place the vec is no longer sorted, msg2's SendTimestamp
+    // misses in find_msg_idx's binary search, and msg2 (plus every later
+    // receipt/reaction/edit targeting it) is stuck in Sending forever.
+    #[rstest]
+    fn rapid_consecutive_sends_both_get_confirmed(mut app: App) {
+        let conv_id = "+1";
+        app.store
+            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+        let t = 1700000000000_i64;
+
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+            conv.messages.push(outgoing_sending_msg(t, "first"));
+            conv.messages.push(outgoing_sending_msg(t + 200, "second"));
+        }
+        app.pending
+            .sends
+            .insert("rpc-1".to_string(), (conv_id.to_string(), t));
+        app.pending
+            .sends
+            .insert("rpc-2".to_string(), (conv_id.to_string(), t + 200));
+
+        // Server confirms msg1 with a timestamp LATER than msg2's local one
+        app.handle_signal_event(SignalEvent::SendTimestamp {
+            rpc_id: "rpc-1".to_string(),
+            server_ts: t + 450,
+        });
+        // The vec must still be sorted, or msg2's confirmation below misses
+        let msgs = &app.store.conversations[conv_id].messages;
+        assert!(
+            msgs.windows(2)
+                .all(|w| w[0].timestamp_ms <= w[1].timestamp_ms),
+            "messages out of order after server-timestamp rewrite: {:?}",
+            msgs.iter().map(|m| m.timestamp_ms).collect::<Vec<_>>()
+        );
+
+        app.handle_signal_event(SignalEvent::SendTimestamp {
+            rpc_id: "rpc-2".to_string(),
+            server_ts: t + 500,
+        });
+
+        let msgs = &app.store.conversations[conv_id].messages;
+        assert!(
+            msgs.iter().all(|m| m.status == Some(MessageStatus::Sent)),
+            "a send was never confirmed: {:?}",
+            msgs.iter()
+                .map(|m| (m.body.clone(), m.status))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            msgs.windows(2)
+                .all(|w| w[0].timestamp_ms <= w[1].timestamp_ms)
+        );
+    }
+
     #[rstest]
     fn send_timestamp_upgrades_sending_to_sent(mut app: App) {
         let conv_id = "+1";
