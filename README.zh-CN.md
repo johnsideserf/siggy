@@ -1,3 +1,7 @@
+> This is the Simplified Chinese translation of the siggy README.
+> Last updated against English commit: 216023e
+> The [English version](README.md) is authoritative. If this translation has drifted, trust the English.
+
 <p align="center">
   <img src="siggy-banner.png" alt="siggy" width="600">
 </p>
@@ -12,9 +16,17 @@
   <a href="https://x.com/siggyapp"><img src="https://img.shields.io/badge/follow-@siggyapp-000000?logo=x&logoColor=white" alt="Follow @siggyapp"></a>
 </p>
 
-> This translation was last updated against commit `1553609`. The English version is authoritative.
+<p align="center">
+  <a href="README.md">English</a>
+  &nbsp;|&nbsp;
+  <a href="README.fr.md">Français</a>
+  &nbsp;|&nbsp;
+  <b>简体中文</b>
+  &nbsp;|&nbsp;
+  <a href="TRANSLATING.md">贡献翻译</a>
+</p>
 
-一个基于终端的 Signal 即时通讯客户端，采用 IRC 风格设计。后端基于 [signal-cli](https://github.com/AsamK/signal-cli) 的 JSON-RPC 通信。
+一个基于终端的 Signal 即时通讯客户端，采用 IRC 风格设计。通过 JSON-RPC 封装 [signal-cli](https://github.com/AsamK/signal-cli) 作为消息后端。
 
 ![siggy 截图](screenshot.png)
 
@@ -55,7 +67,7 @@ cargo install siggy
 
 ### 从源码构建
 
-克隆并本地构建：
+或者克隆仓库本地构建：
 
 ```sh
 git clone https://github.com/johnsideserf/siggy.git
@@ -102,7 +114,27 @@ theme = "Default"
 proxy = ""
 ```
 
-所有字段均为可选。`signal_cli_path` 默认为 `"signal-cli"`（通过 PATH 查找），`download_dir` 默认为 `~/signal-downloads/`。在 Windows 上，如果 signal-cli.bat 不在 PATH 中，请使用完整路径。
+所有字段均为可选。`signal_cli_path` 默认为 `"signal-cli"`（通过 PATH 查找），`download_dir` 默认为 `~/signal-downloads/`。在 Windows 上，如果 `signal-cli.bat` 不在 PATH 中，请使用其完整路径。
+
+### 在 tmux 中显示内联图片
+
+在 tmux 之外，siggy 会自动检测 Kitty / iTerm2 / WezTerm / Ghostty，并将附件渲染为原生像素图片。在 tmux 内部，由于 tmux 会对 siggy 隐藏外层终端，需要完成两项设置：
+
+1. 让 tmux 转发未知的转义序列。需要 tmux 3.3+：
+
+   ```
+   set -g allow-passthrough on
+   ```
+
+   较旧版本的 tmux 使用 `set -g allow-passthrough all`。
+
+2. 告诉 siggy 外层终端使用哪种图片协议（自动检测只能看到 tmux）：
+
+   ```sh
+   SIGGY_IMAGE_PROTOCOL=kitty siggy        # 或 iterm2 / sixel / halfblock
+   ```
+
+如果未设置 `SIGGY_IMAGE_PROTOCOL`，则使用现有的自动检测逻辑（在 tmux 外检测正确，在 tmux 内回退为半块字符渲染）。Sixel 在 tmux 3.4+ 中可原生穿透，无需设置该环境变量。
 
 ## 功能特性
 
@@ -113,21 +145,22 @@ proxy = ""
 - **消息同步** -- 从手机发送的消息会同步显示在 TUI 中
 - **消息持久化** -- SQLite 存储，采用 WAL 模式；对话和已读标记会在重启后保留
 - **未读跟踪** -- 侧边栏显示未读计数，对话中有"新消息"分隔线
-- **通知** -- 新消息时终端响铃（可按单聊/群聊/单聊进行配置，支持单独静音），并发送操作系统级别的桌面通知
+- **通知** -- 新消息时终端响铃（可按单聊/群聊分别配置，支持按对话静音），并支持操作系统级桌面通知
 - **联系人解析** -- 使用 Signal 通讯录中的姓名；群组在启动时自动填充
 - **消息反应** -- 在普通模式下按 `r` 进行反应；表情选择器带计数显示（`👍 2 ❤️ 1`）
-- **回复/引用** -- 在某条消息上按 `q` 可以引用该消息进行回复
+- **回复/引用** -- 在聚焦的消息上按 `q` 可引用该消息进行回复
 - **编辑消息** -- 按 `e` 编辑自己已发送的消息
-- **删除消息** -- 按 `d` 删除本地或远程消息（仅限自己发送的消息）
+- **删除消息** -- 按 `d` 删除本地或远程消息（远程删除仅限自己发送的消息）
+- **删除对话** -- 使用 `/delete` 在本地删除当前对话（同时拒绝待处理的消息请求）
 - **消息搜索** -- `/search <关键词>`，用 `n`/`N` 在结果间跳转
 - **@提及** -- 在群聊中输入 `@` 来提及成员，带自动补全
 - **消息选择** -- 滚动时高亮当前聚焦的消息；`J`/`K` 在消息间跳转
 - **已读回执** -- 发出消息上的状态符号（发送中 → 已发送 → 已送达 → 已读 → 已查看）
-- **阅后即焚** -- 遵循 Signal 的阅后即焚计时器；可通过 `/disappearing` 按对话设置
-- **群组管理** -- 创建群组、添加/移除成员、重命名、退出，通过 `/group` 操作
+- **限时消息** -- 遵循 Signal 的限时消息（阅后即焚）计时器；可通过 `/disappearing` 按对话设置
+- **群组管理** -- 通过 `/group` 创建群组、添加/移除成员、重命名、退出群组
 - **消息请求** -- 接受或删除来自陌生人的消息
 - **拉黑/取消拉黑** -- 使用 `/block` 和 `/unblock` 拉黑联系人或群组
-- **鼠标支持** -- 点击侧边栏对话、滚动消息、点击定位光标
+- **鼠标支持** -- 点击侧边栏切换对话、滚动消息、点击定位光标
 - **颜色主题** -- 通过 `/theme` 或 `/settings` 选择主题
 - **设置向导** -- 首次运行的引导流程，支持 QR 码设备关联
 - **Vim 键位** -- 模态编辑（普通模式/插入模式），完整的光标移动
@@ -135,7 +168,7 @@ proxy = ""
 - **设置覆盖层** -- 可在应用内切换通知、侧边栏、内联图片
 - **响应式布局** -- 可调整大小的侧边栏，窄终端（<60 列）时自动隐藏
 - **无痕模式** -- `--incognito` 使用内存存储，退出后不留下任何痕迹
-- **代理支持** -- 通过 `proxy` 配置项设置 Signal TLS 代理，适用于受限制的网络环境
+- **代理支持** -- 通过 `proxy` 配置项设置 Signal TLS 代理，适用于受限网络环境
 - **演示模式** -- 无需 signal-cli 即可体验 UI（`--demo`）
 
 ## 命令
@@ -144,6 +177,7 @@ proxy = ""
 |---|---|---|
 | `/join <名称>` | `/j` | 按联系人姓名、号码或群组名切换到对话 |
 | `/part` | `/p` | 离开当前对话 |
+| `/delete` | | 删除当前对话（拒绝待处理的消息请求） |
 | `/attach` | `/a` | 打开文件浏览器选择附件 |
 | `/search <关键词>` | `/s` | 在当前（或所有）对话中搜索消息 |
 | `/sidebar` | `/sb` | 切换侧边栏显示 |
@@ -151,17 +185,21 @@ proxy = ""
 | `/mute [时长]` | | 静音/取消静音当前对话（如 `1h`、`8h`、`1d`、`1w`） |
 | `/block` | | 拉黑当前联系人或群组 |
 | `/unblock` | | 取消拉黑当前联系人或群组 |
-| `/disappearing <时长>` | `/dm` | 设置阅后即焚计时器（`off`、`30s`、`5m`、`1h`、`1d`、`1w`） |
+| `/disappearing <时长>` | `/dm` | 设置限时消息计时器（`off`、`30s`、`5m`、`1h`、`1d`、`1w`） |
 | `/group` | `/g` | 打开群组管理菜单 |
 | `/theme` | `/t` | 打开主题选择器 |
 | `/contacts` | `/c` | 浏览已同步的联系人 |
 | `/settings` | | 打开设置覆盖层 |
+| `/lock` | | 锁定当前会话 |
+| `/lock-reset` | | 更改锁定密码（需输入当前密码） |
 | `/help` | `/h` | 显示帮助覆盖层 |
 | `/quit` | `/q` | 退出 siggy |
 
-输入 `/` 打开自动补全弹出框。用 Tab 补全，方向键导航。
+输入 `/` 打开自动补全弹出框。用 `Tab` 补全，方向键导航。
 
 向新联系人发送消息：`/join +15551234567`（E.164 格式）。
+
+**忘记锁定密码？** 退出 siggy（或终止进程）后运行 `siggy --reset-lock`。该命令会删除已存储的密码哈希，并打印所删除文件的路径。下次使用 `/lock` 时即可设置新密码。
 
 ## 键盘快捷键
 
@@ -182,9 +220,9 @@ proxy = ""
 
 | 键 | 功能 |
 |---|---|
-| `j` / `k` | 下/上滚动 1 行 |
+| `j` / `k` | 向下/向上滚动 1 行 |
 | `J` / `K` | 跳转到上一条/下一条消息 |
-| `Ctrl+D` / `Ctrl+U` | 下/上滚动半页 |
+| `Ctrl+D` / `Ctrl+U` | 向下/向上滚动半页 |
 | `g` / `G` | 滚动到顶部/底部 |
 | `h` / `l` | 光标左/右移动 |
 | `w` / `b` | 光标前移/后移一个词 |
@@ -218,23 +256,23 @@ proxy = ""
 ## 架构
 
 ```
-键盘 --> InputAction --> App 状态 --> SignalClient (mpsc) --> signal-cli (JSON-RPC stdin/stdout)
-signal-cli --> JsonRpcResponse --> SignalEvent (mpsc) --> App 状态 --> SQLite + Ratatui 渲染
+Keyboard --> InputAction --> App state --> SignalClient (mpsc) --> signal-cli (JSON-RPC stdin/stdout)
+signal-cli --> JsonRpcResponse --> SignalEvent (mpsc) --> App state --> SQLite + Ratatui render
 ```
 
 ```
-+------------+   mpsc 通道   +----------------+
-|  TUI       | <-----------> |  Signal        |
-|  (主       |   SignalEvent  |  后端          |
-|  线程)     |   UserCommand  |  (tokio 任务)  |
-+------------+               +--------+-------+
-                                      |
-                                stdin/stdout
-                                      |
-                              +--------v-------+
-                              |  signal-cli    |
-                              |  (子进程)      |
-                              +----------------+
++------------+   mpsc channels   +----------------+
+|  TUI       | <---------------> |  Signal        |
+|  (main     |   SignalEvent     |  Backend       |
+|  thread)   |   UserCommand     |  (tokio task)  |
++------------+                   +--------+-------+
+                                          |
+                                   stdin/stdout
+                                          |
+                                 +--------v-------+
+                                 |  signal-cli    |
+                                 |  (child proc)  |
+                                 +----------------+
 ```
 
 基于 [Ratatui](https://ratatui.rs/) + [Crossterm](https://github.com/crossterm-rs/crossterm) 构建，运行于 [Tokio](https://tokio.rs/) 异步运行时。

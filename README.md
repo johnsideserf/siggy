@@ -17,6 +17,8 @@
   &nbsp;|&nbsp;
   <a href="README.fr.md">Français</a>
   &nbsp;|&nbsp;
+  <a href="README.zh-CN.md">简体中文</a>
+  &nbsp;|&nbsp;
   <a href="TRANSLATING.md">Contribute a translation</a>
 </p>
 
