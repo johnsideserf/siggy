@@ -3021,6 +3021,43 @@ impl App {
         Ok(())
     }
 
+    /// How many additional messages the render window grows by per
+    /// extend_scrollback call when older messages are already in memory.
+    const SCROLLBACK_EXTEND_CHUNK: usize = 50;
+
+    /// Extend the scrollback when the user hits the top of the render
+    /// window (#488). Prefers widening the window over already-loaded
+    /// messages; only pages from the DB when the window has reached
+    /// message 0. Each call makes the window strictly larger, so the
+    /// next draw computes a larger base_scroll and at_top stays false
+    /// until the user scrolls further up -- the previous behavior
+    /// (re-loading every 50ms tick while the viewport never moved)
+    /// cannot recur.
+    pub fn extend_scrollback(&mut self) {
+        self.scroll.at_top = false;
+        if self.scroll.can_extend_in_memory {
+            self.scroll.window_extra += Self::SCROLLBACK_EXTEND_CHUNK;
+            return;
+        }
+        // Window already reaches the oldest loaded message: page from the DB
+        // and widen the window by what arrived so the new messages are
+        // actually reachable.
+        let before = self
+            .active_conversation
+            .as_ref()
+            .and_then(|id| self.store.conversations.get(id))
+            .map(|c| c.messages.len())
+            .unwrap_or(0);
+        self.load_more_messages();
+        let after = self
+            .active_conversation
+            .as_ref()
+            .and_then(|id| self.store.conversations.get(id))
+            .map(|c| c.messages.len())
+            .unwrap_or(0);
+        self.scroll.window_extra += after.saturating_sub(before);
+    }
+
     /// Load older messages for the active conversation when scrolled to the top.
     pub fn load_more_messages(&mut self) {
         self.scroll.at_top = false;
@@ -5051,6 +5088,8 @@ impl App {
         self.reset_typing_with_stop();
         self.input.reset_for_conv_switch();
         self.sync.pin = None;
+        self.scroll.window_extra = 0;
+        self.scroll.can_extend_in_memory = false;
         self.clear_kitty_placements();
     }
 
@@ -7153,6 +7192,99 @@ mod tests {
         );
         let reloaded = app.db.load_messages_page(conv_id, 10, 0).unwrap();
         assert_eq!(reloaded[0].status, Some(MessageStatus::Failed));
+    }
+
+    // --- #488: scrollback extension ---
+    //
+    // Hitting the window top must make the render window strictly larger
+    // each time (over memory first, then DB pages), so the at_top flag
+    // cannot re-fire without further user scrolling. The old behavior
+    // (load_more_messages on every 50ms tick while at_top stayed true)
+    // streamed the entire history into RAM with the loaded messages
+    // unreachable behind a tail-anchored window.
+
+    #[rstest]
+    fn extend_scrollback_widens_window_over_memory_without_db_load(mut app: App) {
+        let conv_id = "+ext";
+        app.db.upsert_conversation(conv_id, "Ext", false).unwrap();
+        for i in 0..150 {
+            app.db
+                .insert_message(
+                    conv_id,
+                    "Alice",
+                    &format!("2025-01-01T{:02}:{:02}:00Z", i / 60, i % 60),
+                    &format!("msg{i}"),
+                    false,
+                    None,
+                    i as i64 * 1000,
+                )
+                .unwrap();
+        }
+        app.load_from_db().unwrap();
+        app.active_conversation = Some(conv_id.to_string());
+        let loaded = app.store.conversations[conv_id].messages.len();
+
+        app.scroll.at_top = true;
+        app.scroll.can_extend_in_memory = true;
+        app.extend_scrollback();
+
+        assert_eq!(app.scroll.window_extra, App::SCROLLBACK_EXTEND_CHUNK);
+        assert!(!app.scroll.at_top, "at_top must be consumed");
+        assert_eq!(
+            app.store.conversations[conv_id].messages.len(),
+            loaded,
+            "in-memory extension must not page from the DB"
+        );
+    }
+
+    #[rstest]
+    fn extend_scrollback_pages_from_db_and_makes_new_messages_reachable(mut app: App) {
+        let conv_id = "+ext2";
+        app.db.upsert_conversation(conv_id, "Ext2", false).unwrap();
+        for i in 0..150 {
+            app.db
+                .insert_message(
+                    conv_id,
+                    "Alice",
+                    &format!("2025-01-01T{:02}:{:02}:00Z", i / 60, i % 60),
+                    &format!("msg{i}"),
+                    false,
+                    None,
+                    i as i64 * 1000,
+                )
+                .unwrap();
+        }
+        app.load_from_db().unwrap();
+        app.active_conversation = Some(conv_id.to_string());
+        let loaded = app.store.conversations[conv_id].messages.len();
+        assert_eq!(loaded, App::PAGE_SIZE);
+
+        app.scroll.at_top = true;
+        app.scroll.can_extend_in_memory = false; // window already reaches msg 0
+        app.extend_scrollback();
+
+        let after = app.store.conversations[conv_id].messages.len();
+        assert_eq!(after, 150, "remaining DB page must load");
+        assert_eq!(
+            app.scroll.window_extra,
+            after - loaded,
+            "window must widen by exactly what arrived, keeping it reachable"
+        );
+        assert!(!app.scroll.at_top);
+    }
+
+    #[rstest]
+    fn conversation_switch_resets_window_extra(mut app: App) {
+        app.store
+            .get_or_create_conversation("+1", "Alice", false, &app.db);
+        app.store
+            .get_or_create_conversation("+2", "Bob", false, &app.db);
+        app.active_conversation = Some("+1".to_string());
+        app.scroll.window_extra = 250;
+        app.scroll.can_extend_in_memory = true;
+        app.next_conversation();
+        assert_eq!(app.scroll.window_extra, 0);
+        assert!(!app.scroll.can_extend_in_memory);
     }
 
     #[rstest]

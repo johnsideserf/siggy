@@ -455,7 +455,12 @@ impl Database {
         for (i, m) in messages.iter().enumerate() {
             ts_to_idx.entry(m.timestamp_ms).or_default().push(i);
         }
-        if let Ok(reactions) = self.load_reactions(conv_id) {
+        let page_range = messages
+            .first()
+            .map(|f| (f.timestamp_ms, messages[messages.len() - 1].timestamp_ms));
+        if let Some((min_ts, max_ts)) = page_range
+            && let Ok(reactions) = self.load_reactions_in_range(conv_id, min_ts, max_ts)
+        {
             for (target_ts, target_author, emoji, sender) in reactions {
                 let idx = ts_to_idx.get(&target_ts).and_then(|idxs| {
                     idxs.iter()
@@ -752,6 +757,28 @@ impl Database {
             params![conv_id, target_ts_ms, target_author, sender],
         )?;
         Ok(())
+    }
+
+    /// Load reactions targeting messages within a timestamp range. Used by
+    /// the paged message loader so each page reads only its own reactions
+    /// instead of the conversation's full reactions table (#488); the range
+    /// query is served by idx_reactions_target.
+    pub fn load_reactions_in_range(
+        &self,
+        conv_id: &str,
+        min_ts: i64,
+        max_ts: i64,
+    ) -> Result<Vec<(i64, String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT target_ts_ms, target_author, emoji, sender FROM reactions
+             WHERE conversation_id = ?1 AND target_ts_ms BETWEEN ?2 AND ?3",
+        )?;
+        let rows: Vec<(i64, String, String, String)> = stmt
+            .query_map(params![conv_id, min_ts, max_ts], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Load all reactions for a conversation.

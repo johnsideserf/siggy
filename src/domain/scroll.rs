@@ -29,4 +29,15 @@ pub struct ScrollState {
     /// Jump-back stack: saved `(offset, focused_index)` pairs from quote-jump
     /// navigation. Esc pops to restore.
     pub jump_stack: Vec<(usize, Option<usize>)>,
+    /// Extra messages included in the render window beyond the base
+    /// `height * MSG_WINDOW_MULTIPLIER`, grown by `App::extend_scrollback`
+    /// each time the user hits the top of the window (#488). Counted in
+    /// MESSAGES, deliberately decoupled from the line-based `offset` (see
+    /// the lockstep warning at the window computation in chat_pane).
+    /// Reset when the user returns to the bottom or switches conversation.
+    pub window_extra: usize,
+    /// Set by the renderer: the current window starts after message 0, so
+    /// the scrollback can extend within already-loaded memory without a DB
+    /// page load.
+    pub can_extend_in_memory: bool,
 }

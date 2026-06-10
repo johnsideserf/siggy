@@ -287,11 +287,20 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let available_height = inner.height as usize;
     let total = messages.len();
 
-    // Build lines from a fixed window of recent messages.
+    // Build lines from a window of recent messages.
     // app.scroll.offset is NOT included here; it controls the Paragraph scroll position instead.
     // Including it would expand the window by 1 message per scroll increment, growing
     // content_height and base_scroll in lockstep, keeping scroll_y constant (viewport stuck).
-    let start = total.saturating_sub(available_height * MSG_WINDOW_MULTIPLIER);
+    //
+    // window_extra grows in discrete chunks via App::extend_scrollback when
+    // the user hits the window top (#488) -- it is counted in messages and
+    // never derived from offset, so the lockstep failure above cannot recur.
+    // It resets to 0 when the user is back at the bottom.
+    if app.scroll.offset == 0 {
+        app.scroll.window_extra = 0;
+    }
+    let start =
+        total.saturating_sub(available_height * MSG_WINDOW_MULTIPLIER + app.scroll.window_extra);
     let visible = &messages[start..total];
 
     // Get last_read_index for unread marker
@@ -662,13 +671,18 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     app.scroll.offset = app.scroll.offset.min(base_scroll);
     let mut scroll_y = base_scroll - app.scroll.offset;
 
-    // Signal when user has scrolled to the top of loaded content
+    // Signal when the user has scrolled to the top of the render window and
+    // there is anywhere further up to go: unrendered in-memory messages
+    // (start > 0) or unloaded DB pages. App::extend_scrollback consumes the
+    // flag and grows the window / loads a page accordingly (#488).
+    app.scroll.can_extend_in_memory = start > 0;
     app.scroll.at_top = app.scroll.offset >= base_scroll
         && base_scroll > 0
-        && app
-            .active_conversation
-            .as_ref()
-            .is_some_and(|id| app.store.has_more_messages.contains(id));
+        && (start > 0
+            || app
+                .active_conversation
+                .as_ref()
+                .is_some_and(|id| app.store.has_more_messages.contains(id)));
 
     // Determine the focused message for highlight and full-timestamp display in Normal mode.
     // Check scroll.focused_index too so J/K navigation works even when content fits the viewport
