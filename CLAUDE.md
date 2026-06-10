@@ -26,14 +26,20 @@ signal-cli → JsonRpcResponse → SignalEvent (mpsc) → App state → SQLite +
 
 ### Key Modules
 
-- **main.rs** — Event loop: polls keyboard (50ms), drains signal events, renders each frame. Orchestrates setup wizard → device linking → app startup.
-- **app.rs** — All application state. `App` owns conversations (HashMap + ordered Vec for sidebar), composer state (`input: InputState` sub-struct with buffer/cursor/history), mode (Normal/Insert). `handle_signal_event()` is the single entry point for all backend events.
-- **signal/client.rs** — Spawns signal-cli child process. Two tokio tasks: stdout reader (parses JSON-RPC into `SignalEvent`), stdin writer (sends `JsonRpcRequest`). `pending_requests` map tracks RPC call IDs to correlate responses with their method.
+- **main.rs** — Event loop: polls keyboard (50ms), drains signal events, renders each frame. Orchestrates setup wizard → device linking → app startup. `dispatch_send()` routes each `SendRequest` variant to its `SignalClient` RPC method (handlers stay sync; the main loop owns async I/O).
+- **app.rs** — Application state. `App` (field count CI-ratcheted, see below) holds mode (Normal/Insert), per-overlay key handlers, and sub-structs extracted into `src/domain/`. Conversations live in `ConversationStore` (`conversation_store.rs`: HashMap + ordered Vec for the sidebar). ~40% of the file is the inline test module.
+- **handlers/** — Backend/composer event handling extracted from app.rs: `signal.rs` (`handle_signal_event()`, the single entry point for all backend events), `input.rs` (composer text → `SendRequest`), `keys.rs` (shared key-action helpers). Overlay key handlers are still in app.rs (migration ongoing, #494).
+- **domain/** — Extracted `App` sub-state (scroll, input, pending, overlays, image, lock, typing, search, …) per the #352 roadmap. Should be a leaf layer; three modules still import from app:: (#495).
+- **conversation_store.rs** — `ConversationStore`: conversation map, ordering, read markers. `get_or_create_conversation()` is the single point for ensuring a conversation exists (upserts memory + SQLite).
+- **signal/client.rs** — Spawns signal-cli child process. Tokio tasks: stdout reader (parses JSON-RPC into `SignalEvent`), stdin writer (sends `JsonRpcRequest`). `pending_requests` map correlates RPC call IDs with their method.
+- **signal/parse/** — JSON-RPC → `SignalEvent` parsing, split by concern: `envelope.rs`, `message.rs`, `helpers.rs` (attachment handling), `rpc.rs`, `poll.rs`.
 - **signal/types.rs** — Shared types: `SignalEvent` enum, `SignalMessage`, `Contact`, `Group`, JSON-RPC structs.
-- **ui.rs** — Stateless rendering. `draw()` takes `&App` and renders sidebar + chat + status bar. Sender colors are hash-based (8 colors). Groups prefixed with `#`.
-- **db.rs** — SQLite with WAL mode. Three tables: `conversations`, `messages`, `read_markers`. Schema migration is version-based.
-- **config.rs** — TOML config at platform-specific path. Fields: `account` (E.164 phone), `signal_cli_path`, `download_dir`.
-- **input.rs** — Parses text input into `InputAction` enum. Commands: `/join`, `/part`, `/quit`, `/sidebar`, `/help`.
+- **ui/** — Rendering: `mod.rs` (`draw()`), `chat_pane.rs`, `sidebar.rs`, `status_bar.rs`, `composer.rs`, `overlays/` (one file per overlay), `links.rs` (OSC 8 hyperlink post-render injection). Caveat: `draw()` takes `&mut App` and writes layout feedback (scroll clamping, focus derivation, mouse hit-rects) during render — see #496 before relying on "stateless rendering".
+- **db.rs** — SQLite with WAL mode; version-based migrations (conversations, messages, read_markers, reactions, poll tables).
+- **list_overlay.rs** — Shared list-overlay helpers (key classification, nav, scroll layout, index clamping). Use these for any new overlay; partial adoption is tracked in #499.
+- **config.rs** — TOML config at platform-specific path. Fields: `account` (E.164 phone), `signal_cli_path`, `download_dir`, plus UI preferences.
+- **input.rs** — Parses text input into `InputAction` enum (slash commands).
+- **keybindings.rs / theme.rs** — Keybinding profiles with overrides; color themes incl. custom theme TOML loading.
 - **setup.rs** — Multi-step first-run wizard (signal-cli detection, phone input, QR device linking).
 - **link.rs** — Device linking flow with QR code display and account registration check.
 
