@@ -7962,6 +7962,104 @@ mod tests {
         assert!(app.pending.receipts.is_empty());
     }
 
+    // --- #484: receipt buffer integrity ---
+
+    #[rstest]
+    fn partial_receipt_match_buffers_only_unmatched_timestamps(mut app: App) {
+        let conv_id = "+1";
+        app.store
+            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+            let mut m = outgoing_sending_msg(1000, "delivered one");
+            m.status = Some(MessageStatus::Sent);
+            conv.messages.push(m);
+        }
+
+        // One timestamp matches, the sibling does not. The old per-event
+        // flag dropped the unmatched sibling outright.
+        app.handle_signal_event(SignalEvent::ReceiptReceived {
+            sender: conv_id.to_string(),
+            receipt_type: "DELIVERY".to_string(),
+            timestamps: vec![1000, 2000],
+        });
+
+        assert_eq!(
+            app.store.conversations[conv_id].messages[0].status,
+            Some(MessageStatus::Delivered)
+        );
+        assert_eq!(app.pending.receipts.len(), 1);
+        assert_eq!(app.pending.receipts[0].timestamps, vec![2000]);
+    }
+
+    #[rstest]
+    fn buffered_receipt_resolves_against_db_after_max_replays(mut app: App) {
+        // The target message exists only in the DB (outside the loaded
+        // page), so the in-memory replay can never match. The old code
+        // re-buffered such receipts forever and the DB status update was
+        // lost.
+        let conv_id = "+page";
+        let ts = 5000_i64;
+        app.db.upsert_conversation(conv_id, "Pg", false).unwrap();
+        app.db
+            .insert_message(
+                conv_id,
+                "you",
+                "2025-01-01T00:00:00Z",
+                "old outgoing",
+                false,
+                Some(MessageStatus::Sent),
+                ts,
+            )
+            .unwrap();
+
+        app.handle_signal_event(SignalEvent::ReceiptReceived {
+            sender: conv_id.to_string(),
+            receipt_type: "READ".to_string(),
+            timestamps: vec![ts],
+        });
+        assert_eq!(app.pending.receipts.len(), 1);
+
+        // Each confirmed send triggers one replay.
+        for i in 0..10 {
+            app.pending
+                .sends
+                .insert(format!("rpc-{i}"), ("+other".to_string(), 1_000_000 + i));
+            app.handle_signal_event(SignalEvent::SendTimestamp {
+                rpc_id: format!("rpc-{i}"),
+                server_ts: 2_000_000 + i,
+            });
+        }
+
+        assert!(
+            app.pending.receipts.is_empty(),
+            "buffer must drain after the replay cap"
+        );
+        let rows = app.db.load_messages_page(conv_id, 10, 0).unwrap();
+        assert_eq!(
+            rows[0].status,
+            Some(MessageStatus::Read),
+            "the receipt must reach the DB row even though it never matched in memory"
+        );
+    }
+
+    #[rstest]
+    fn mid_sync_message_does_not_persist_read_marker(mut app: App) {
+        let conv_id = "+1";
+        app.store
+            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+        app.active_conversation = Some(conv_id.to_string());
+        app.sync.active = true;
+
+        let m = make_msg_with_ts(conv_id, Some("seen never"), None, false, 1000);
+        app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+        assert_eq!(
+            app.db.unread_count(conv_id).unwrap(),
+            1,
+            "a crash mid-sync must not leave unseen messages marked read on disk"
+        );
+    }
+
     // --- Reaction tests ---
 
     #[rstest]
