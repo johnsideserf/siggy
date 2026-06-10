@@ -3012,11 +3012,15 @@ impl App {
             let msg_count = conv.messages.len();
             let unread = conv.unread;
 
-            // Promote stale Sending messages to Sent — if they're in the DB, the
-            // send completed but the app exited before the RPC response arrived.
+            // Demote stale Sending messages to Failed. A row stuck in Sending
+            // means no SendTimestamp ever confirmed it: the app exited before
+            // the response, the RPC errored without a SendFailed, or the
+            // request never reached signal-cli at all. Promoting to Sent here
+            // displayed never-delivered messages as sent (#486); Failed is
+            // honest and prompts the user to resend.
             for msg in &mut conv.messages {
                 if msg.status == Some(MessageStatus::Sending) {
-                    msg.status = Some(MessageStatus::Sent);
+                    msg.status = Some(MessageStatus::Failed);
                 }
             }
 
@@ -3114,12 +3118,13 @@ impl App {
 
         let prepend_count = new_msgs.len();
 
-        // Post-process: promote stale Sending → Sent, resolve image paths
+        // Post-process: demote stale Sending → Failed (see load_from_db, #486),
+        // resolve image paths
         let mut processed: Vec<DisplayMessage> = new_msgs
             .into_iter()
             .map(|mut msg| {
                 if msg.status == Some(MessageStatus::Sending) {
-                    msg.status = Some(MessageStatus::Sent);
+                    msg.status = Some(MessageStatus::Failed);
                 }
                 if msg.body.starts_with("[image:") {
                     let path_str = if let Some(uri_pos) = msg.body.find("file:///") {
@@ -7272,6 +7277,74 @@ mod tests {
             .unwrap();
         app.load_from_db().unwrap();
         assert!(!app.store.has_more_messages.contains(conv_id));
+    }
+
+    // Reproduces #486: a row stuck in Sending means no SendTimestamp ever
+    // confirmed it. Promoting it to Sent on restart displayed never-delivered
+    // messages as sent; it must come back as Failed.
+    #[rstest]
+    fn load_from_db_demotes_stale_sending_to_failed(mut app: App) {
+        let conv_id = "+stale";
+        app.db.upsert_conversation(conv_id, "Stale", false).unwrap();
+        app.db
+            .insert_message(
+                conv_id,
+                "you",
+                "2025-01-01T00:00:00Z",
+                "never confirmed",
+                false,
+                Some(MessageStatus::Sending),
+                1000,
+            )
+            .unwrap();
+        app.load_from_db().unwrap();
+        assert_eq!(
+            app.store.conversations[conv_id].messages[0].status,
+            Some(MessageStatus::Failed)
+        );
+    }
+
+    // Reproduces #486: when dispatch_send fails locally (stdin channel closed),
+    // no SendFailed event will ever arrive, so the dispatcher calls
+    // mark_send_failed directly. It must update memory and the DB.
+    #[rstest]
+    fn mark_send_failed_updates_memory_and_db(mut app: App) {
+        let conv_id = "+1";
+        let local_ts = 1700000000000_i64;
+        app.db.upsert_conversation(conv_id, "Alice", false).unwrap();
+        app.db
+            .insert_message(
+                conv_id,
+                "you",
+                "2025-01-01T00:00:00Z",
+                "doomed",
+                false,
+                Some(MessageStatus::Sending),
+                local_ts,
+            )
+            .unwrap();
+        app.load_from_db().unwrap();
+        // load_from_db demotes stale Sending; restore an in-flight send state
+        app.store.conversations.get_mut(conv_id).unwrap().messages[0].status =
+            Some(MessageStatus::Sending);
+        app.db
+            .update_message_status(conv_id, local_ts, MessageStatus::Sending.to_i32())
+            .unwrap();
+
+        assert_eq!(app.store.conversations[conv_id].messages.len(), 1);
+        assert_eq!(
+            app.store.conversations[conv_id].messages[0].timestamp_ms,
+            local_ts
+        );
+
+        crate::handlers::signal::mark_send_failed(&mut app, conv_id, local_ts);
+
+        assert_eq!(
+            app.store.conversations[conv_id].messages[0].status,
+            Some(MessageStatus::Failed)
+        );
+        let reloaded = app.db.load_messages_page(conv_id, 10, 0).unwrap();
+        assert_eq!(reloaded[0].status, Some(MessageStatus::Failed));
     }
 
     #[rstest]

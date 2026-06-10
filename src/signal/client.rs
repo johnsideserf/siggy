@@ -97,9 +97,13 @@ impl SignalClient {
                                 crate::debug_log::logf(format_args!(
                                     "rpc error: method={method} error={err:?}"
                                 ));
-                                // RPC error — emit SendFailed for send requests,
-                                // surface other errors to the status bar
-                                if method == "send" {
+                                // RPC error — emit SendFailed for every method that
+                                // registers in pending.sends (dispatch_send tracks
+                                // "send" and "sendPollCreate"), surface other errors
+                                // to the status bar. Routing a tracked method to the
+                                // generic Error arm leaks the pending entry and the
+                                // local message stays in Sending forever (#486).
+                                if method == "send" || method == "sendPollCreate" {
                                     rpc_id.map(|id| SignalEvent::SendFailed { rpc_id: id })
                                 } else {
                                     Some(SignalEvent::Error(format!("{method}: {}", err.message)))

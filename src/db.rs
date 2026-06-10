@@ -590,6 +590,25 @@ impl Database {
         Ok(())
     }
 
+    /// Mark an outgoing message Failed. Needs its own method because
+    /// `update_message_status` only allows upward transitions and Failed (1)
+    /// sits below Sending (2), so a failure write through it was silently
+    /// dropped (#486). A failure is only valid from the Sending state, so
+    /// that is the guard here.
+    pub fn mark_message_failed(&self, conv_id: &str, timestamp_ms: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE messages SET status = ?3
+             WHERE conversation_id = ?1 AND timestamp_ms = ?2 AND sender = 'you' AND status = ?4",
+            params![
+                conv_id,
+                timestamp_ms,
+                MessageStatus::Failed.to_i32(),
+                MessageStatus::Sending.to_i32()
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Update timestamp_ms and status for an outgoing message when the server assigns
     /// a canonical timestamp (replacing the local one).
     pub fn update_message_timestamp_ms(

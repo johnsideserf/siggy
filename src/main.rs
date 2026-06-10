@@ -792,6 +792,10 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 }
                 Err(e) => {
                     app.status_message = format!("send error: {e}");
+                    // The request never reached signal-cli, so no SendFailed event
+                    // will ever arrive — mark the optimistic message Failed here
+                    // or it stays in Sending forever (#486).
+                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
                     // RPC failed to send — delete temp file immediately (signal-cli never saw it)
                     for path in &attachments {
                         if path.starts_with(&app.paste_temp_path) {
@@ -1076,6 +1080,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 }
                 Err(e) => {
                     app.status_message = format!("poll error: {e}");
+                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
                 }
             }
         }
