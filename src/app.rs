@@ -10835,6 +10835,115 @@ mod tests {
         assert!(conv.messages[idx].reactions.is_empty());
     }
 
+    // --- #482: only the original author may edit or remote-delete ---
+    //
+    // The Signal server does not enforce author-match on edit/delete
+    // envelopes; official clients verify client-side. Without the check,
+    // any conversation member can rewrite or delete someone else's
+    // message locally by targeting its (visible) timestamp.
+
+    #[rstest]
+    fn edit_from_non_author_is_rejected(mut app: App) {
+        let ts = 1_700_000_000_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "original", ts);
+
+        app.handle_signal_event(SignalEvent::EditReceived {
+            conv_id: conv_id.clone(),
+            sender: "+2".to_string(), // not the author of the target
+            sender_name: Some("Mallory".to_string()),
+            target_timestamp: ts,
+            new_body: "forged".to_string(),
+            new_timestamp: ts + 1,
+            is_outgoing: false,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert_eq!(conv.messages[idx].body, "original");
+        assert!(!conv.messages[idx].is_edited);
+    }
+
+    #[rstest]
+    fn remote_delete_from_non_author_is_rejected(mut app: App) {
+        let ts = 1_700_000_000_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "original", ts);
+
+        app.handle_signal_event(SignalEvent::RemoteDeleteReceived {
+            conv_id: conv_id.clone(),
+            sender: "+2".to_string(),
+            target_timestamp: ts,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert!(!conv.messages[idx].is_deleted);
+        assert_eq!(conv.messages[idx].body, "original");
+    }
+
+    #[rstest]
+    fn edit_targeting_outgoing_message_from_contact_is_rejected(mut app: App) {
+        // A contact crafts an editMessage whose targetSentTimestamp matches
+        // one of OUR outgoing messages (timestamps are visible to them).
+        let ts = 1_700_000_000_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "their msg", ts - 10);
+        if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
+            let mut mine = conv.messages[0].clone();
+            mine.sender = "you".to_string();
+            mine.sender_id = String::new();
+            mine.status = Some(MessageStatus::Sent);
+            mine.timestamp_ms = ts;
+            mine.body = "my message".to_string();
+            conv.messages.push(mine);
+        }
+
+        app.handle_signal_event(SignalEvent::EditReceived {
+            conv_id: conv_id.clone(),
+            sender: "+1".to_string(), // the contact, NOT this account
+            sender_name: Some("Alice".to_string()),
+            target_timestamp: ts,
+            new_body: "you said this, honest".to_string(),
+            new_timestamp: ts + 1,
+            is_outgoing: false,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert_eq!(conv.messages[idx].body, "my message");
+        assert!(!conv.messages[idx].is_edited);
+    }
+
+    #[rstest]
+    fn own_sync_edit_of_outgoing_message_applies(mut app: App) {
+        // Editing your own message from another device: sync envelope whose
+        // sender is this account. Must still apply.
+        let ts = 1_700_000_000_000;
+        let conv_id = seed_conv_with_msg(&mut app, "+1", "their msg", ts - 10);
+        if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
+            let mut mine = conv.messages[0].clone();
+            mine.sender = "you".to_string();
+            mine.sender_id = String::new();
+            mine.status = Some(MessageStatus::Sent);
+            mine.timestamp_ms = ts;
+            mine.body = "my message".to_string();
+            conv.messages.push(mine);
+        }
+
+        app.handle_signal_event(SignalEvent::EditReceived {
+            conv_id: conv_id.clone(),
+            sender: app.account.clone(),
+            sender_name: None,
+            target_timestamp: ts,
+            new_body: "my message, fixed".to_string(),
+            new_timestamp: ts + 1,
+            is_outgoing: true,
+        });
+
+        let conv = &app.store.conversations[&conv_id];
+        let idx = conv.find_msg_idx(ts).expect("message present");
+        assert_eq!(conv.messages[idx].body, "my message, fixed");
+        assert!(conv.messages[idx].is_edited);
+    }
+
     #[rstest]
     fn pin_received_sets_pinned_and_inserts_system_message(mut app: App) {
         let ts = 1_700_000_002_000;
