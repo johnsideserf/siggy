@@ -1432,9 +1432,11 @@ async fn run_app(
             }
         }
 
-        // Load older messages when scrolled to the top
+        // Extend the scrollback when scrolled to the top: widen the render
+        // window over loaded messages, paging from the DB only when memory
+        // is exhausted (#488).
         if app.scroll.at_top {
-            app.load_more_messages();
+            app.extend_scrollback();
             needs_redraw = true;
         }
 
