@@ -612,6 +612,35 @@ impl Database {
         Ok(())
     }
 
+    /// Author fields of the message row at `timestamp_ms`:
+    /// (sender, sender_id, is_outgoing). Used by the edit / remote-delete
+    /// author check (#482) when the target message is outside the loaded
+    /// page. Outgoing detection mirrors `DisplayMessage::is_outgoing`:
+    /// a stored status (non-zero) or the literal "you" sender.
+    pub fn message_author(
+        &self,
+        conv_id: &str,
+        timestamp_ms: i64,
+    ) -> Result<Option<(String, String, bool)>> {
+        use rusqlite::OptionalExtension;
+        let row = self
+            .conn
+            .query_row(
+                "SELECT sender, sender_id, status FROM messages
+                 WHERE conversation_id = ?1 AND timestamp_ms = ?2 LIMIT 1",
+                params![conv_id, timestamp_ms],
+                |row| {
+                    let sender: String = row.get(0)?;
+                    let sender_id: String = row.get(1)?;
+                    let status: i32 = row.get(2)?;
+                    let outgoing = status != 0 || sender == "you";
+                    Ok((sender, sender_id, outgoing))
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
     /// Mark an outgoing message Failed. Needs its own method because
     /// `update_message_status` only allows upward transitions and Failed (1)
     /// sits below Sending (2), so a failure write through it was silently

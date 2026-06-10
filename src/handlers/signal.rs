@@ -106,14 +106,14 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
         } => {
             app.store
                 .remember_contact_name(&sender, sender_name.as_deref());
-            handle_edit_received(app, &conv_id, target_timestamp, &new_body);
+            handle_edit_received(app, &conv_id, &sender, target_timestamp, &new_body);
         }
         SignalEvent::RemoteDeleteReceived {
             conv_id,
-            sender: _,
+            sender,
             target_timestamp,
         } => {
-            handle_remote_delete(app, &conv_id, target_timestamp);
+            handle_remote_delete(app, &conv_id, &sender, target_timestamp);
         }
         SignalEvent::PinReceived {
             conv_id,
@@ -921,7 +921,60 @@ fn handle_reaction(
     }
 }
 
-fn handle_edit_received(app: &mut App, conv_id: &str, target_timestamp: i64, new_body: &str) {
+/// Whether `sender` is the author of the message at `target_timestamp` and
+/// may therefore edit or remote-delete it. The Signal server does not
+/// enforce author-match on edit/delete envelopes; official clients verify
+/// client-side, and skipping the check lets any conversation member rewrite
+/// or delete someone else's message locally (#482). Checks the in-memory
+/// message first, falling back to the DB row for messages outside the
+/// loaded page; a message found nowhere yields false (nothing to mutate).
+fn sender_may_mutate(app: &App, conv_id: &str, target_timestamp: i64, sender: &str) -> bool {
+    let author = app
+        .store
+        .conversations
+        .get(conv_id)
+        .and_then(|conv| {
+            conv.find_msg_idx(target_timestamp).map(|idx| {
+                let m = &conv.messages[idx];
+                (m.sender.clone(), m.sender_id.clone(), m.is_outgoing())
+            })
+        })
+        .or_else(|| {
+            app.db
+                .message_author(conv_id, target_timestamp)
+                .ok()
+                .flatten()
+        });
+    let Some((msg_sender, msg_sender_id, outgoing)) = author else {
+        return false;
+    };
+    if outgoing {
+        // Only this account (sync from another of our devices) may touch
+        // our own messages.
+        return sender == app.account;
+    }
+    // Incoming message: the mutating sender must be its author. sender_id
+    // carries the wire id; the display-name fallbacks mirror the author
+    // check reactions already perform.
+    msg_sender_id == sender
+        || msg_sender == sender
+        || app.store.contact_names.get(sender).map(String::as_str) == Some(msg_sender.as_str())
+}
+
+fn handle_edit_received(
+    app: &mut App,
+    conv_id: &str,
+    sender: &str,
+    target_timestamp: i64,
+    new_body: &str,
+) {
+    if !sender_may_mutate(app, conv_id, target_timestamp, sender) {
+        crate::debug_log::logf(format_args!(
+            "rejected edit from non-author: conv={} ts={target_timestamp}",
+            crate::debug_log::mask_phone(conv_id)
+        ));
+        return;
+    }
     if let Some(conv) = app.store.conversations.get_mut(conv_id)
         && let Some(idx) = conv.find_msg_idx(target_timestamp)
     {
@@ -935,7 +988,14 @@ fn handle_edit_received(app: &mut App, conv_id: &str, target_timestamp: i64, new
     );
 }
 
-fn handle_remote_delete(app: &mut App, conv_id: &str, target_timestamp: i64) {
+fn handle_remote_delete(app: &mut App, conv_id: &str, sender: &str, target_timestamp: i64) {
+    if !sender_may_mutate(app, conv_id, target_timestamp, sender) {
+        crate::debug_log::logf(format_args!(
+            "rejected remote-delete from non-author: conv={} ts={target_timestamp}",
+            crate::debug_log::mask_phone(conv_id)
+        ));
+        return;
+    }
     if let Some(conv) = app.store.conversations.get_mut(conv_id)
         && let Some(idx) = conv.find_msg_idx(target_timestamp)
     {
