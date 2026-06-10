@@ -30,13 +30,13 @@ Other languages are welcome. If you want to contribute one not on this list, jus
 
 ## Naming convention
 
-Translated READMEs live in the repo root with a two-letter [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) language code:
+Translated READMEs live in `translations/` with a two-letter [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) language code:
 
-- `README.md` (English, authoritative)
-- `README.de.md` (German)
-- `README.fr.md` (French)
-- `README.zh-CN.md` (Simplified Chinese - use `zh-CN` / `zh-TW` when a distinction matters)
-- `README.pt-BR.md` (Brazilian Portuguese - same rule when a regional distinction matters)
+- `README.md` (English, authoritative, repo root)
+- `translations/README.de.md` (German)
+- `translations/README.fr.md` (French)
+- `translations/README.zh-CN.md` (Simplified Chinese - use `zh-CN` / `zh-TW` when a distinction matters)
+- `translations/README.pt-BR.md` (Brazilian Portuguese - same rule when a regional distinction matters)
 
 Always link back to the English authoritative version from the top of your translation.
 
@@ -58,13 +58,13 @@ git log -1 --format=%h README.md
 
 ## Language switcher
 
-When you submit a new translation, update the switcher at the top of `README.md` to include your language. The pattern:
+When you submit a new translation, update the switcher at the top of `README.md` to include your language. The pattern in the root README:
 
 ```html
 <p align="center">
-  <a href="README.md">English</a>
+  <b>English</b>
   &nbsp;|&nbsp;
-  <a href="README.de.md">Deutsch</a>
+  <a href="translations/README.de.md">Deutsch</a>
   &nbsp;|&nbsp;
   <a href="TRANSLATING.md">Contribute a translation</a>
 </p>
@@ -72,7 +72,7 @@ When you submit a new translation, update the switcher at the top of `README.md`
 
 Use the endonym (the language's own name for itself) - `Deutsch`, `Français`, `Español`, `Українська`, `العربية`, etc. - not the English name.
 
-Mirror the same switcher in each translated README, with the current language in bold (no link).
+Mirror the same switcher in each translated README, with the current language in bold (no link). Inside `translations/`, sibling languages are linked by bare filename (`README.de.md`) while English and this guide need a parent path (`../README.md`, `../TRANSLATING.md`) - same for the banner and screenshot images (`../siggy-banner.png`, `../screenshot.png`).
 
 ## Translation quality
 
@@ -105,7 +105,7 @@ Translations drift. When the English README changes, yours will eventually go st
 ## Submitting
 
 1. Fork and branch off `master`. Branch name: `docs/translate-<lang>` (e.g. `docs/translate-de`).
-2. Copy `README.md` to `README.<lang>.md` and translate it.
+2. Copy `README.md` to `translations/README.<lang>.md` and translate it.
 3. Add the required header and update the language switcher in `README.md`.
 4. Open a PR titled `docs: add <language> README translation` and link issue #353.
 5. I will review for formatting, not linguistic accuracy - I trust the translator on the prose. I may ask another speaker of the language to sanity-check if one happens to be available.

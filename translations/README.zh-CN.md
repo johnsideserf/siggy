@@ -1,9 +1,9 @@
 > This is the Simplified Chinese translation of the siggy README.
 > Last updated against English commit: 216023e
-> The [English version](README.md) is authoritative. If this translation has drifted, trust the English.
+> The [English version](../README.md) is authoritative. If this translation has drifted, trust the English.
 
 <p align="center">
-  <img src="siggy-banner.png" alt="siggy" width="600">
+  <img src="../siggy-banner.png" alt="siggy" width="600">
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a>
+  <a href="../README.md">English</a>
   &nbsp;|&nbsp;
   <a href="README.da.md">Dansk</a>
   &nbsp;|&nbsp;
@@ -43,12 +43,12 @@
   &nbsp;|&nbsp;
   <b>简体中文</b>
   &nbsp;|&nbsp;
-  <a href="TRANSLATING.md">贡献翻译</a>
+  <a href="../TRANSLATING.md">贡献翻译</a>
 </p>
 
 一个基于终端的 Signal 即时通讯客户端，采用 IRC 风格设计。通过 JSON-RPC 封装 [signal-cli](https://github.com/AsamK/signal-cli) 作为消息后端。
 
-![siggy 截图](screenshot.png)
+![siggy 截图](../screenshot.png)
 
 ## 安装
 
@@ -299,4 +299,4 @@ signal-cli --> JsonRpcResponse --> SignalEvent (mpsc) --> App state --> SQLite +
 
 ## 许可证
 
-[GPL-3.0](LICENSE)
+[GPL-3.0](../LICENSE)
