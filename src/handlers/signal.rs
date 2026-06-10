@@ -1049,11 +1049,22 @@ fn handle_pin_received(
 fn handle_poll_created(app: &mut App, conv_id: &str, timestamp: i64, poll_data: PollData) {
     // The poll arrives as a regular message too — find it and attach poll_data.
     // If the message hasn't arrived yet (race), buffer the poll data so
-    // handle_message can attach it when the message arrives.
-    if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-        if let Some(idx) = conv.find_msg_idx(timestamp) {
-            conv.messages[idx].poll_data = Some(poll_data.clone());
-        } else {
+    // handle_message can attach it when the message arrives. Buffer even
+    // when the CONVERSATION doesn't exist yet (first-ever contact whose
+    // poll event is ordered before its companion message), or the poll
+    // renders as bare text until restart (#485).
+    let target_idx = app
+        .store
+        .conversations
+        .get_mut(conv_id)
+        .and_then(|conv| conv.find_msg_idx(timestamp));
+    match target_idx {
+        Some(idx) => {
+            if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+                conv.messages[idx].poll_data = Some(poll_data.clone());
+            }
+        }
+        None => {
             app.poll_vote
                 .pending_polls
                 .insert((conv_id.to_string(), timestamp), poll_data.clone());

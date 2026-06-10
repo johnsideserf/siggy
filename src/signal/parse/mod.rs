@@ -1064,6 +1064,94 @@ mod tests {
         }
     }
 
+    // #485: a sync'd 1:1 poll event's envelope source is YOUR OWN account;
+    // the conversation is the destination. Routing by source filed the poll
+    // under a conversation keyed by your own number.
+    #[test]
+    fn parse_poll_create_sync_routes_to_destination() {
+        let resp = make_resp(json!({
+            "envelope": {
+                "sourceNumber": "+15551234567", // this account
+                "timestamp": 1700000000000i64,
+                "syncMessage": {
+                    "sentMessage": {
+                        "timestamp": 1700000000000i64,
+                        "destinationNumber": "+15559876543",
+                        "pollCreate": {
+                            "question": "Lunch?",
+                            "allowMultiple": false,
+                            "options": [
+                                {"id": 0, "optionText": "Yes"},
+                                {"id": 1, "optionText": "No"}
+                            ]
+                        }
+                    }
+                }
+            }
+        }));
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::PollCreated { conv_id, .. } => {
+                assert_eq!(conv_id, "+15559876543");
+            }
+            _ => panic!("Expected PollCreated, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_poll_vote_sync_routes_to_destination() {
+        let resp = make_resp(json!({
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "timestamp": 1700000001000i64,
+                "syncMessage": {
+                    "sentMessage": {
+                        "timestamp": 1700000001000i64,
+                        "destinationNumber": "+15559876543",
+                        "pollVote": {
+                            "targetSentTimestamp": 1700000000000i64,
+                            "optionIndexes": [1],
+                            "voteCount": 1
+                        }
+                    }
+                }
+            }
+        }));
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::PollVoteReceived { conv_id, .. } => {
+                assert_eq!(conv_id, "+15559876543");
+            }
+            _ => panic!("Expected PollVoteReceived, got {event:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_poll_terminate_sync_routes_to_destination() {
+        let resp = make_resp(json!({
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "timestamp": 1700000002000i64,
+                "syncMessage": {
+                    "sentMessage": {
+                        "timestamp": 1700000002000i64,
+                        "destinationNumber": "+15559876543",
+                        "pollTerminate": {
+                            "targetSentTimestamp": 1700000000000i64
+                        }
+                    }
+                }
+            }
+        }));
+        let event = parse_signal_event(&resp, std::path::Path::new("/tmp")).unwrap();
+        match event {
+            SignalEvent::PollTerminated { conv_id, .. } => {
+                assert_eq!(conv_id, "+15559876543");
+            }
+            _ => panic!("Expected PollTerminated, got {event:?}"),
+        }
+    }
+
     #[test]
     fn parse_poll_vote_basic() {
         let resp = make_resp(json!({

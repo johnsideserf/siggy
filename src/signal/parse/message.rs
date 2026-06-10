@@ -66,13 +66,13 @@ pub(super) fn parse_data_message(
     }
 
     if let Some(poll_create) = data.get("pollCreate") {
-        return parse_poll_create(envelope, data, poll_create);
+        return parse_poll_create(envelope, data, poll_create, None);
     }
     if let Some(poll_vote) = data.get("pollVote") {
-        return parse_poll_vote(envelope, data, poll_vote);
+        return parse_poll_vote(envelope, data, poll_vote, None);
     }
     if let Some(poll_terminate) = data.get("pollTerminate") {
-        return parse_poll_terminate(envelope, data, poll_terminate);
+        return parse_poll_terminate(envelope, data, poll_terminate, None);
     }
 
     // Shared early-return events (pin, unpin, remoteDelete, expirationUpdate, group UPDATE).
@@ -120,14 +120,17 @@ pub(super) fn parse_sent_sync(
         return parse_reaction_sync(envelope, sent, reaction);
     }
 
+    // Poll parsers need the destination: for a sync envelope the source is
+    // this account, and without the fallback a 1:1 poll event is filed
+    // under your own number (#485).
     if let Some(poll_create) = sent.get("pollCreate") {
-        return parse_poll_create(envelope, sent, poll_create);
+        return parse_poll_create(envelope, sent, poll_create, sent_destination(sent));
     }
     if let Some(poll_vote) = sent.get("pollVote") {
-        return parse_poll_vote(envelope, sent, poll_vote);
+        return parse_poll_vote(envelope, sent, poll_vote, sent_destination(sent));
     }
     if let Some(poll_terminate) = sent.get("pollTerminate") {
-        return parse_poll_terminate(envelope, sent, poll_terminate);
+        return parse_poll_terminate(envelope, sent, poll_terminate, sent_destination(sent));
     }
 
     let destination = sent_destination(sent);
