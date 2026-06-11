@@ -924,6 +924,11 @@ impl App {
         config.settings_profile = self.settings_profiles.name.clone();
         config.notification_preview = self.notifications.notification_preview;
         config.image_mode = Some(self.image.image_mode);
+        config.image_max_width = self.image.image_max_width;
+        config.preview_image_max_width = self.image.preview_image_max_width;
+        config.image_max_height = self.image.image_max_height;
+        config.sixel_max_colors = self.image.sixel_encode.max_colors;
+        config.sixel_diffusion = self.image.sixel_encode.diffusion;
         config.sidebar_width = self.sidebar_width;
         for def in SETTINGS {
             if let Some(save_fn) = def.save {
@@ -966,13 +971,10 @@ impl App {
                 }
                 // Pre-populate native image caches from background task
                 if let Some((path, b64, pw, ph)) = result.pre_native_png {
-                    self.image
-                        .native_image_cache
-                        .entry(path)
-                        .or_insert((b64, pw, ph));
+                    self.image.native_image_cache.insert(path, (b64, pw, ph));
                 }
                 if let Some((path, sixel)) = result.pre_sixel {
-                    self.image.sixel_cache.entry(path).or_insert(sixel);
+                    self.image.sixel_cache.insert(path, sixel);
                 }
                 drained = true;
             }
@@ -992,50 +994,110 @@ impl App {
         if len == 0 {
             return drained;
         }
+        let is_native = self.image.image_mode == crate::domain::ImageMode::Native;
+        let is_sixel = self.image.image_protocol == image_render::ImageProtocol::Sixel;
+        let pane_width_cap = if self.image.render_width_cap > 0 {
+            self.image.render_width_cap
+        } else {
+            self.image.image_max_width
+        };
+        let image_max_width = self.image.image_max_width.min(pane_width_cap).max(1);
+        let preview_image_max_width = self
+            .image
+            .preview_image_max_width
+            .min(pane_width_cap)
+            .max(1);
         let end = len
             .saturating_sub(self.scroll.offset.saturating_sub(5))
             .min(len);
         let start = end.saturating_sub(60);
 
-        // Collect work items to avoid borrow conflicts: (timestamp, path, max_width, is_preview)
-        let mut work: Vec<(i64, String, u32, bool)> = Vec::new();
+        // Collect work items to avoid borrow conflicts:
+        // (timestamp, path, max_width, max_height_cells, is_preview)
+        let mut work: Vec<(i64, String, u32, u32, bool)> = Vec::new();
         for msg in &conv.messages[start..end] {
             if self.image.image_render_in_flight.len() + work.len() >= 4 {
                 break;
             }
             if msg.body.starts_with("[image:")
-                && msg.image_lines.is_none()
                 && let Some(ref p) = msg.image_path
             {
+                let has_rendered_lines = msg
+                    .image_lines
+                    .as_ref()
+                    .is_some_and(|lines| !lines.is_empty());
+                let image_too_wide = msg.image_lines.as_ref().is_some_and(|lines| {
+                    lines
+                        .first()
+                        .is_some_and(|line| line.width().saturating_sub(2) as u32 > image_max_width)
+                });
+                let native_cache_missing = is_native
+                    && has_rendered_lines
+                    && if is_sixel {
+                        !self.image.sixel_cache.contains_key(p)
+                    } else {
+                        !self.image.native_image_cache.contains_key(p)
+                    };
                 let key = (id.clone(), msg.timestamp_ms, false);
-                if !self.image.image_render_in_flight.contains(&key) {
-                    work.push((msg.timestamp_ms, p.clone(), 40, false));
+                if (msg.image_lines.is_none() || image_too_wide || native_cache_missing)
+                    && !self.image.image_render_in_flight.contains(&key)
+                {
+                    work.push((
+                        msg.timestamp_ms,
+                        p.clone(),
+                        image_max_width,
+                        self.image.image_max_height,
+                        false,
+                    ));
                 }
             }
             if self.image.show_link_previews
-                && msg.preview_image_lines.is_none()
                 && let Some(ref preview) = msg.preview
                 && let Some(ref p) = preview.image_path
             {
+                let has_rendered_lines = msg
+                    .preview_image_lines
+                    .as_ref()
+                    .is_some_and(|lines| !lines.is_empty());
+                let image_too_wide = msg.preview_image_lines.as_ref().is_some_and(|lines| {
+                    lines.first().is_some_and(|line| {
+                        line.width().saturating_sub(2) as u32 > preview_image_max_width
+                    })
+                });
+                let native_cache_missing = is_native
+                    && has_rendered_lines
+                    && if is_sixel {
+                        !self.image.sixel_cache.contains_key(p)
+                    } else {
+                        !self.image.native_image_cache.contains_key(p)
+                    };
                 let key = (id.clone(), msg.timestamp_ms, true);
-                if !self.image.image_render_in_flight.contains(&key) {
-                    work.push((msg.timestamp_ms, p.clone(), 30, true));
+                if (msg.preview_image_lines.is_none() || image_too_wide || native_cache_missing)
+                    && !self.image.image_render_in_flight.contains(&key)
+                {
+                    work.push((
+                        msg.timestamp_ms,
+                        p.clone(),
+                        preview_image_max_width,
+                        self.image.image_max_height,
+                        true,
+                    ));
                 }
             }
         }
 
         // Spawn background render tasks
-        let is_native = self.image.image_mode == crate::domain::ImageMode::Native;
-        let is_sixel = self.image.image_protocol == image_render::ImageProtocol::Sixel;
         let cell_px = self.image.cell_px;
-        for (ts, path, max_width, is_preview) in work {
+        let sixel_encode = self.image.sixel_encode;
+        for (ts, path, max_width, max_height, is_preview) in work {
             self.image
                 .image_render_in_flight
                 .insert((id.clone(), ts, is_preview));
             let tx = self.image.image_render_tx.clone();
             let cid = id.clone();
             tokio::task::spawn_blocking(move || {
-                let lines = image_render::render_image(Path::new(&path), max_width);
+                let lines =
+                    image_render::render_image_with_limits(Path::new(&path), max_width, max_height);
 
                 // Pre-encode PNG (all native protocols) and Sixel alongside halfblock
                 // so caches are populated before the image first appears in the viewport.
@@ -1056,6 +1118,7 @@ impl App {
                                     cell_w as u16,
                                     cell_h as u16,
                                     cell_px,
+                                    sixel_encode,
                                 )
                             })
                         } else {
@@ -3375,9 +3438,9 @@ impl App {
     /// Full image state reset: clear both terminal placements and base64 caches.
     /// Call on terminal resize (cell dimensions change, so cached PNGs need re-encoding).
     ///
-    /// Sixel caches survive resize: encoding depends on cell_px (from config,
-    /// not terminal size) and halfblock dimensions (fixed at max_width=40).
-    /// Only screen positions change, which ratatui recomputes automatically.
+    /// Sixel caches survive resize: encoding depends on cell_px and configured
+    /// preview dimensions, not the terminal's current cell grid. Only screen
+    /// positions change, which ratatui recomputes automatically.
     pub fn clear_kitty_state(&mut self) {
         self.clear_kitty_placements();
         if self.image.image_protocol != ImageProtocol::Sixel {

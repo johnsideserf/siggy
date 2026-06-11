@@ -564,6 +564,31 @@ fn emit_passthrough_seq(
     }
 }
 
+/// Overwrite previously drawn Sixel image rectangles with spaces.
+///
+/// This is much cheaper than clearing the whole terminal and avoids re-sending
+/// current image rectangles before every Sixel payload.
+fn erase_sixel_rects(
+    backend: &mut CrosstermBackend<io::Stdout>,
+    images: &[app::VisibleImage],
+) -> Result<()> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    queue!(backend, Hide, SavePosition)?;
+    for img in images {
+        if img.width == 0 || img.height == 0 {
+            continue;
+        }
+        let blank = " ".repeat(img.width as usize);
+        for row in 0..img.height {
+            queue!(backend, MoveTo(img.x, img.y + row), Print(blank.as_str()))?;
+        }
+    }
+    queue!(backend, RestorePosition, Show)?;
+    Ok(())
+}
+
 /// Write native terminal image protocol escape sequences.
 ///
 /// For Kitty: process `kitty_pending_transmits` — transmit image data and create
@@ -633,20 +658,25 @@ fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App)
     if protocol == image_render::ImageProtocol::Sixel {
         if app.has_overlay() || app.image.visible_images.is_empty() {
             app.image.visible_images.clear();
+            app.image.prev_visible_images.clear();
             return Ok(());
         }
 
-        // Dedup: skip Sixel emit when images haven't moved (avoids cursor
-        // flash from large Sixel writes on every mouse-move/redraw).
         if app.image.visible_images == app.image.prev_visible_images {
             app.image.visible_images.clear();
             return Ok(());
         }
 
         let images = std::mem::take(&mut app.image.visible_images);
+        let all_cached = images
+            .iter()
+            .all(|img| app.image.sixel_cache.contains_key(&img.path));
         queue!(backend, Hide, SavePosition)?;
 
         for img in &images {
+            if img.width == 0 || img.height == 0 {
+                continue;
+            }
             if let Some(full_sixel) = app.image.sixel_cache.get(&img.path) {
                 let sliced = image_render::slice_sixel_bands(
                     full_sixel,
@@ -663,7 +693,11 @@ fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App)
         }
 
         queue!(backend, RestorePosition, Show)?;
-        app.image.prev_visible_images = images;
+        if all_cached {
+            app.image.prev_visible_images = images;
+        } else {
+            app.image.prev_visible_images.clear();
+        }
         return Ok(());
     }
 
@@ -1260,6 +1294,13 @@ async fn run_app(
     app.notifications.clipboard_clear_seconds = config.clipboard_clear_seconds;
     app.image.image_mode = config.image_mode.unwrap_or_default();
     app.image.show_link_previews = config.show_link_previews;
+    app.image.image_max_width = config.image_max_width.clamp(1, 240);
+    app.image.preview_image_max_width = config.preview_image_max_width.clamp(1, 240);
+    app.image.image_max_height = config.image_max_height.clamp(1, 120);
+    app.image.sixel_encode = image_render::SixelEncodeSettings {
+        max_colors: config.sixel_max_colors.clamp(2, 256),
+        diffusion: config.sixel_diffusion.clamp(0.0, 1.0),
+    };
     app.incognito = incognito;
     app.download_dir = config.download_dir.clone();
     app.date_separators = config.date_separators;
@@ -1360,8 +1401,15 @@ async fn run_app(
             queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
 
             // Force full redraw when active conversation changes (clears native image artifacts)
-            if native && app.active_conversation != app.prev_active_conversation {
+            let conversation_changed =
+                native && app.active_conversation != app.prev_active_conversation;
+            let scroll_changed = sixel_mode && app.scroll.offset != app.image.sixel_prev_scroll;
+            let clear_previous_sixels =
+                sixel_mode && (conversation_changed || scroll_changed || app.has_overlay());
+
+            if conversation_changed {
                 app.prev_active_conversation = app.active_conversation.clone();
+                app.image.visible_images.clear();
                 terminal.clear()?;
             }
             // Sixel: force full redraw when scroll changes so ratatui resends
@@ -1369,10 +1417,14 @@ async fn run_app(
             // buffer, then after EndSync our Sixel overlays at the new positions.
             // Without this, stale Sixel pixels persist at old image positions
             // because ratatui's diff only sends changed cells.
-            if sixel_mode && app.scroll.offset != app.image.sixel_prev_scroll {
+            if scroll_changed {
                 app.image.sixel_prev_scroll = app.scroll.offset;
-                app.image.prev_visible_images.clear();
+                app.image.visible_images.clear();
                 terminal.clear()?;
+            }
+            if clear_previous_sixels {
+                erase_sixel_rects(terminal.backend_mut(), &app.image.prev_visible_images)?;
+                app.image.prev_visible_images.clear();
             }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
             // Post-draw work that needs cursor hidden: OSC8 links use MoveTo,

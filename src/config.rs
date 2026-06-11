@@ -126,6 +126,26 @@ pub struct Config {
     #[serde(default)]
     pub cell_pixel_height: u16,
 
+    /// Maximum inline image attachment width in terminal cells
+    #[serde(default = "default_image_max_width")]
+    pub image_max_width: u32,
+
+    /// Maximum link preview thumbnail width in terminal cells
+    #[serde(default = "default_preview_image_max_width")]
+    pub preview_image_max_width: u32,
+
+    /// Maximum inline image height in terminal cell rows
+    #[serde(default = "default_image_max_height")]
+    pub image_max_height: u32,
+
+    /// Maximum colors for Sixel encoding (2-256)
+    #[serde(default = "default_sixel_max_colors")]
+    pub sixel_max_colors: u16,
+
+    /// Floyd-Steinberg diffusion strength for Sixel encoding (0.0-1.0)
+    #[serde(default = "default_sixel_diffusion")]
+    pub sixel_diffusion: f32,
+
     /// Legacy: show inline halfblock image previews (migrated to image_mode)
     #[serde(default = "default_true", skip_serializing)]
     pub inline_images: bool,
@@ -223,6 +243,26 @@ fn default_sidebar_width() -> u16 {
     22
 }
 
+fn default_image_max_width() -> u32 {
+    40
+}
+
+fn default_preview_image_max_width() -> u32 {
+    30
+}
+
+fn default_image_max_height() -> u32 {
+    30
+}
+
+fn default_sixel_max_colors() -> u16 {
+    256
+}
+
+fn default_sixel_diffusion() -> f32 {
+    0.875
+}
+
 fn default_signal_cli_path() -> String {
     "signal-cli".to_string()
 }
@@ -247,6 +287,11 @@ impl Default for Config {
             image_mode: Some(ImageMode::Halfblock),
             cell_pixel_width: 0,
             cell_pixel_height: 0,
+            image_max_width: default_image_max_width(),
+            preview_image_max_width: default_preview_image_max_width(),
+            image_max_height: default_image_max_height(),
+            sixel_max_colors: default_sixel_max_colors(),
+            sixel_diffusion: default_sixel_diffusion(),
             inline_images: true,
             show_link_previews: true,
             native_images: false,
