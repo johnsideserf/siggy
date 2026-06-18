@@ -87,7 +87,12 @@ else
     curl -fsSL -o "$TMPDIR/$SCLI_ARCHIVE" "$SCLI_URL" || error "signal-cli download failed: $SCLI_URL"
 
     tar xzf "$TMPDIR/$SCLI_ARCHIVE" -C "$TMPDIR"
-    cp "$TMPDIR/signal-cli-${SCLI_VERSION}-Linux-native/bin/signal-cli" "$INSTALL_DIR/signal-cli"
+    # The native build extracts a single signal-cli executable at the archive
+    # root (unlike the JVM build's signal-cli-<ver>/bin/ layout). Locate it
+    # rather than assuming a fixed path so we survive future layout changes.
+    SCLI_BIN="$(find "$TMPDIR" -type f -name signal-cli | head -1)"
+    [ -n "$SCLI_BIN" ] || error "signal-cli binary not found in extracted archive"
+    cp "$SCLI_BIN" "$INSTALL_DIR/signal-cli"
     chmod +x "$INSTALL_DIR/signal-cli"
 
     info "Installed signal-cli to $INSTALL_DIR/signal-cli"
