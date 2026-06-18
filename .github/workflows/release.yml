@@ -1,17 +1,20 @@
 name: Release
 
+# NOTE: This file is modified ONLY on the single-use `release/v1.9.1` branch
+# to cut v1.9.1 from an environment that cannot push git tags. It triggers on
+# the push of this branch and creates the tag at master's HEAD. Do not merge
+# this branch to master.
+
 on:
   push:
-    tags: ["v*"]
+    branches: ["release/v1.9.1"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to create and publish (e.g. v1.9.1)"
-        required: true
-        type: string
 
 permissions:
   contents: write
+
+env:
+  TAG: v1.9.1
 
 jobs:
   check:
@@ -34,8 +37,6 @@ jobs:
     name: Build (${{ matrix.target }})
     needs: check
     runs-on: ${{ matrix.runner }}
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
     strategy:
       matrix:
         include:
@@ -93,8 +94,6 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -103,10 +102,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          # On workflow_dispatch the tag does not exist yet; the action
-          # creates it at the workflow's checkout commit (default branch HEAD).
-          # On a tag push this matches the pushed tag (a no-op create).
           tag_name: ${{ env.TAG }}
+          # Pin the tag to master's HEAD, not this throwaway trigger branch.
+          target_commitish: master
           generate_release_notes: true
           files: siggy-*
 
@@ -119,5 +117,5 @@ jobs:
 
       - uses: ./.github/actions/update-homebrew
         with:
-          tag: ${{ inputs.tag || github.ref_name }}
+          tag: ${{ env.TAG }}
           tap-token: ${{ secrets.TAP_TOKEN }}
