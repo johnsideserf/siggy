@@ -17,7 +17,7 @@ use crate::app::{
 };
 use crate::autocomplete::AutocompleteMode;
 use crate::domain::{EmojiPickerAction, EmojiPickerSource};
-use crate::keybindings;
+use crate::keybindings::{self, BindingMode, KeyAction};
 use crate::list_overlay::{ListKeyAction, classify_list_key};
 
 // ---------------------------------------------------------------------------
@@ -297,6 +297,71 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Handle a global keybinding (active in both Normal and Insert mode). Returns
+/// true if the key was consumed. When locked, all keys route to the lock screen.
+pub fn handle_global_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) -> bool {
+    if app.lock.is_locked() {
+        return app.handle_lock_key(code);
+    }
+    let action = app
+        .keybindings
+        .resolve(modifiers, code, BindingMode::Global);
+    if app.quit_confirm && !matches!(action, Some(KeyAction::Quit)) {
+        app.quit_confirm = false;
+        app.update_status();
+    }
+    match action {
+        Some(KeyAction::Quit) => {
+            if app.input.buffer.is_empty() || app.quit_confirm {
+                app.should_quit = true;
+            } else {
+                app.quit_confirm = true;
+            }
+            true
+        }
+        Some(KeyAction::NextConversation) if !app.is_overlay(OverlayKind::Autocomplete) => {
+            app.next_conversation();
+            true
+        }
+        Some(KeyAction::PrevConversation) => {
+            app.prev_conversation();
+            true
+        }
+        Some(KeyAction::ResizeSidebarLeft) => {
+            app.resize_sidebar(-2);
+            true
+        }
+        Some(KeyAction::ResizeSidebarRight) => {
+            app.resize_sidebar(2);
+            true
+        }
+        Some(KeyAction::PageScrollUp) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_add(5);
+            app.scroll.focused_index = None;
+            true
+        }
+        Some(KeyAction::PageScrollDown) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_sub(5);
+            app.scroll.focused_index = None;
+            true
+        }
+        Some(KeyAction::SidebarSearch) => {
+            app.sidebar_visible = true;
+            app.open_overlay(OverlayKind::SidebarFilter);
+            app.sidebar_filter.clear();
+            app.sidebar_filtered.clear();
+            true
+        }
+        Some(KeyAction::Lock) => {
+            app.lock_now();
+            true
+        }
+        _ => false,
     }
 }
 
