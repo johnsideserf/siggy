@@ -47,4 +47,9 @@ pub struct ScrollState {
     /// or composer keystrokes, so a matching key lets the renderer reuse them.
     pub height_cache_key: Option<u64>,
     pub height_cache: Vec<usize>,
+    /// Set by the renderer: index of the first message in the current render
+    /// window. Messages before this are never drawn, so their cached
+    /// `image_lines` can be evicted to bound memory (#492); they regenerate via
+    /// the background path if scrolled back into view.
+    pub render_window_start: usize,
 }

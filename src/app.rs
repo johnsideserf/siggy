@@ -940,6 +940,25 @@ impl App {
             }
         }
 
+        // Evict cached image_lines for messages before the render window so they
+        // don't accumulate across a long scrolling session (#492). Those messages
+        // are never drawn this frame (chat_pane records render_window_start), and
+        // they regenerate via the work path above if scrolled back into view.
+        let evict_before = self.scroll.render_window_start.min(start);
+        if evict_before > 0
+            && let Some(conv) = self.store.conversations.get_mut(&id)
+        {
+            let upto = evict_before.min(conv.messages.len());
+            for msg in &mut conv.messages[..upto] {
+                if msg.image_lines.is_some() {
+                    msg.image_lines = None;
+                }
+                if msg.preview_image_lines.is_some() {
+                    msg.preview_image_lines = None;
+                }
+            }
+        }
+
         // Spawn background render tasks
         let is_native = self.image.image_mode == crate::domain::ImageMode::Native;
         let is_sixel = self.image.image_protocol == image_render::ImageProtocol::Sixel;
@@ -3364,6 +3383,9 @@ impl App {
 
     pub(crate) fn join_conversation(&mut self, target: &str) {
         self.leave_active_conversation();
+        // Stale from the previous conversation; the next render sets it. Prevents
+        // evicting the new conversation's image_lines before it has drawn (#492).
+        self.scroll.render_window_start = 0;
 
         // Try exact match first
         if self.store.conversations.contains_key(target) {

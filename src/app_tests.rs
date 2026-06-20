@@ -1083,6 +1083,38 @@ fn ensure_active_images_scan_is_gated_by_signature(mut app: App) {
     );
 }
 
+#[rstest]
+fn ensure_active_images_evicts_pre_window_image_lines(mut app: App) {
+    // #492: image_lines for messages before the render window are evicted to
+    // bound memory; messages within it are retained.
+    let conv_id = "+1";
+    app.store
+        .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+    if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+        for i in 0..80 {
+            let mut m = outgoing_sending_msg(1000 + i as i64, "hi");
+            m.image_lines = Some(Vec::new());
+            conv.messages.push(m);
+        }
+    }
+    app.active_conversation = Some(conv_id.to_string());
+    app.image.image_mode = crate::domain::ImageMode::Halfblock;
+    app.scroll.offset = 0; // ensure_active_images window starts at 80 - 60 = 20
+    app.scroll.render_window_start = 10; // render window [10, 80)
+
+    app.ensure_active_images();
+
+    let conv = &app.store.conversations[conv_id];
+    // Evicted before min(render_window_start = 10, ensure_start = 20) = 10.
+    assert!(conv.messages[0].image_lines.is_none());
+    assert!(conv.messages[9].image_lines.is_none());
+    assert!(
+        conv.messages[10].image_lines.is_some(),
+        "messages in the render window keep their lines"
+    );
+    assert!(conv.messages[79].image_lines.is_some());
+}
+
 // --- list_overlay nav adoption (#499) ---
 
 fn ident(number: &str, safety: &str) -> crate::signal::types::IdentityInfo {
