@@ -300,6 +300,36 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
     }
 }
 
+/// Handle a key press on the session lock screen. Returns true to signal the
+/// lock owns the key (it always does while the lock is up).
+pub fn handle_lock_key(app: &mut App, code: KeyCode) -> bool {
+    // Any char/Backspace clears the transient error so the user can retry.
+    // Leave error visible on Enter so a submit failure stays on screen.
+    if matches!(code, KeyCode::Char(_) | KeyCode::Backspace) {
+        app.lock.error = None;
+    }
+    match code {
+        KeyCode::Char(c) => {
+            app.lock.input_buffer.push(c);
+            true
+        }
+        KeyCode::Backspace => {
+            app.lock.input_buffer.pop();
+            true
+        }
+        KeyCode::Esc => {
+            // Esc clears the current input but does not unlock or change phase.
+            app.lock.input_buffer.clear();
+            true
+        }
+        KeyCode::Enter => {
+            app.submit_lock_input();
+            true
+        }
+        _ => true, // swallow all other keys; lock screen owns input fully
+    }
+}
+
 /// Handle keybinding capture: intercepts ALL keys when capturing a new binding.
 pub fn handle_keybinding_capture(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
     if code == KeyCode::Esc && modifiers == KeyModifiers::NONE {
