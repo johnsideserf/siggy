@@ -38,7 +38,7 @@ use crate::image_render::ImageProtocol;
 use crate::input::COMMANDS;
 use crate::input::{next_char_pos, prev_char_pos};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
-use crate::list_overlay::{self, classify_list_key};
+use crate::list_overlay;
 use crate::mute::MuteState;
 use crate::signal::types::{MessageStatus, Reaction, SignalEvent, TrustLevel};
 use crate::theme::{self, Theme};
@@ -1006,81 +1006,12 @@ impl App {
     /// Navigation follows SETTINGS_VISUAL_ORDER so j/k matches the visual layout.
     /// After toggles: Preview at SETTINGS.len(), Image mode at +1, Customize at +2.
     pub fn handle_settings_key(&mut self, code: KeyCode) {
-        let preview_index = SETTINGS.len();
-        let image_mode_index = SETTINGS.len() + 1;
-        let customize_index = SETTINGS.len() + 2;
-
-        // Find current position in visual order
-        let visual_pos = SETTINGS_VISUAL_ORDER
-            .iter()
-            .position(|&i| i == self.settings_overlay.index)
-            .unwrap_or(0);
-
-        match code {
-            KeyCode::Char('j') | KeyCode::Down if visual_pos + 1 < SETTINGS_VISUAL_ORDER.len() => {
-                self.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos + 1];
-            }
-            KeyCode::Char('k') | KeyCode::Up if visual_pos > 0 => {
-                self.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos - 1];
-            }
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
-                if self.settings_overlay.index == preview_index {
-                    self.notifications.notification_preview =
-                        self.notifications.notification_preview.cycle();
-                } else if self.settings_overlay.index == image_mode_index {
-                    self.image.image_mode = self.image.image_mode.cycle();
-                } else if self.settings_overlay.index == customize_index {
-                    self.open_overlay(OverlayKind::Customize);
-                    self.settings_overlay.customize_index = 0;
-                } else {
-                    self.toggle_setting(self.settings_overlay.index);
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.close_overlay();
-                self.save_settings();
-                self.fire_deferred_settings_hooks();
-            }
-            _ => {}
-        }
+        crate::handlers::keys::handle_settings_key(self, code)
     }
 
     /// Handle a key press in the Customize sub-menu (Theme, Keybindings, Profile).
     pub fn handle_customize_key(&mut self, code: KeyCode) {
-        const ITEMS: usize = 3; // Theme, Keybindings, Profile
-        let action = classify_list_key(code, false);
-        if list_overlay::apply_nav(&action, &mut self.settings_overlay.customize_index, ITEMS) {
-            return;
-        }
-        match code {
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
-                self.close_overlay();
-                self.save_settings();
-                match self.settings_overlay.customize_index {
-                    0 => {
-                        self.open_overlay(OverlayKind::ThemePicker);
-                        self.theme_picker.index = self
-                            .theme_picker
-                            .available_themes
-                            .iter()
-                            .position(|t| t.name == self.theme.name)
-                            .unwrap_or(0);
-                    }
-                    1 => {
-                        self.open_overlay(OverlayKind::Keybindings);
-                        self.keybindings_overlay.index = 0;
-                    }
-                    2 => {
-                        self.open_settings_profile_manager();
-                    }
-                    _ => {}
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.close_overlay();
-            }
-            _ => {}
-        }
+        crate::handlers::keys::handle_customize_key(self, code)
     }
 
     /// Apply a profile without firing expensive hooks (image re-rendering).
@@ -1097,14 +1028,14 @@ impl App {
     /// Currently just the mouse-capture toggle: applying it immediately on each
     /// keystroke would clobber input mid-edit, so we queue the new state and
     /// `main.rs` flips the terminal mode on the next tick.
-    fn fire_deferred_settings_hooks(&mut self) {
+    pub(crate) fn fire_deferred_settings_hooks(&mut self) {
         if self.mouse.enabled != self.settings_overlay.mouse_snapshot {
             self.mouse.pending_toggle = Some(self.mouse.enabled);
         }
     }
 
     /// Open the settings profile manager overlay.
-    fn open_settings_profile_manager(&mut self) {
+    pub(crate) fn open_settings_profile_manager(&mut self) {
         self.settings_profiles.available = crate::settings_profile::all_settings_profiles();
         self.settings_profiles.index = self
             .settings_profiles
