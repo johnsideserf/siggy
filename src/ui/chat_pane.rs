@@ -36,6 +36,10 @@ use crate::signal::types::{PollData, PollVote, Reaction, TrustLevel};
 use crate::theme::Theme;
 use ratatui::layout::Alignment;
 
+fn sixel_placeholder_line(line: &Line<'static>) -> Line<'static> {
+    Line::from(Span::raw(" ".repeat(line.width())))
+}
+
 /// Convert emoji in a string to text emoticons or :shortcodes:.
 /// Common emoji get classic emoticons (e.g. :) <3), others get :shortcode: format.
 fn emoji_to_text(input: &str) -> String {
@@ -265,6 +269,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     app.mouse.messages_area = inner;
+    app.image.render_width_cap = u32::from(inner.width.saturating_sub(2).max(1));
 
     let messages = match &app.active_conversation {
         Some(id) => {
@@ -318,6 +323,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Track images for native protocol overlay: (first_line_index, line_count, path)
     let use_native = app.image.image_mode == crate::domain::ImageMode::Native
         && app.image.image_protocol != ImageProtocol::Halfblock;
+    let use_sixel = use_native && app.image.image_protocol == ImageProtocol::Sixel;
     let mut image_records: Vec<(usize, usize, String)> = Vec::new();
 
     for (i, msg) in visible.iter().enumerate() {
@@ -506,7 +512,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 let first_idx = lines.len();
                 let count = image_lines.len();
                 for line in image_lines {
-                    lines.push(line.clone());
+                    if use_sixel {
+                        lines.push(sixel_placeholder_line(line));
+                    } else {
+                        lines.push(line.clone());
+                    }
                     line_msg_idx.push(Some(msg_index));
                 }
                 // Record for native protocol overlay
@@ -556,7 +566,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     let first_idx = lines.len();
                     let count = img_lines.len();
                     for line in img_lines {
-                        lines.push(line.clone());
+                        if use_sixel {
+                            lines.push(sixel_placeholder_line(line));
+                        } else {
+                            lines.push(line.clone());
+                        }
                         line_msg_idx.push(Some(msg_index));
                     }
                     if use_native && let Some(ref path) = msg.preview_image_path {

@@ -29,6 +29,11 @@ desktop_notifications = false
 notification_preview = "full"
 clipboard_clear_seconds = 30
 image_mode = "halfblock"
+image_max_width = 40
+preview_image_max_width = 30
+image_max_height = 30
+sixel_max_colors = 256
+sixel_diffusion = 0.875
 show_link_previews = true
 date_separators = true
 show_receipts = true
@@ -59,6 +64,11 @@ proxy = ""
 | `notification_preview` | string | `"full"` | Notification content level: `full`, `sender`, or `minimal` |
 | `clipboard_clear_seconds` | int | `30` | Seconds before clipboard auto-clears after copying (0 = disabled) |
 | `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
+| `image_max_width` | int | `40` | Maximum attachment image width in terminal cells |
+| `preview_image_max_width` | int | `30` | Maximum link preview thumbnail width in terminal cells |
+| `image_max_height` | int | `30` | Maximum image height in terminal cell rows |
+| `sixel_max_colors` | int | `256` | Maximum Sixel palette colors (`2`-`256`) |
+| `sixel_diffusion` | float | `0.875` | Sixel Floyd-Steinberg diffusion strength (`0.0`-`1.0`) |
 | `show_link_previews` | bool | `true` | Show link preview cards for URLs in messages |
 | `date_separators` | bool | `true` | Show date separator lines between messages from different days |
 | `show_receipts` | bool | `true` | Show delivery/read receipt status symbols |

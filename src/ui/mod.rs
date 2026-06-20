@@ -160,12 +160,12 @@ pub(super) fn centered_popup(
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.image.link_url_map.clear();
+    app.image.visible_images.clear();
     if app.lock.is_locked() {
         crate::ui::overlays::lock_screen::draw_lock_screen(frame, app, frame.area());
         return;
     }
-    app.image.link_url_map.clear();
-    app.image.visible_images.clear();
     let size = frame.area();
     let terminal_width = size.width;
 
