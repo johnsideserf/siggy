@@ -883,4 +883,52 @@ mod tests {
         let display = display.unwrap();
         assert!(display.starts_with("cargo"));
     }
+
+    // --- validate_phone (#503) ---
+
+    #[test]
+    fn validate_phone_accepts_e164() {
+        assert!(validate_phone("+15551234567").is_ok());
+        // Leading/trailing whitespace is trimmed before validation.
+        assert!(validate_phone("  +15551234567  ").is_ok());
+        // Minimum accepted length is 8 chars including the '+'.
+        assert!(validate_phone("+1234567").is_ok());
+    }
+
+    #[test]
+    fn validate_phone_rejects_empty() {
+        assert_eq!(
+            validate_phone("   ").unwrap_err(),
+            "Phone number cannot be empty"
+        );
+    }
+
+    #[test]
+    fn validate_phone_requires_plus_prefix() {
+        assert_eq!(
+            validate_phone("15551234567").unwrap_err(),
+            "Must start with + (E.164 format)"
+        );
+    }
+
+    #[test]
+    fn validate_phone_rejects_too_short() {
+        assert_eq!(
+            validate_phone("+123").unwrap_err(),
+            "Phone number too short"
+        );
+    }
+
+    #[test]
+    fn validate_phone_rejects_non_digits() {
+        assert_eq!(
+            validate_phone("+1555abc4567").unwrap_err(),
+            "Only digits allowed after +"
+        );
+        // A second '+' after the first is also a non-digit.
+        assert_eq!(
+            validate_phone("+1555+234567").unwrap_err(),
+            "Only digits allowed after +"
+        );
+    }
 }
