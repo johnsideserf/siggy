@@ -51,7 +51,7 @@ pub const PASTE_CLEANUP_SENTINEL_SECS: u64 = 3600;
 pub(crate) const PASTE_CLEANUP_DELAY_SECS: u64 = 10;
 
 /// Snap a byte position to the nearest valid char boundary at or before `pos`.
-fn floor_char_boundary(buf: &str, pos: usize) -> usize {
+pub(crate) fn floor_char_boundary(buf: &str, pos: usize) -> usize {
     let pos = pos.min(buf.len());
     if buf.is_char_boundary(pos) {
         return pos;
@@ -2103,7 +2103,7 @@ impl App {
     }
 
     /// Clear sidebar filter state and restore the full list.
-    fn clear_sidebar_filter(&mut self) {
+    pub(crate) fn clear_sidebar_filter(&mut self) {
         if self.is_overlay(OverlayKind::SidebarFilter) {
             self.close_overlay();
         }
@@ -3690,102 +3690,10 @@ impl App {
 
     /// Handle a mouse event. Returns an optional SendRequest (currently unused but future-proof).
     pub fn handle_mouse_event(&mut self, event: MouseEvent) -> Option<SendRequest> {
-        if !self.mouse.enabled {
-            return None;
-        }
-
-        // When overlays are open, translate scroll to j/k navigation and Esc on outside click
-        if self.has_overlay() {
-            match event.kind {
-                MouseEventKind::ScrollUp => self.handle_overlay_key(KeyCode::Char('k')),
-                MouseEventKind::ScrollDown => self.handle_overlay_key(KeyCode::Char('j')),
-                _ => (false, None),
-            };
-            return None;
-        }
-
-        match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_left_click(event.column, event.row);
-            }
-            MouseEventKind::ScrollUp
-                if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
-            {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(3);
-                self.scroll.focused_index = None;
-            }
-            MouseEventKind::ScrollDown
-                if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
-            {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(3);
-                self.scroll.focused_index = None;
-            }
-            _ => {}
-        }
-        None
+        crate::handlers::keys::handle_mouse_event(self, event)
     }
 
-    fn handle_left_click(&mut self, col: u16, row: u16) {
-        // 1. Check link regions first (highest priority — links overlay everything)
-        for link in &self.image.link_regions {
-            if row == link.y && col >= link.x && col < link.x + link.width {
-                let url = link.url.clone();
-                self.open_url(&url);
-                return;
-            }
-        }
-
-        // 2. Sidebar click — switch conversation
-        if let Some(inner) = self.mouse.sidebar_inner
-            && is_in_rect(col, row, inner)
-        {
-            let index = (row - inner.y) as usize;
-            let sidebar_list = if self.is_overlay(OverlayKind::SidebarFilter)
-                && !self.sidebar_filtered.is_empty()
-            {
-                &self.sidebar_filtered
-            } else {
-                &self.store.conversation_order
-            };
-            if index < sidebar_list.len() {
-                let conv_id = sidebar_list[index].clone();
-                self.clear_sidebar_filter();
-                self.join_conversation(&conv_id);
-            }
-            return;
-        }
-
-        // 3. Input area click — position cursor and enter Insert mode
-        if is_in_rect(col, row, self.mouse.input_area) {
-            self.mode = InputMode::Insert;
-            // Content starts after left border (1) + prefix
-            let content_start_col = self.mouse.input_area.x + 1 + self.mouse.input_prefix_len;
-            if col >= content_start_col {
-                let text_width = (self.mouse.input_area.width.saturating_sub(2)) as usize
-                    - self.mouse.input_prefix_len as usize;
-                let input_scroll = floor_char_boundary(
-                    &self.input.buffer,
-                    self.input.cursor.saturating_sub(text_width),
-                );
-                let target_col = (col - content_start_col) as usize;
-                // Walk characters to find the byte offset for the target column
-                let mut byte_pos = input_scroll;
-                for (col_pos, ch) in self.input.buffer[input_scroll..].chars().enumerate() {
-                    if col_pos >= target_col {
-                        break;
-                    }
-                    byte_pos += ch.len_utf8();
-                }
-                self.input.cursor = byte_pos.min(self.input.buffer.len());
-            } else {
-                self.input.cursor = 0;
-            }
-        }
-    }
-
-    fn open_url(&mut self, url: &str) {
+    pub(crate) fn open_url(&mut self, url: &str) {
         // Only allow http/https URLs to prevent local file access via file:// etc.
         if !url.starts_with("http://") && !url.starts_with("https://") {
             self.status_message = "Only http/https URLs can be opened".to_string();
@@ -3918,7 +3826,7 @@ impl App {
 }
 
 /// Simple point-in-rect hit test for mouse coordinates.
-fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
+pub(crate) fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
