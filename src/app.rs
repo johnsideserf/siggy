@@ -4140,85 +4140,12 @@ impl App {
     /// Handle a key press in the delete confirmation overlay.
     /// Returns Some(SendRequest::RemoteDelete) if remote delete is requested.
     pub fn handle_delete_confirm_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('y') => {
-                self.close_overlay();
-                let conv_id = self.active_conversation.clone()?;
-                let conv = self.store.conversations.get(&conv_id)?;
-                let is_group = conv.is_group;
-                let index = self
-                    .scroll
-                    .focused_index
-                    .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
-                let msg = conv.messages.get(index)?;
-                let is_outgoing = msg.is_outgoing();
-                let target_timestamp = msg.timestamp_ms;
-
-                // Apply local delete
-                let conv = self.store.conversations.get_mut(&conv_id)?;
-                let msg = conv.messages.get_mut(index)?;
-                msg.is_deleted = true;
-                msg.body = "[deleted]".to_string();
-                msg.reactions.clear();
-                self.db_warn_visible(
-                    self.db.mark_message_deleted(&conv_id, target_timestamp),
-                    "mark_message_deleted",
-                );
-
-                // Send remote delete only for outgoing messages
-                if is_outgoing {
-                    return Some(SendRequest::RemoteDelete {
-                        recipient: conv_id,
-                        is_group,
-                        target_timestamp,
-                    });
-                }
-                None
-            }
-            KeyCode::Char('l') => {
-                // Local-only delete (for outgoing messages)
-                self.close_overlay();
-                let conv_id = self.active_conversation.clone()?;
-                let conv = self.store.conversations.get(&conv_id)?;
-                let index = self
-                    .scroll
-                    .focused_index
-                    .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
-                let msg = conv.messages.get(index)?;
-                let target_timestamp = msg.timestamp_ms;
-
-                let conv = self.store.conversations.get_mut(&conv_id)?;
-                let msg = conv.messages.get_mut(index)?;
-                msg.is_deleted = true;
-                msg.body = "[deleted]".to_string();
-                msg.reactions.clear();
-                self.db_warn_visible(
-                    self.db.mark_message_deleted(&conv_id, target_timestamp),
-                    "mark_message_deleted",
-                );
-                None
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                self.close_overlay();
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_delete_confirm_key(self, code)
     }
 
     /// Handle a key press in the delete-conversation confirmation overlay.
     pub fn handle_delete_conversation_confirm_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('y') => {
-                self.close_overlay();
-                self.delete_active_conversation()
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                self.close_overlay();
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_delete_conversation_confirm_key(self, code)
     }
 
     /// Remove the active conversation from local state, the database, and any
