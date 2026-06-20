@@ -40,4 +40,11 @@ pub struct ScrollState {
     /// the scrollback can extend within already-loaded memory without a DB
     /// page load.
     pub can_extend_in_memory: bool,
+    /// Cached per-line wrapped heights for the message pane, with the hash of
+    /// (pane width + rendered line text) they were computed for. Word-wrapping
+    /// every line through ratatui each frame is the dominant render cost
+    /// (#490); heights only change when content or width does, not on scroll
+    /// or composer keystrokes, so a matching key lets the renderer reuse them.
+    pub height_cache_key: Option<u64>,
+    pub height_cache: Vec<usize>,
 }

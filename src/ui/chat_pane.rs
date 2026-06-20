@@ -36,9 +36,38 @@ use crate::signal::types::{PollData, PollVote, Reaction, TrustLevel};
 use crate::theme::Theme;
 use ratatui::layout::Alignment;
 
+/// Hash of everything that affects per-line wrapped height: the pane width and
+/// each line's text. Wrapping is by display width of the concatenated line text,
+/// independent of span boundaries and style, so we hash span contents back to
+/// back with only a per-line terminator. Used to cache `line_heights` across
+/// frames (#490); a matching key means the heights cannot have changed.
+fn line_heights_cache_key(width: u16, lines: &[Line<'_>]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    width.hash(&mut h);
+    lines.len().hash(&mut h);
+    for line in lines {
+        // Raw byte writes (not str::hash) so span boundaries within a line are
+        // transparent: ["foo","bar"] keys the same as ["foobar"], matching how
+        // wrapping sees the concatenated line text.
+        for span in &line.spans {
+            h.write(span.content.as_bytes());
+        }
+        // Per-line terminator so ["ab"] differs from ["a"] + ["b"].
+        h.write_u8(0xFF);
+    }
+    h.finish()
+}
+
 /// Convert emoji in a string to text emoticons or :shortcodes:.
 /// Common emoji get classic emoticons (e.g. :) <3), others get :shortcode: format.
 fn emoji_to_text(input: &str) -> String {
+    // Fast path: the conversion only ever touches non-ASCII codepoints, so an
+    // all-ASCII body (the common case) needs no work and no allocation churn
+    // beyond the copy (#490).
+    if input.is_ascii() {
+        return input.to_string();
+    }
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
@@ -634,15 +663,28 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // WordWrapper on realistic text and shifts Kitty placeholder cells off their
     // halfblock origins, which caused images to clip into neighboring messages.
     let inner_w_u16 = inner.width.max(1);
-    let line_heights: Vec<usize> = lines
-        .iter()
-        .map(|line| {
-            Paragraph::new(line.clone())
-                .wrap(Wrap { trim: false })
-                .line_count(inner_w_u16)
-                .max(1)
-        })
-        .collect();
+    // Wrapping every line through ratatui (and cloning each into a throwaway
+    // Paragraph) is the dominant per-frame cost. The heights depend only on the
+    // pane width and the line text, so cache them across frames and recompute
+    // only when that key changes -- not on scroll, cursor, or composer keys
+    // (#490). The cached vec is the exact value the uncached path would build.
+    let cache_key = line_heights_cache_key(inner_w_u16, &lines);
+    let line_heights: Vec<usize> = if app.scroll.height_cache_key == Some(cache_key) {
+        app.scroll.height_cache.clone()
+    } else {
+        let heights: Vec<usize> = lines
+            .iter()
+            .map(|line| {
+                Paragraph::new(line.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(inner_w_u16)
+                    .max(1)
+            })
+            .collect();
+        app.scroll.height_cache = heights.clone();
+        app.scroll.height_cache_key = Some(cache_key);
+        heights
+    };
     let content_height: usize = line_heights.iter().sum();
 
     // Sync viewport pin (#394): when a pin anchor was captured at sync start,
@@ -1044,6 +1086,65 @@ mod tests {
     use super::*;
     use crate::signal::types::{PollData, PollOption, PollVote, Reaction};
     use crate::theme::default_theme;
+
+    // --- line_heights_cache_key (#490) ---
+
+    fn line(text: &str) -> Line<'static> {
+        Line::from(text.to_string())
+    }
+
+    #[test]
+    fn cache_key_stable_for_identical_input() {
+        let lines = [line("hello"), line("world")];
+        assert_eq!(
+            line_heights_cache_key(80, &lines),
+            line_heights_cache_key(80, &lines)
+        );
+    }
+
+    #[test]
+    fn cache_key_changes_with_width() {
+        let lines = [line("hello world")];
+        assert_ne!(
+            line_heights_cache_key(80, &lines),
+            line_heights_cache_key(40, &lines)
+        );
+    }
+
+    #[test]
+    fn cache_key_changes_with_content() {
+        assert_ne!(
+            line_heights_cache_key(80, &[line("hello")]),
+            line_heights_cache_key(80, &[line("hallo")])
+        );
+    }
+
+    #[test]
+    fn cache_key_distinguishes_line_split() {
+        // Same total text, split across one vs two lines, must differ: they
+        // wrap (and occupy rows) differently.
+        let one = [line("ab")];
+        let two = [line("a"), line("b")];
+        assert_ne!(
+            line_heights_cache_key(80, &one),
+            line_heights_cache_key(80, &two)
+        );
+    }
+
+    #[test]
+    fn cache_key_ignores_span_boundaries_within_a_line() {
+        // Wrapping sees the concatenated line text, so a line built from two
+        // spans must key the same as one span with the joined text.
+        let split = [Line::from(vec![
+            Span::raw("foo".to_string()),
+            Span::raw("bar".to_string()),
+        ])];
+        let joined = [line("foobar")];
+        assert_eq!(
+            line_heights_cache_key(80, &split),
+            line_heights_cache_key(80, &joined)
+        );
+    }
 
     // --- compute_sync_pin_offset ---
 
