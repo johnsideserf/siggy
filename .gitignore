@@ -14,3 +14,6 @@ signal-tui-debug.log
 screenshots/
 .worktrees/
 .context/
+# Local sprint/working docs (kept out of git and the published crate)
+PLAN.md
+REVIEW.md

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="siggy-banner.png" alt="siggy" width="600">
+  <img src="https://raw.githubusercontent.com/johnsideserf/siggy/master/siggy-banner.png" alt="siggy" width="600">
 </p>
 
 <p align="center">
@@ -44,7 +44,7 @@
 
 A terminal-based Signal messenger client with an IRC aesthetic. Wraps [signal-cli](https://github.com/AsamK/signal-cli) via JSON-RPC for the messaging backend.
 
-![siggy screenshot](screenshot.png)
+![siggy screenshot](https://raw.githubusercontent.com/johnsideserf/siggy/master/screenshot.png)
 
 ## Install
 
