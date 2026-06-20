@@ -16,7 +16,7 @@ use crate::app::{
     PinPending, QUICK_REACTIONS, SETTINGS, SETTINGS_VISUAL_ORDER, SendRequest,
 };
 use crate::autocomplete::AutocompleteMode;
-use crate::domain::EmojiPickerSource;
+use crate::domain::{EmojiPickerAction, EmojiPickerSource};
 use crate::keybindings;
 use crate::list_overlay::{ListKeyAction, classify_list_key};
 
@@ -297,6 +297,134 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Route a key press to the handler for the currently active overlay. Returns
+/// `(handled, maybe_send)` -- `handled` is false only when no overlay is open.
+pub fn handle_overlay_key(app: &mut App, code: KeyCode) -> (bool, Option<SendRequest>) {
+    let Some(kind) = app.active_overlay() else {
+        return (false, None);
+    };
+    match kind {
+        OverlayKind::SidebarFilter => {
+            app.handle_sidebar_filter_key(code);
+            (true, None)
+        }
+        OverlayKind::PollVote => {
+            let send = app.handle_poll_vote_key(code);
+            (true, send)
+        }
+        OverlayKind::PinDuration => {
+            let send = app.handle_pin_duration_key(code);
+            (true, send)
+        }
+        OverlayKind::ActionMenu => {
+            let send = app.handle_action_menu_key(code);
+            (true, send)
+        }
+        OverlayKind::DeleteConfirm => {
+            let send = app.handle_delete_confirm_key(code);
+            (true, send)
+        }
+        OverlayKind::DeleteConversationConfirm => {
+            let send = app.handle_delete_conversation_confirm_key(code);
+            (true, send)
+        }
+        OverlayKind::FilePicker => {
+            app.handle_file_browser_key(code);
+            (true, None)
+        }
+        OverlayKind::EmojiPicker => match app.emoji_picker.handle_key(code) {
+            EmojiPickerAction::Select(emoji) => {
+                let source = app.emoji_picker.source;
+                app.emoji_picker.close();
+                match source {
+                    EmojiPickerSource::Input => {
+                        app.input.buffer.insert_str(app.input.cursor, &emoji);
+                        app.input.cursor += emoji.len();
+                        (true, None)
+                    }
+                    EmojiPickerSource::Reaction => {
+                        let send = app.prepare_reaction_send_emoji(&emoji);
+                        (true, send)
+                    }
+                }
+            }
+            EmojiPickerAction::Close => {
+                let was_reaction = app.emoji_picker.source == EmojiPickerSource::Reaction;
+                app.emoji_picker.close();
+                if was_reaction {
+                    app.open_overlay(OverlayKind::ReactionPicker);
+                }
+                (true, None)
+            }
+            EmojiPickerAction::None => (true, None),
+        },
+        OverlayKind::ReactionPicker => {
+            let send = app.handle_reaction_picker_key(code);
+            (true, send)
+        }
+        OverlayKind::MessageRequest => {
+            let send = app.handle_message_request_key(code);
+            (true, send)
+        }
+        OverlayKind::GroupMenu => {
+            let send = app.handle_group_menu_key(code);
+            (true, send)
+        }
+        OverlayKind::About => {
+            app.close_overlay();
+            (true, None)
+        }
+        OverlayKind::Profile => {
+            let send = app.handle_profile_key(code);
+            (true, send)
+        }
+        OverlayKind::Help => {
+            app.close_overlay();
+            (true, None)
+        }
+        OverlayKind::Verify => {
+            let send = app.handle_verify_key(code);
+            (true, send)
+        }
+        OverlayKind::Forward => {
+            let send = app.handle_forward_key(code);
+            (true, send)
+        }
+        OverlayKind::Contacts => {
+            app.handle_contacts_key(code);
+            (true, None)
+        }
+        OverlayKind::Search => {
+            app.handle_search_key(code);
+            (true, None)
+        }
+        OverlayKind::SettingsProfiles => {
+            app.handle_settings_profile_manager_key(code);
+            (true, None)
+        }
+        OverlayKind::ThemePicker => {
+            app.handle_theme_key(code);
+            (true, None)
+        }
+        OverlayKind::Keybindings => {
+            app.handle_keybindings_key(code);
+            (true, None)
+        }
+        OverlayKind::Customize => {
+            app.handle_customize_key(code);
+            (true, None)
+        }
+        OverlayKind::Settings => {
+            app.handle_settings_key(code);
+            (true, None)
+        }
+        OverlayKind::Autocomplete => {
+            let send = app.handle_autocomplete_key(code);
+            (true, send)
+        }
     }
 }
 
