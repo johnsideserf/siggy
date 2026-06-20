@@ -12,7 +12,8 @@ use chrono::Utc;
 use crossterm::event::KeyCode;
 
 use crate::app::{
-    App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, QUICK_REACTIONS, SendRequest,
+    ActionMenuHint, App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, QUICK_REACTIONS,
+    SendRequest,
 };
 use crate::domain::EmojiPickerSource;
 use crate::keybindings;
@@ -293,6 +294,51 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             app.close_overlay();
             app.poll_vote.pending = None;
             None
+        }
+        _ => None,
+    }
+}
+
+/// Handle a key press while the per-message action menu overlay is open.
+pub fn handle_action_menu_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    let item_count = app.action_menu_items().len();
+    if item_count == 0 {
+        app.close_overlay();
+        return None;
+    }
+    let action = classify_list_key(code, false);
+    if crate::list_overlay::apply_nav(&action, &mut app.action_menu.index, item_count) {
+        return None;
+    }
+    match action {
+        ListKeyAction::Select => {
+            let items = app.action_menu_items();
+            if let Some(action) = items.get(app.action_menu.index) {
+                let hint = action.key_hint;
+                app.close_overlay();
+                app.execute_action_by_hint(hint)
+            } else {
+                app.close_overlay();
+                None
+            }
+        }
+        ListKeyAction::Close => {
+            app.close_overlay();
+            None
+        }
+        ListKeyAction::None => {
+            // Action menu shortcut keys: parse the keypress into a hint, then
+            // check that the hint corresponds to an action currently present in
+            // the menu (the menu items vary by message state).
+            let KeyCode::Char(c) = code else { return None };
+            let hint = ActionMenuHint::from_char(c)?;
+            let items = app.action_menu_items();
+            if items.iter().any(|a| a.key_hint == hint) {
+                app.close_overlay();
+                app.execute_action_by_hint(hint)
+            } else {
+                None
+            }
         }
         _ => None,
     }
