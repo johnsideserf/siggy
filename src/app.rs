@@ -2451,66 +2451,7 @@ impl App {
     /// Handle global keys that work in both Normal and Insert mode.
     /// Returns true if the key was consumed.
     pub fn handle_global_key(&mut self, modifiers: KeyModifiers, code: KeyCode) -> bool {
-        if self.lock.is_locked() {
-            return self.handle_lock_key(code);
-        }
-        let action = self
-            .keybindings
-            .resolve(modifiers, code, BindingMode::Global);
-        if self.quit_confirm && !matches!(action, Some(KeyAction::Quit)) {
-            self.quit_confirm = false;
-            self.update_status();
-        }
-        match action {
-            Some(KeyAction::Quit) => {
-                if self.input.buffer.is_empty() || self.quit_confirm {
-                    self.should_quit = true;
-                } else {
-                    self.quit_confirm = true;
-                }
-                true
-            }
-            Some(KeyAction::NextConversation) if !self.is_overlay(OverlayKind::Autocomplete) => {
-                self.next_conversation();
-                true
-            }
-            Some(KeyAction::PrevConversation) => {
-                self.prev_conversation();
-                true
-            }
-            Some(KeyAction::ResizeSidebarLeft) => {
-                self.resize_sidebar(-2);
-                true
-            }
-            Some(KeyAction::ResizeSidebarRight) => {
-                self.resize_sidebar(2);
-                true
-            }
-            Some(KeyAction::PageScrollUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(5);
-                self.scroll.focused_index = None;
-                true
-            }
-            Some(KeyAction::PageScrollDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(5);
-                self.scroll.focused_index = None;
-                true
-            }
-            Some(KeyAction::SidebarSearch) => {
-                self.sidebar_visible = true;
-                self.open_overlay(OverlayKind::SidebarFilter);
-                self.sidebar_filter.clear();
-                self.sidebar_filtered.clear();
-                true
-            }
-            Some(KeyAction::Lock) => {
-                self.lock_now();
-                true
-            }
-            _ => false,
-        }
+        crate::handlers::keys::handle_global_key(self, modifiers, code)
     }
 
     /// Handle overlay keys (help, contacts, settings, autocomplete).
