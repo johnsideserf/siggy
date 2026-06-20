@@ -60,6 +60,7 @@ proxy = ""
 | `notification_preview` | string | `"full"` | Notification content level: `full`, `sender`, or `minimal` |
 | `clipboard_clear_seconds` | int | `30` | Seconds before clipboard auto-clears after copying (0 = disabled) |
 | `lock_timeout` | int | `0` | Minutes of keyboard inactivity before the session auto-locks (0 = disabled) |
+| `db_path` | string | *(unset)* | Override the message database path. Absolute paths are used as-is; relative paths resolve under the data dir. Leave unset for the default `siggy.db`. Used to run multiple accounts side by side (see below) |
 | `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
 | `show_link_previews` | bool | `true` | Show link preview cards for URLs in messages |
 | `date_separators` | bool | `true` | Show date separator lines between messages from different days |
@@ -158,3 +159,31 @@ siggy --incognito
 Incognito mode replaces the on-disk SQLite database with an in-memory database.
 No messages, conversations, or read markers are saved. When you exit, all data is
 gone. The status bar shows a bold magenta **incognito** indicator.
+
+## Multiple accounts
+
+siggy runs one account per process, but you can use several accounts side by side
+by giving each its own config file (with its own `account`) and its own database
+via `db_path`, then selecting the config with `-c`:
+
+```toml
+# ~/.config/siggy/personal.toml
+account = "+15551110000"
+db_path = "personal.db"        # resolves to <data dir>/siggy/personal.db
+```
+
+```toml
+# ~/.config/siggy/work.toml
+account = "+15552220000"
+db_path = "work.db"
+```
+
+```sh
+siggy -c ~/.config/siggy/personal.toml
+siggy -c ~/.config/siggy/work.toml
+```
+
+Each account keeps a separate message history. `db_path` accepts an absolute
+path too. Without `db_path` the default `siggy.db` is used, so existing
+single-account setups are unaffected. The non-interactive `--list` honors the
+selected config's `db_path` as well.

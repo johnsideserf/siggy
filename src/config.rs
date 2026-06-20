@@ -116,6 +116,13 @@ pub struct Config {
     #[serde(default)]
     pub lock_timeout: u64,
 
+    /// Override the message database path (for running multiple accounts side by
+    /// side, each with its own config + db). Absolute paths are used as-is;
+    /// relative paths resolve under the data dir. `None` keeps the default
+    /// `siggy.db`, so existing single-account setups are unaffected (#260).
+    #[serde(default)]
+    pub db_path: Option<String>,
+
     /// Image display mode (native / halfblock / none). `None` here means the
     /// field was absent from the on-disk TOML and migration should fill it in
     /// from the legacy `inline_images` / `native_images` flags.
@@ -249,6 +256,7 @@ impl Default for Config {
             notification_preview: NotificationPreview::Full,
             clipboard_clear_seconds: default_clipboard_clear_seconds(),
             lock_timeout: 0,
+            db_path: None,
             image_mode: Some(ImageMode::Halfblock),
             cell_pixel_width: 0,
             cell_pixel_height: 0,

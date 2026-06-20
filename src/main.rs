@@ -113,6 +113,26 @@ async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Resul
     }
 }
 
+/// Resolve the message database path for `config` (#260): the custom `db_path`
+/// (absolute as-is, relative under the data dir) or the default `siggy.db`. Does
+/// not perform the legacy signal-tui.db rename (that is a startup-only concern).
+fn resolve_db_path(config: &Config) -> std::path::PathBuf {
+    let db_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("siggy");
+    match config.db_path.as_deref().filter(|p| !p.is_empty()) {
+        Some(custom) => {
+            let p = std::path::Path::new(custom);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                db_dir.join(p)
+            }
+        }
+        None => db_dir.join("siggy.db"),
+    }
+}
+
 /// Stream incoming messages to stdout, one tab-separated line each
 /// (`timestamp_ms`, sender, group-id-or-empty, body), until signal-cli
 /// disconnects or the user interrupts (Ctrl-C) (#257). Outgoing/sync and
@@ -378,10 +398,7 @@ async fn main() -> Result<()> {
     // (no signal-cli spawn) and prints tab-separated rows: unread, type, name, id
     // -- no header, so it pipes cleanly into grep/cut/awk.
     if list {
-        let db_path = dirs::data_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("siggy")
-            .join("siggy.db");
+        let db_path = resolve_db_path(&config);
         if !db_path.exists() {
             eprintln!(
                 "no database at {} (run siggy once to create it)",
@@ -542,8 +559,21 @@ async fn run_main_flow(
 
         std::fs::create_dir_all(&db_dir)?;
         set_dir_permissions(&db_dir);
-        let db_path = db_dir.join("siggy.db");
-        fs_migrate::migrate_path(&db_dir.join("signal-tui.db"), &db_path);
+        let db_path = resolve_db_path(config);
+        if config
+            .db_path
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .is_some()
+        {
+            // Custom per-account db (#260) may live outside db_dir; ensure its
+            // parent exists. No legacy rename - that only applies to the default.
+            if let Some(parent) = db_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        } else {
+            fs_migrate::migrate_path(&db_dir.join("signal-tui.db"), &db_path);
+        }
         set_file_permissions(&db_path);
         db::Database::open(&db_path)?
     };
