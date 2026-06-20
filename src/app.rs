@@ -321,8 +321,51 @@ pub enum GroupMenuState {
 /// An item in the group-menu overlay (Manage members / Rename / Leave / ...).
 pub struct GroupMenuItem {
     pub label: &'static str,
-    pub key_hint: &'static str,
+    pub key_hint: GroupMenuHint,
     pub nerd_icon: &'static str,
+}
+
+/// Compile-time-checked discriminator for the group menu, mirroring
+/// [`ActionMenuHint`]. Replaces the previous stringly-typed `key_hint` whose
+/// `transition_group_menu` match had a silent `_ => {}` fallthrough: a typo in
+/// either the builder or the dispatcher compiled fine and produced a menu item
+/// that did nothing. Now adding an entry forces the exhaustive match to handle
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMenuHint {
+    Members,
+    AddMember,
+    RemoveMember,
+    Rename,
+    Leave,
+    Create,
+}
+
+impl GroupMenuHint {
+    /// Single-letter shortcut, used both as the display hint and the binding.
+    pub fn key_char(self) -> char {
+        match self {
+            Self::Members => 'm',
+            Self::AddMember => 'a',
+            Self::RemoveMember => 'r',
+            Self::Rename => 'n',
+            Self::Leave => 'l',
+            Self::Create => 'c',
+        }
+    }
+
+    /// Parse a keypress into a hint, or `None` if it maps to no menu item.
+    pub fn from_char(c: char) -> Option<Self> {
+        Some(match c {
+            'm' => Self::Members,
+            'a' => Self::AddMember,
+            'r' => Self::RemoveMember,
+            'n' => Self::Rename,
+            'l' => Self::Leave,
+            'c' => Self::Create,
+            _ => return None,
+        })
+    }
 }
 
 /// An item in the per-message action-menu overlay (Reply / Edit / React / ...).
@@ -1665,34 +1708,34 @@ impl App {
             vec![
                 GroupMenuItem {
                     label: "Members",
-                    key_hint: "m",
+                    key_hint: GroupMenuHint::Members,
                     nerd_icon: "\u{f0849}",
                 },
                 GroupMenuItem {
                     label: "Add member",
-                    key_hint: "a",
+                    key_hint: GroupMenuHint::AddMember,
                     nerd_icon: "\u{f0234}",
                 },
                 GroupMenuItem {
                     label: "Remove member",
-                    key_hint: "r",
+                    key_hint: GroupMenuHint::RemoveMember,
                     nerd_icon: "\u{f0235}",
                 },
                 GroupMenuItem {
                     label: "Rename",
-                    key_hint: "n",
+                    key_hint: GroupMenuHint::Rename,
                     nerd_icon: "\u{f03eb}",
                 },
                 GroupMenuItem {
                     label: "Leave",
-                    key_hint: "l",
+                    key_hint: GroupMenuHint::Leave,
                     nerd_icon: "\u{f0a79}",
                 },
             ]
         } else {
             vec![GroupMenuItem {
                 label: "Create group",
-                key_hint: "c",
+                key_hint: GroupMenuHint::Create,
                 nerd_icon: "\u{f0234}",
             }]
         }
@@ -1791,16 +1834,9 @@ impl App {
                         }
                     }
                     KeyCode::Char(c) => {
-                        let hint = match c {
-                            'm' => "m",
-                            'a' => "a",
-                            'r' => "r",
-                            'n' => "n",
-                            'l' => "l",
-                            'c' => "c",
-                            _ => "",
-                        };
-                        if !hint.is_empty() && items.iter().any(|a| a.key_hint == hint) {
+                        if let Some(hint) = GroupMenuHint::from_char(c)
+                            && items.iter().any(|a| a.key_hint == hint)
+                        {
                             self.transition_group_menu(hint);
                         }
                     }
@@ -1999,12 +2035,12 @@ impl App {
     }
 
     /// Transition from the top-level group menu to a sub-state.
-    fn transition_group_menu(&mut self, hint: &str) {
+    fn transition_group_menu(&mut self, hint: GroupMenuHint) {
         self.group_menu.index = 0;
         self.group_menu.filter.clear();
         self.group_menu.input.clear();
         match hint {
-            "m" => {
+            GroupMenuHint::Members => {
                 // Populate member list for display
                 let members: Vec<(String, String)> = self
                     .active_conversation
@@ -2029,17 +2065,17 @@ impl App {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::Members);
             }
-            "a" => {
+            GroupMenuHint::AddMember => {
                 self.refresh_group_add_filter();
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::AddMember);
             }
-            "r" => {
+            GroupMenuHint::RemoveMember => {
                 self.refresh_group_remove_filter();
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::RemoveMember);
             }
-            "n" => {
+            GroupMenuHint::Rename => {
                 // Pre-fill with current group name
                 let name = self
                     .active_conversation
@@ -2051,19 +2087,18 @@ impl App {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::Rename);
             }
-            "l" => {
+            GroupMenuHint::Leave => {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::LeaveConfirm);
             }
-            "c" => {
+            GroupMenuHint::Create => {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::Create);
             }
-            _ => {}
         }
     }
 
-    /// Handle a key press while the reaction picker overlay is open.
+    /// Handle a key press while the message-request overlay is open.
     fn handle_message_request_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         let conv_id = match self.active_conversation.clone() {
             Some(id) => id,
@@ -2466,7 +2501,7 @@ impl App {
         }
     }
 
-    /// Handle a key press while the contacts overlay is open.
+    /// Handle a key press while the safety-number verify overlay is open.
     pub fn handle_verify_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
@@ -9150,6 +9185,23 @@ mod tests {
         let items = app.group_menu_items();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].label, "Create group");
+    }
+
+    // #500: GroupMenuHint replaced a stringly-typed key_hint. key_char and
+    // from_char must round-trip for every variant the menu can show.
+    #[rstest]
+    fn group_menu_hint_char_roundtrip() {
+        for hint in [
+            GroupMenuHint::Members,
+            GroupMenuHint::AddMember,
+            GroupMenuHint::RemoveMember,
+            GroupMenuHint::Rename,
+            GroupMenuHint::Leave,
+            GroupMenuHint::Create,
+        ] {
+            assert_eq!(GroupMenuHint::from_char(hint.key_char()), Some(hint));
+        }
+        assert_eq!(GroupMenuHint::from_char('z'), None);
     }
 
     #[rstest]
