@@ -1,20 +1,8 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-
-/// Replicate the cursor helpers from app.rs to fuzz the same logic.
-fn next_char_pos(buf: &str, pos: usize) -> usize {
-    if pos >= buf.len() {
-        return buf.len();
-    }
-    pos + buf[pos..].chars().next().map_or(1, |c| c.len_utf8())
-}
-
-fn prev_char_pos(buf: &str, pos: usize) -> usize {
-    if pos == 0 {
-        return 0;
-    }
-    pos - buf[..pos].chars().next_back().map_or(1, |c| c.len_utf8())
-}
+// Fuzz the real cursor helpers, not a copy: a divergence in siggy's
+// implementation must show up here (#501).
+use siggy::input::{next_char_pos, prev_char_pos};
 
 fuzz_target!(|data: &[u8]| {
     // Need at least 1 byte for the operation selector

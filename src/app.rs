@@ -31,6 +31,7 @@ use crate::domain::{
 use crate::image_render;
 use crate::image_render::ImageProtocol;
 use crate::input::COMMANDS;
+use crate::input::{next_char_pos, prev_char_pos};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
 use crate::list_overlay::{self, ListKeyAction, classify_list_key};
 use crate::mute::MuteState;
@@ -43,22 +44,6 @@ pub const PASTE_CLEANUP_SENTINEL_SECS: u64 = 3600;
 
 /// How long after send confirmation to wait before deleting a paste temp file.
 pub(crate) const PASTE_CLEANUP_DELAY_SECS: u64 = 10;
-
-/// Find the byte position one character forward from `pos` in `buf`.
-fn next_char_pos(buf: &str, pos: usize) -> usize {
-    if pos >= buf.len() {
-        return buf.len();
-    }
-    pos + buf[pos..].chars().next().map_or(1, |c| c.len_utf8())
-}
-
-/// Find the byte position one character backward from `pos` in `buf`.
-fn prev_char_pos(buf: &str, pos: usize) -> usize {
-    if pos == 0 {
-        return 0;
-    }
-    pos - buf[..pos].chars().next_back().map_or(1, |c| c.len_utf8())
-}
 
 /// Snap a byte position to the nearest valid char boundary at or before `pos`.
 fn floor_char_boundary(buf: &str, pos: usize) -> usize {
