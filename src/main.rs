@@ -62,6 +62,18 @@ use signal::client::SignalClient;
 /// Keyboard polling interval for the main event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(50);
 
+/// How many times to retry spawning signal-cli after the child dies before
+/// giving up and leaving the disconnect error on screen (#497).
+const MAX_RECONNECT_ATTEMPTS: u32 = 6;
+
+/// Exponential backoff before the next signal-cli reconnect attempt, capped at
+/// 30s. `attempt` is 1-based (the delay applied *after* attempt N fails, before
+/// attempt N+1). The first attempt fires immediately on disconnect, so this is
+/// only consulted after a failure.
+fn reconnect_backoff(attempt: u32) -> Duration {
+    Duration::from_secs((1u64 << attempt.min(6)).min(30))
+}
+
 /// Set restrictive permissions (0600) on a sensitive file (Unix only).
 #[cfg(unix)]
 fn set_file_permissions(path: &std::path::Path) {
@@ -1208,6 +1220,26 @@ impl MessagingBackend<'_> {
         }
     }
 
+    /// Attempt to respawn signal-cli and swap it in behind the existing `&mut`
+    /// borrow. Returns true on success. The previous client's child is already
+    /// dead (that is why we are reconnecting), so dropping it here is safe (#497).
+    async fn try_reconnect(&mut self, config: &Config) -> bool {
+        if let MessagingBackend::Signal(sc) = self {
+            match SignalClient::spawn(config).await {
+                Ok(client) => {
+                    **sc = client;
+                    true
+                }
+                Err(e) => {
+                    debug_log::logf(format_args!("reconnect spawn failed: {e}"));
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     fn drain_events(&mut self, app: &mut App) -> bool {
         let MessagingBackend::Signal(sc) = self else {
             return false;
@@ -1327,6 +1359,10 @@ async fn run_app(
         .unwrap_or_else(Instant::now);
     let mut needs_redraw = true;
     let mut last_title: Option<String> = None;
+    // Supervised signal-cli reconnect state (#497). `next_reconnect_at` is the
+    // earliest time the next spawn attempt may run; None means "try now".
+    let mut reconnect_attempts: u32 = 0;
+    let mut next_reconnect_at: Option<Instant> = None;
     // Loop-rate diagnostics: only counted/logged when --debug is on. Helps
     // locate non-converging redraw triggers (see issue #408). Cheap when off.
     let mut diag_last = Instant::now();
@@ -1516,6 +1552,47 @@ async fn run_app(
             }
         }
 
+        // Supervised reconnect: only while disconnected, only for the Signal
+        // backend, and only up to the attempt cap. The first attempt fires
+        // immediately; subsequent ones wait for the backoff (#497).
+        if app.connection_error.is_some()
+            && matches!(backend, MessagingBackend::Signal(_))
+            && reconnect_attempts < MAX_RECONNECT_ATTEMPTS
+        {
+            let now = Instant::now();
+            let due = next_reconnect_at.map(|t| now >= t).unwrap_or(true);
+            if due {
+                reconnect_attempts += 1;
+                app.status_message = format!(
+                    "Reconnecting to signal-cli (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})..."
+                );
+                needs_redraw = true;
+                if backend.try_reconnect(config).await {
+                    reconnect_attempts = 0;
+                    next_reconnect_at = None;
+                    app.connection_error = None;
+                    app.set_connected();
+                    // Re-run the startup sync against the fresh child (best-effort).
+                    if let MessagingBackend::Signal(sc) = &mut backend {
+                        let _ = sc.send_sync_request().await;
+                        let _ = sc.list_contacts().await;
+                        let _ = sc.list_groups().await;
+                        let _ = sc.list_identities().await;
+                    }
+                } else if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+                    app.status_message =
+                        "signal-cli disconnected; reconnect failed. Restart siggy.".to_string();
+                } else {
+                    let delay = reconnect_backoff(reconnect_attempts);
+                    next_reconnect_at = Some(now + delay);
+                    app.status_message = format!(
+                        "signal-cli reconnect failed; retrying in {}s",
+                        delay.as_secs()
+                    );
+                }
+            }
+        }
+
         // Check if initial sync burst has ended
         if app.sync.active && app.sync.should_end() {
             app.end_sync();
@@ -1628,4 +1705,21 @@ async fn run_app(
     execute!(terminal.backend_mut(), crossterm::terminal::SetTitle("")).ok();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_capped() {
+        assert_eq!(reconnect_backoff(1), Duration::from_secs(2));
+        assert_eq!(reconnect_backoff(2), Duration::from_secs(4));
+        assert_eq!(reconnect_backoff(3), Duration::from_secs(8));
+        assert_eq!(reconnect_backoff(4), Duration::from_secs(16));
+        // Capped at 30s, and never overflows the shift for large attempts.
+        assert_eq!(reconnect_backoff(5), Duration::from_secs(30));
+        assert_eq!(reconnect_backoff(6), Duration::from_secs(30));
+        assert_eq!(reconnect_backoff(100), Duration::from_secs(30));
+    }
 }
