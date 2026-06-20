@@ -6394,8 +6394,8 @@ mod tests {
     use super::*;
     use crate::db::Database;
     use crate::signal::types::{
-        Attachment, Contact, Group, IdentityInfo, Mention, PollData, PollOption, SignalEvent,
-        SignalMessage, StyleType, TextStyle, TrustLevel,
+        Attachment, Contact, Group, IdentityInfo, Mention, PollData, PollOption, ReceiptKind,
+        SignalEvent, SignalMessage, StyleType, TextStyle, TrustLevel,
     };
     use crossterm::event::{KeyCode, KeyModifiers};
     use rstest::{fixture, rstest};
@@ -7560,7 +7560,7 @@ mod tests {
         // Delivery receipt
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
+            receipt_type: ReceiptKind::Delivery,
             timestamps: vec![ts_ms],
         });
         assert_eq!(
@@ -7571,7 +7571,7 @@ mod tests {
         // Read receipt — should upgrade
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: conv_id.to_string(),
-            receipt_type: "READ".to_string(),
+            receipt_type: ReceiptKind::Read,
             timestamps: vec![ts_ms],
         });
         assert_eq!(
@@ -7619,7 +7619,7 @@ mod tests {
         // Delivery receipt after Read — should NOT downgrade
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
+            receipt_type: ReceiptKind::Delivery,
             timestamps: vec![ts_ms],
         });
         assert_eq!(
@@ -7972,7 +7972,7 @@ mod tests {
         // Receipt arrives BEFORE SendTimestamp (references server_ts which we don't know yet)
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
+            receipt_type: ReceiptKind::Delivery,
             timestamps: vec![server_ts],
         });
 
@@ -8014,7 +8014,7 @@ mod tests {
         // flag dropped the unmatched sibling outright.
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
+            receipt_type: ReceiptKind::Delivery,
             timestamps: vec![1000, 2000],
         });
 
@@ -8049,7 +8049,7 @@ mod tests {
 
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: conv_id.to_string(),
-            receipt_type: "READ".to_string(),
+            receipt_type: ReceiptKind::Read,
             timestamps: vec![ts],
         });
         assert_eq!(app.pending.receipts.len(), 1);
@@ -11560,7 +11560,7 @@ mod tests {
 
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: "+1".to_string(),
-            receipt_type: "VIEWED".to_string(),
+            receipt_type: ReceiptKind::Viewed,
             timestamps: vec![ts],
         });
 
@@ -11582,7 +11582,7 @@ mod tests {
 
         app.handle_signal_event(SignalEvent::ReceiptReceived {
             sender: "+2".to_string(),
-            receipt_type: "READ".to_string(),
+            receipt_type: ReceiptKind::Read,
             timestamps: vec![ts],
         });
 

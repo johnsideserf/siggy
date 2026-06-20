@@ -46,6 +46,49 @@ impl MessageStatus {
     }
 }
 
+/// Kind of delivery receipt from signal-cli. Replaces a stringly-typed
+/// `receipt_type` whose conversion to [`MessageStatus`] had a silent
+/// `_ => return` for any unrecognized value (#500): a casing or spelling drift
+/// between the parser and the handler dropped receipts silently. The mapping to
+/// `MessageStatus` is now total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiptKind {
+    Delivery,
+    Read,
+    Viewed,
+}
+
+impl ReceiptKind {
+    /// The outgoing-message status this receipt upgrades to.
+    pub fn status(self) -> MessageStatus {
+        match self {
+            Self::Delivery => MessageStatus::Delivered,
+            Self::Read => MessageStatus::Read,
+            Self::Viewed => MessageStatus::Viewed,
+        }
+    }
+
+    /// Wire label, for logging and the older signal-cli `type` string field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Delivery => "DELIVERY",
+            Self::Read => "READ",
+            Self::Viewed => "VIEWED",
+        }
+    }
+
+    /// Parse the older signal-cli `type` string (case-insensitive), or `None`
+    /// for an unrecognized value.
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "DELIVERY" => Some(Self::Delivery),
+            "READ" => Some(Self::Read),
+            "VIEWED" => Some(Self::Viewed),
+            _ => None,
+        }
+    }
+}
+
 /// Trust level for a contact's identity key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustLevel {
@@ -119,7 +162,7 @@ pub enum SignalEvent {
     MessageReceived(SignalMessage),
     ReceiptReceived {
         sender: String,
-        receipt_type: String,
+        receipt_type: ReceiptKind,
         timestamps: Vec<i64>,
     },
     SendTimestamp {
@@ -233,7 +276,8 @@ impl SignalEvent {
                 receipt_type,
                 timestamps,
             } => format!(
-                "ReceiptReceived({receipt_type} from={}, count={})",
+                "ReceiptReceived({} from={}, count={})",
+                receipt_type.as_str(),
                 mask_phone(sender),
                 timestamps.len(),
             ),

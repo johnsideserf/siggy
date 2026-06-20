@@ -201,33 +201,19 @@ fn parse_typing_indicator(envelope: &serde_json::Value) -> Option<SignalEvent> {
 fn parse_receipt_message(envelope: &serde_json::Value) -> Option<SignalEvent> {
     let receipt = envelope.get("receiptMessage")?;
     let sender = envelope_source(envelope);
-    // signal-cli uses boolean fields: isDelivery, isRead, isViewed
-    let receipt_type = if receipt
-        .get("isRead")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        "READ"
-    } else if receipt
-        .get("isViewed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        "VIEWED"
-    } else if receipt
-        .get("isDelivery")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-    {
-        "DELIVERY"
+    // signal-cli uses boolean fields: isDelivery, isRead, isViewed.
+    let bool_field = |k: &str| receipt.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    let receipt_type = if bool_field("isRead") {
+        ReceiptKind::Read
+    } else if bool_field("isViewed") {
+        ReceiptKind::Viewed
+    } else if bool_field("isDelivery") {
+        ReceiptKind::Delivery
     } else {
-        // Fallback: try "type" string field (older signal-cli versions)
-        receipt
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("UNKNOWN")
-    }
-    .to_string();
+        // Fallback: the "type" string field on older signal-cli. An
+        // unrecognized value yields no event rather than a dropped UNKNOWN.
+        ReceiptKind::from_wire(receipt.get("type").and_then(|v| v.as_str())?)?
+    };
     let timestamps: Vec<i64> = receipt
         .get("timestamps")
         .and_then(|v| v.as_array())
