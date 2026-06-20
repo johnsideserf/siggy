@@ -294,6 +294,89 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
     }
 }
 
+/// Handle a key press in the message delete confirmation overlay.
+pub fn handle_delete_confirm_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    match code {
+        KeyCode::Char('y') => {
+            app.close_overlay();
+            let conv_id = app.active_conversation.clone()?;
+            let conv = app.store.conversations.get(&conv_id)?;
+            let is_group = conv.is_group;
+            let index = app
+                .scroll
+                .focused_index
+                .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
+            let msg = conv.messages.get(index)?;
+            let is_outgoing = msg.is_outgoing();
+            let target_timestamp = msg.timestamp_ms;
+
+            // Apply local delete
+            let conv = app.store.conversations.get_mut(&conv_id)?;
+            let msg = conv.messages.get_mut(index)?;
+            msg.is_deleted = true;
+            msg.body = "[deleted]".to_string();
+            msg.reactions.clear();
+            app.db_warn_visible(
+                app.db.mark_message_deleted(&conv_id, target_timestamp),
+                "mark_message_deleted",
+            );
+
+            // Send remote delete only for outgoing messages
+            if is_outgoing {
+                return Some(SendRequest::RemoteDelete {
+                    recipient: conv_id,
+                    is_group,
+                    target_timestamp,
+                });
+            }
+            None
+        }
+        KeyCode::Char('l') => {
+            // Local-only delete (for outgoing messages)
+            app.close_overlay();
+            let conv_id = app.active_conversation.clone()?;
+            let conv = app.store.conversations.get(&conv_id)?;
+            let index = app
+                .scroll
+                .focused_index
+                .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
+            let msg = conv.messages.get(index)?;
+            let target_timestamp = msg.timestamp_ms;
+
+            let conv = app.store.conversations.get_mut(&conv_id)?;
+            let msg = conv.messages.get_mut(index)?;
+            msg.is_deleted = true;
+            msg.body = "[deleted]".to_string();
+            msg.reactions.clear();
+            app.db_warn_visible(
+                app.db.mark_message_deleted(&conv_id, target_timestamp),
+                "mark_message_deleted",
+            );
+            None
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.close_overlay();
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Handle a key press in the delete-conversation confirmation overlay.
+pub fn handle_delete_conversation_confirm_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    match code {
+        KeyCode::Char('y') => {
+            app.close_overlay();
+            app.delete_active_conversation()
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.close_overlay();
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Handle a key press while the safety-number verify overlay is open.
 pub fn handle_verify_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
     let action = classify_list_key(code, false);
