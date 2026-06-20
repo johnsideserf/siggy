@@ -91,6 +91,7 @@ CLI flags override config file values for the current session:
 | `--debug` | Write debug log to `~/.cache/siggy/debug.log` (PII redacted) |
 | `--debug-full` | Same as `--debug` but without redaction |
 | `--reset-lock` | Delete the session-lock passphrase hash and exit |
+| `-V`, `--version` | Print `siggy <version>` to stdout and exit |
 
 ## Environment variables
 

@@ -7,7 +7,7 @@
 //! the persistent map and ordered sidebar list.
 
 use chrono::{DateTime, Utc};
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
