@@ -17,6 +17,7 @@ use crate::app::{
 };
 use crate::autocomplete::AutocompleteMode;
 use crate::domain::{EmojiPickerAction, EmojiPickerSource};
+use crate::input::{next_char_pos, prev_char_pos};
 use crate::keybindings::{self, BindingMode, KeyAction};
 use crate::list_overlay::{ListKeyAction, classify_list_key};
 
@@ -297,6 +298,242 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Handle a Normal-mode key. Dispatches to scroll, cursor/edit, or message
+/// action sub-behaviors, and tracks the `g`/`d` prefix for `gg`/`dd` sequences.
+pub fn handle_normal_key(
+    app: &mut App,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> Option<SendRequest> {
+    // Handle pending prefix key (gg, dd sequences)
+    if let Some(prev) = app.pending_normal_key.take() {
+        match (prev, code) {
+            ('g', KeyCode::Char('g')) => {
+                // gg = scroll to top
+                if let Some(ref id) = app.active_conversation
+                    && let Some(conv) = app.store.conversations.get(id)
+                {
+                    app.scroll.offset = conv.messages.len();
+                }
+                app.scroll.focused_index = None;
+                return None;
+            }
+            ('d', KeyCode::Char('d')) => {
+                // dd = delete message
+                return execute_delete_confirm(app);
+            }
+            (_, KeyCode::Esc) => {
+                // Esc cancels pending prefix
+                return None;
+            }
+            _ => {
+                // Not a valid sequence -- fall through to process this key normally
+            }
+        }
+    }
+
+    match app
+        .keybindings
+        .resolve(modifiers, code, BindingMode::Normal)
+    {
+        // Scroll
+        Some(KeyAction::ScrollDown) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_sub(1);
+            app.scroll.focused_index = None;
+            None
+        }
+        Some(KeyAction::ScrollUp) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_add(1);
+            app.scroll.focused_index = None;
+            None
+        }
+        Some(KeyAction::FocusNextMessage) => {
+            app.sync.user_scrolled = true;
+            app.jump_to_adjacent_message(false);
+            None
+        }
+        Some(KeyAction::FocusPrevMessage) => {
+            app.sync.user_scrolled = true;
+            app.jump_to_adjacent_message(true);
+            None
+        }
+        Some(KeyAction::HalfPageDown) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_sub(10);
+            app.scroll.focused_index = None;
+            None
+        }
+        Some(KeyAction::HalfPageUp) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_add(10);
+            app.scroll.focused_index = None;
+            None
+        }
+        Some(KeyAction::ScrollToBottom) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = 0;
+            app.scroll.focused_index = None;
+            None
+        }
+        // Edit/mode-switch
+        Some(KeyAction::InsertAtCursor) => {
+            app.mode = InputMode::Insert;
+            None
+        }
+        Some(KeyAction::InsertAfterCursor) => {
+            app.input.cursor = next_char_pos(&app.input.buffer, app.input.cursor);
+            app.mode = InputMode::Insert;
+            None
+        }
+        Some(KeyAction::InsertLineStart) => {
+            app.input.cursor = app.current_line_start();
+            app.mode = InputMode::Insert;
+            None
+        }
+        Some(KeyAction::InsertLineEnd) => {
+            app.input.cursor = app.current_line_end();
+            app.mode = InputMode::Insert;
+            None
+        }
+        Some(KeyAction::OpenLineBelow) => {
+            let line_end = app.current_line_end();
+            app.input.cursor = line_end;
+            app.input.buffer.insert(app.input.cursor, '\n');
+            app.input.cursor += 1;
+            app.mode = InputMode::Insert;
+            None
+        }
+        Some(KeyAction::CursorLeft) => {
+            app.input.cursor = prev_char_pos(&app.input.buffer, app.input.cursor);
+            None
+        }
+        Some(KeyAction::CursorRight) => {
+            app.input.cursor = next_char_pos(&app.input.buffer, app.input.cursor);
+            None
+        }
+        Some(KeyAction::LineStart) => {
+            app.input.cursor = app.current_line_start();
+            None
+        }
+        Some(KeyAction::LineEnd) => {
+            app.input.cursor = app.current_line_end();
+            None
+        }
+        Some(KeyAction::WordForward) => {
+            let buf = &app.input.buffer;
+            let mut pos = app.input.cursor;
+            while pos < buf.len() {
+                let c = buf[pos..].chars().next().unwrap();
+                if c.is_whitespace() {
+                    break;
+                }
+                pos += c.len_utf8();
+            }
+            while pos < buf.len() {
+                let c = buf[pos..].chars().next().unwrap();
+                if !c.is_whitespace() {
+                    break;
+                }
+                pos += c.len_utf8();
+            }
+            app.input.cursor = pos;
+            None
+        }
+        Some(KeyAction::WordBack) => {
+            let buf = &app.input.buffer;
+            let mut pos = app.input.cursor;
+            while pos > 0 {
+                let prev = buf[..pos].chars().next_back().unwrap();
+                if !prev.is_whitespace() {
+                    break;
+                }
+                pos -= prev.len_utf8();
+            }
+            while pos > 0 {
+                let prev = buf[..pos].chars().next_back().unwrap();
+                if prev.is_whitespace() {
+                    break;
+                }
+                pos -= prev.len_utf8();
+            }
+            app.input.cursor = pos;
+            None
+        }
+        Some(KeyAction::DeleteChar) => {
+            if app.input.cursor < app.input.buffer.len() {
+                app.input.buffer.remove(app.input.cursor);
+                if app.input.cursor > 0 && app.input.cursor >= app.input.buffer.len() {
+                    app.input.cursor = prev_char_pos(&app.input.buffer, app.input.buffer.len());
+                }
+            }
+            None
+        }
+        Some(KeyAction::DeleteToEnd) => {
+            let line_end = app.current_line_end();
+            app.input.buffer.drain(app.input.cursor..line_end);
+            None
+        }
+        Some(KeyAction::StartSearch) => {
+            app.input.buffer = "/".to_string();
+            app.input.cursor = 1;
+            app.mode = InputMode::Insert;
+            app.update_autocomplete();
+            None
+        }
+        Some(KeyAction::SidebarSearch) => {
+            app.sidebar_visible = true;
+            app.open_overlay(OverlayKind::SidebarFilter);
+            app.sidebar_filter.clear();
+            app.sidebar_filtered.clear();
+            None
+        }
+        Some(KeyAction::ClearInput) => {
+            if !app.input.buffer.is_empty() {
+                app.input.buffer.clear();
+                app.input.cursor = 0;
+                app.autocomplete.pending_mentions.clear();
+            }
+            None
+        }
+        // Actions
+        Some(KeyAction::CopyMessage) => {
+            app.copy_selected_message(false);
+            None
+        }
+        Some(KeyAction::CopyAllMessages) => {
+            app.copy_selected_message(true);
+            None
+        }
+        Some(KeyAction::React) => execute_react(app),
+        Some(KeyAction::Quote) => execute_reply(app),
+        Some(KeyAction::EditMessage) => execute_edit(app),
+        Some(KeyAction::ForwardMessage) => execute_forward(app),
+        Some(KeyAction::NextSearchResult) => execute_search_jump(app, true),
+        Some(KeyAction::PrevSearchResult) => execute_search_jump(app, false),
+        Some(KeyAction::OpenActionMenu) => execute_open_action_menu(app),
+        Some(KeyAction::PinMessage) => execute_pin_toggle(app),
+        Some(KeyAction::JumpToQuote) => {
+            app.jump_to_quote();
+            None
+        }
+        Some(KeyAction::JumpBack) => {
+            app.jump_back();
+            None
+        }
+        _ => {
+            // Handle prefix keys that aren't in the binding map
+            if let KeyCode::Char(c @ ('g' | 'd')) = code
+                && modifiers.is_empty()
+            {
+                app.pending_normal_key = Some(c);
+            }
+            None
+        }
     }
 }
 
