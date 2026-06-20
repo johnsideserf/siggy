@@ -7,6 +7,18 @@ description = "Terminal-based Signal messenger client with vim keybindings"
 repository = "https://github.com/johnsideserf/siggy"
 keywords = ["signal", "tui", "terminal", "messenger", "ratatui"]
 categories = ["command-line-utilities"]
+# Ship only what's needed to build and install. Without this allowlist the
+# package balloons to ~5.5 MiB (docs/ screenshots, banner/logos, translations,
+# CI config), which both wastes every `cargo install` and stalls the upload at
+# the crates.io CDN edge.
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "rust-toolchain.toml",
+]
 
 [dependencies]
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
