@@ -11,7 +11,10 @@
 use chrono::Utc;
 use crossterm::event::KeyCode;
 
-use crate::app::{App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, SendRequest};
+use crate::app::{
+    App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, QUICK_REACTIONS, SendRequest,
+};
+use crate::domain::EmojiPickerSource;
 use crate::list_overlay::{ListKeyAction, classify_list_key};
 
 // ---------------------------------------------------------------------------
@@ -288,6 +291,88 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
         KeyCode::Esc => {
             app.close_overlay();
             app.poll_vote.pending = None;
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Handle a key press in the message-request (accept/delete) overlay.
+pub fn handle_message_request_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    let conv_id = match app.active_conversation.clone() {
+        Some(id) => id,
+        None => {
+            app.close_overlay();
+            return None;
+        }
+    };
+    match code {
+        KeyCode::Char('a') => {
+            let is_group = app
+                .store
+                .conversations
+                .get(&conv_id)
+                .map(|c| c.is_group)
+                .unwrap_or(false);
+            if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
+                conv.accepted = true;
+            }
+            app.db_warn_visible(app.db.update_accepted(&conv_id, true), "update_accepted");
+            app.close_overlay();
+            Some(SendRequest::MessageRequestResponse {
+                recipient: conv_id,
+                is_group,
+                response_type: "accept".to_string(),
+            })
+        }
+        KeyCode::Char('d') => {
+            app.close_overlay();
+            app.delete_active_conversation()
+        }
+        KeyCode::Esc => {
+            app.close_overlay();
+            app.active_conversation = None;
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Handle a key press in the quick-reaction picker overlay.
+pub fn handle_reaction_picker_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    match code {
+        KeyCode::Char('h') | KeyCode::Left => {
+            app.reactions.picker_index = app.reactions.picker_index.saturating_sub(1);
+            None
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            if app.reactions.picker_index < QUICK_REACTIONS.len() - 1 {
+                app.reactions.picker_index += 1;
+            }
+            None
+        }
+        KeyCode::Char(c @ '1'..='8') => {
+            let idx = (c as u8 - b'1') as usize;
+            if idx < QUICK_REACTIONS.len() {
+                app.reactions.picker_index = idx;
+                app.close_overlay();
+                app.prepare_reaction_send()
+            } else {
+                None
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            app.close_overlay();
+            app.prepare_reaction_send()
+        }
+        KeyCode::Char('e') | KeyCode::Char('/') => {
+            // Open full emoji picker from reaction context
+            app.emoji_picker.open(EmojiPickerSource::Reaction, None);
+            app.open_overlay(OverlayKind::EmojiPicker);
+            None
+        }
+        KeyCode::Esc => {
+            app.close_overlay();
             None
         }
         _ => None,
