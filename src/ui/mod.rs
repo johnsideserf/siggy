@@ -1,9 +1,19 @@
-//! Stateless rendering layer.
+//! Rendering layer.
 //!
-//! [`draw`] takes the current [`App`] and renders sidebar + chat + status
-//! bar each frame. Sender colors are hash-based across an 8-color palette;
-//! groups are prefixed with `#`. OSC 8 hyperlinks are injected post-render
-//! to dodge ratatui width calculation bugs (see [`LinkRegion`]).
+//! [`draw`] renders sidebar + chat + status bar each frame. Sender colors are
+//! hash-based across an 8-color palette; groups are prefixed with `#`. OSC 8
+//! hyperlinks are injected post-render to dodge ratatui width calculation bugs
+//! (see [`LinkRegion`]).
+//!
+//! Contract caveat: rendering is **not** stateless. [`draw`] takes `&mut App`
+//! and writes layout feedback back during the pass -- it clamps `scroll.offset`
+//! to the rendered content height, derives/clears `scroll.focused_index` and
+//! `focused_time`, sets `scroll.at_top`, and captures mouse hit-rects, link
+//! regions, and image caches. These depend on the realised layout, so they
+//! cannot be computed without rendering. Splitting this into a `ViewState`
+//! borrowed `&mut` (or an explicit pre-render layout pass) is tracked in #496;
+//! the pure scroll-window math is already factored out in `chat_pane`
+//! (`window_start` / `bottom_align_scroll` / `ensure_focus_visible`, #503).
 
 mod autocomplete;
 mod chat_pane;
@@ -161,6 +171,12 @@ pub(super) fn centered_popup(
     (popup_area, block)
 }
 
+/// Render one frame: sidebar, chat pane, status bar, and any active overlay.
+///
+/// Takes `&mut App` because the pass writes layout feedback that can only be
+/// known after rendering -- scroll clamping, focus derivation, `at_top`, mouse
+/// hit-rects, and the link/image caches. See the module-level docs and #496 for
+/// the contract and the planned ViewState split.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.lock.is_locked() {
         crate::ui::overlays::lock_screen::draw_lock_screen(frame, app, frame.area());
