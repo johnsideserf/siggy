@@ -26,6 +26,12 @@ pub enum KeyAction {
     ResizeSidebarRight,
     PageScrollUp,
     PageScrollDown,
+    // Global: open overlays / toggles (unbound by default; bind in a profile).
+    OpenContacts,
+    OpenSettings,
+    OpenHelp,
+    ToggleSidebar,
+    Attach,
     // Normal: scroll
     ScrollUp,
     ScrollDown,
@@ -420,6 +426,11 @@ pub const GLOBAL_ACTIONS: &[KeyAction] = &[
     KeyAction::ResizeSidebarRight,
     KeyAction::PageScrollUp,
     KeyAction::PageScrollDown,
+    KeyAction::OpenContacts,
+    KeyAction::OpenSettings,
+    KeyAction::OpenHelp,
+    KeyAction::ToggleSidebar,
+    KeyAction::Attach,
 ];
 
 pub const NORMAL_ACTIONS: &[KeyAction] = &[
@@ -480,6 +491,11 @@ pub fn action_label(action: KeyAction) -> &'static str {
         KeyAction::ResizeSidebarRight => "Grow sidebar",
         KeyAction::PageScrollUp => "Page scroll up",
         KeyAction::PageScrollDown => "Page scroll down",
+        KeyAction::OpenContacts => "Open contacts",
+        KeyAction::OpenSettings => "Open settings",
+        KeyAction::OpenHelp => "Open help",
+        KeyAction::ToggleSidebar => "Toggle sidebar",
+        KeyAction::Attach => "Attach file",
         KeyAction::ScrollUp => "Scroll up",
         KeyAction::ScrollDown => "Scroll down",
         KeyAction::FocusNextMessage => "Focus next message",

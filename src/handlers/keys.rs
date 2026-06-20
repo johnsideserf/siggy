@@ -853,6 +853,33 @@ pub fn handle_global_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) 
             app.lock_now();
             true
         }
+        // Overlay-open / toggle actions, mirroring the matching slash commands
+        // so they can be driven from a keybinding (#202).
+        Some(KeyAction::OpenContacts) => {
+            app.open_overlay(OverlayKind::Contacts);
+            app.contacts_overlay.index = 0;
+            app.contacts_overlay.filter.clear();
+            app.refresh_contacts_filter();
+            true
+        }
+        Some(KeyAction::OpenSettings) => {
+            app.open_overlay(OverlayKind::Settings);
+            app.settings_overlay.index = 0;
+            app.settings_overlay.mouse_snapshot = app.mouse.enabled;
+            true
+        }
+        Some(KeyAction::OpenHelp) => {
+            app.open_overlay(OverlayKind::Help);
+            true
+        }
+        Some(KeyAction::ToggleSidebar) => {
+            app.sidebar_visible = !app.sidebar_visible;
+            true
+        }
+        Some(KeyAction::Attach) => {
+            app.open_file_browser();
+            true
+        }
         _ => false,
     }
 }
