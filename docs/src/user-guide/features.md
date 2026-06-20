@@ -427,3 +427,42 @@ siggy --demo
 
 Launches with dummy conversations and messages. No signal-cli process is spawned.
 Useful for testing the UI, exploring keybindings, and taking screenshots.
+
+## Automation and scheduling
+
+siggy exposes a small non-interactive CLI (no TUI) for scripting. See the CLI
+flags table in [Configuration](configuration.md) for the full list; the
+automation-relevant ones are `--check` (guard), `--send`, `--list`, and
+`--receive`. Output is plain or tab-separated stdout with scriptable exit codes.
+
+```sh
+# guard, then send
+siggy --check && siggy --send +15551234567 "build passed"
+
+# stream incoming messages and auto-reply to a keyword
+siggy --receive | while IFS=$'\t' read -r ts from group body; do
+  case "$body" in *ping*) siggy --send "$from" "pong";; esac
+done
+```
+
+### Scheduled messages
+
+There is no built-in scheduler; use your OS scheduler with `siggy --send`, which
+keeps siggy dependency-free and reuses the scheduler you already trust.
+
+**cron (Linux / macOS)** - send a reminder every weekday at 9am:
+
+```cron
+0 9 * * 1-5  siggy --send +15551234567 "standup in 5"
+```
+
+**systemd timer (Linux)** - a `siggy-reminder.service` running
+`ExecStart=siggy --send +15551234567 "standup in 5"`, paired with a
+`siggy-reminder.timer` (`OnCalendar=Mon..Fri 09:00`).
+
+**Task Scheduler (Windows)** - schedule a task whose action runs
+`siggy.exe --send +15551234567 "standup in 5"`.
+
+`--send` exits 0 only once the message is confirmed sent, so a wrapping script
+can detect and retry failures. The account must already be linked (check with
+`siggy --check`).
