@@ -12,8 +12,8 @@ use chrono::Utc;
 use crossterm::event::KeyCode;
 
 use crate::app::{
-    ActionMenuHint, App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, QUICK_REACTIONS,
-    SETTINGS, SETTINGS_VISUAL_ORDER, SendRequest,
+    ActionMenuHint, App, GroupMenuHint, GroupMenuState, InputMode, OverlayKind, PIN_DURATIONS,
+    PinPending, QUICK_REACTIONS, SETTINGS, SETTINGS_VISUAL_ORDER, SendRequest,
 };
 use crate::autocomplete::AutocompleteMode;
 use crate::domain::EmojiPickerSource;
@@ -297,6 +297,224 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Handle a key press while the /group menu (and its sub-states) is open.
+pub fn handle_group_menu_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    let state = app.group_menu.state.clone()?;
+    match state {
+        GroupMenuState::Menu => {
+            let items = app.group_menu_items();
+            let item_count = items.len();
+            match code {
+                KeyCode::Char('j') | KeyCode::Down
+                    if app.group_menu.index < item_count.saturating_sub(1) =>
+                {
+                    app.group_menu.index += 1;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.group_menu.index = app.group_menu.index.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some(action) = items.get(app.group_menu.index) {
+                        app.transition_group_menu(action.key_hint);
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(hint) = GroupMenuHint::from_char(c)
+                        && items.iter().any(|a| a.key_hint == hint)
+                    {
+                        app.transition_group_menu(hint);
+                    }
+                }
+                KeyCode::Esc => {
+                    app.group_menu.state = None;
+                    app.close_overlay();
+                }
+                _ => {}
+            }
+            None
+        }
+        GroupMenuState::Members => {
+            let member_count = app.group_menu.filtered.len();
+            match code {
+                KeyCode::Char('j') | KeyCode::Down
+                    if app.group_menu.index < member_count.saturating_sub(1) =>
+                {
+                    app.group_menu.index += 1;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.group_menu.index = app.group_menu.index.saturating_sub(1);
+                }
+                KeyCode::Esc => {
+                    app.open_overlay(OverlayKind::GroupMenu);
+                    app.group_menu.state = Some(GroupMenuState::Menu);
+                    app.group_menu.index = 0;
+                }
+                _ => {}
+            }
+            None
+        }
+        GroupMenuState::AddMember => {
+            match code {
+                KeyCode::Char('j') | KeyCode::Down
+                    if !app.group_menu.filtered.is_empty()
+                        && app.group_menu.index < app.group_menu.filtered.len() - 1 =>
+                {
+                    app.group_menu.index += 1;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.group_menu.index = app.group_menu.index.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some((phone, _)) = app.group_menu.filtered.get(app.group_menu.index) {
+                        let phone = phone.clone();
+                        let group_id = app.active_conversation.clone()?;
+                        app.group_menu.state = None;
+                        app.close_overlay();
+                        app.group_menu.filter.clear();
+                        return Some(SendRequest::AddGroupMembers {
+                            group_id,
+                            members: vec![phone],
+                        });
+                    }
+                }
+                KeyCode::Esc => {
+                    app.open_overlay(OverlayKind::GroupMenu);
+                    app.group_menu.state = Some(GroupMenuState::Menu);
+                    app.group_menu.index = 0;
+                    app.group_menu.filter.clear();
+                }
+                KeyCode::Backspace => {
+                    app.group_menu.filter.pop();
+                    app.group_menu.index = 0;
+                    app.refresh_group_add_filter();
+                }
+                KeyCode::Char(c) if c != 'j' && c != 'k' => {
+                    app.group_menu.filter.push(c);
+                    app.group_menu.index = 0;
+                    app.refresh_group_add_filter();
+                }
+                _ => {}
+            }
+            None
+        }
+        GroupMenuState::RemoveMember => {
+            match code {
+                KeyCode::Char('j') | KeyCode::Down
+                    if !app.group_menu.filtered.is_empty()
+                        && app.group_menu.index < app.group_menu.filtered.len() - 1 =>
+                {
+                    app.group_menu.index += 1;
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.group_menu.index = app.group_menu.index.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some((phone, _)) = app.group_menu.filtered.get(app.group_menu.index) {
+                        let phone = phone.clone();
+                        let group_id = app.active_conversation.clone()?;
+                        app.group_menu.state = None;
+                        app.close_overlay();
+                        app.group_menu.filter.clear();
+                        return Some(SendRequest::RemoveGroupMembers {
+                            group_id,
+                            members: vec![phone],
+                        });
+                    }
+                }
+                KeyCode::Esc => {
+                    app.open_overlay(OverlayKind::GroupMenu);
+                    app.group_menu.state = Some(GroupMenuState::Menu);
+                    app.group_menu.index = 0;
+                    app.group_menu.filter.clear();
+                }
+                KeyCode::Backspace => {
+                    app.group_menu.filter.pop();
+                    app.group_menu.index = 0;
+                    app.refresh_group_remove_filter();
+                }
+                KeyCode::Char(c) if c != 'j' && c != 'k' => {
+                    app.group_menu.filter.push(c);
+                    app.group_menu.index = 0;
+                    app.refresh_group_remove_filter();
+                }
+                _ => {}
+            }
+            None
+        }
+        GroupMenuState::Rename => {
+            match code {
+                KeyCode::Enter => {
+                    let name = app.group_menu.input.trim().to_string();
+                    if !name.is_empty() {
+                        let group_id = app.active_conversation.clone()?;
+                        app.group_menu.state = None;
+                        app.close_overlay();
+                        app.group_menu.input.clear();
+                        return Some(SendRequest::RenameGroup { group_id, name });
+                    }
+                }
+                KeyCode::Esc => {
+                    app.open_overlay(OverlayKind::GroupMenu);
+                    app.group_menu.state = Some(GroupMenuState::Menu);
+                    app.group_menu.index = 0;
+                    app.group_menu.input.clear();
+                }
+                KeyCode::Backspace => {
+                    app.group_menu.input.pop();
+                }
+                KeyCode::Char(c) => {
+                    app.group_menu.input.push(c);
+                }
+                _ => {}
+            }
+            None
+        }
+        GroupMenuState::Create => {
+            match code {
+                KeyCode::Enter => {
+                    let name = app.group_menu.input.trim().to_string();
+                    if !name.is_empty() {
+                        app.group_menu.state = None;
+                        app.close_overlay();
+                        app.group_menu.input.clear();
+                        return Some(SendRequest::CreateGroup { name });
+                    }
+                }
+                KeyCode::Esc => {
+                    app.group_menu.state = None;
+                    app.close_overlay();
+                    app.group_menu.input.clear();
+                }
+                KeyCode::Backspace => {
+                    app.group_menu.input.pop();
+                }
+                KeyCode::Char(c) => {
+                    app.group_menu.input.push(c);
+                }
+                _ => {}
+            }
+            None
+        }
+        GroupMenuState::LeaveConfirm => {
+            match code {
+                KeyCode::Char('y') => {
+                    let group_id = app.active_conversation.clone()?;
+                    app.group_menu.state = None;
+                    app.close_overlay();
+                    return Some(SendRequest::LeaveGroup { group_id });
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    app.open_overlay(OverlayKind::GroupMenu);
+                    app.group_menu.state = Some(GroupMenuState::Menu);
+                    app.group_menu.index = 0;
+                }
+                _ => {}
+            }
+            None
+        }
     }
 }
 
