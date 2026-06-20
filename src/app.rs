@@ -1672,7 +1672,7 @@ impl App {
     }
 
     /// Jump to the original message quoted by the currently focused message.
-    fn jump_to_quote(&mut self) {
+    pub(crate) fn jump_to_quote(&mut self) {
         let msg = match self.selected_message() {
             Some(m) => m,
             None => return,
@@ -1712,7 +1712,7 @@ impl App {
     }
 
     /// Jump back to the position before the last quote jump.
-    fn jump_back(&mut self) {
+    pub(crate) fn jump_back(&mut self) {
         if let Some((offset, index)) = self.scroll.jump_stack.pop() {
             self.scroll.offset = offset;
             self.scroll.focused_index = index;
@@ -2507,240 +2507,7 @@ impl App {
         modifiers: KeyModifiers,
         code: KeyCode,
     ) -> Option<SendRequest> {
-        // Handle pending prefix key (gg, dd sequences)
-        if let Some(prev) = self.pending_normal_key.take() {
-            match (prev, code) {
-                ('g', KeyCode::Char('g')) => {
-                    // gg = scroll to top
-                    if let Some(ref id) = self.active_conversation
-                        && let Some(conv) = self.store.conversations.get(id)
-                    {
-                        self.scroll.offset = conv.messages.len();
-                    }
-                    self.scroll.focused_index = None;
-                    return None;
-                }
-                ('d', KeyCode::Char('d')) => {
-                    // dd = delete message
-                    return crate::handlers::keys::execute_delete_confirm(self);
-                }
-                (_, KeyCode::Esc) => {
-                    // Esc cancels pending prefix
-                    return None;
-                }
-                _ => {
-                    // Not a valid sequence -- fall through to process this key normally
-                }
-            }
-        }
-
-        match self
-            .keybindings
-            .resolve(modifiers, code, BindingMode::Normal)
-        {
-            // Scroll
-            Some(KeyAction::ScrollDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::ScrollUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::FocusNextMessage) => {
-                self.sync.user_scrolled = true;
-                self.jump_to_adjacent_message(false);
-                None
-            }
-            Some(KeyAction::FocusPrevMessage) => {
-                self.sync.user_scrolled = true;
-                self.jump_to_adjacent_message(true);
-                None
-            }
-            Some(KeyAction::HalfPageDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(10);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::HalfPageUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(10);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::ScrollToBottom) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = 0;
-                self.scroll.focused_index = None;
-                None
-            }
-            // Edit/mode-switch
-            Some(KeyAction::InsertAtCursor) => {
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::InsertAfterCursor) => {
-                self.input.cursor = next_char_pos(&self.input.buffer, self.input.cursor);
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::InsertLineStart) => {
-                self.input.cursor = self.current_line_start();
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::InsertLineEnd) => {
-                self.input.cursor = self.current_line_end();
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::OpenLineBelow) => {
-                let line_end = self.current_line_end();
-                self.input.cursor = line_end;
-                self.input.buffer.insert(self.input.cursor, '\n');
-                self.input.cursor += 1;
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::CursorLeft) => {
-                self.input.cursor = prev_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::CursorRight) => {
-                self.input.cursor = next_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::LineStart) => {
-                self.input.cursor = self.current_line_start();
-                None
-            }
-            Some(KeyAction::LineEnd) => {
-                self.input.cursor = self.current_line_end();
-                None
-            }
-            Some(KeyAction::WordForward) => {
-                let buf = &self.input.buffer;
-                let mut pos = self.input.cursor;
-                while pos < buf.len() {
-                    let c = buf[pos..].chars().next().unwrap();
-                    if c.is_whitespace() {
-                        break;
-                    }
-                    pos += c.len_utf8();
-                }
-                while pos < buf.len() {
-                    let c = buf[pos..].chars().next().unwrap();
-                    if !c.is_whitespace() {
-                        break;
-                    }
-                    pos += c.len_utf8();
-                }
-                self.input.cursor = pos;
-                None
-            }
-            Some(KeyAction::WordBack) => {
-                let buf = &self.input.buffer;
-                let mut pos = self.input.cursor;
-                while pos > 0 {
-                    let prev = buf[..pos].chars().next_back().unwrap();
-                    if !prev.is_whitespace() {
-                        break;
-                    }
-                    pos -= prev.len_utf8();
-                }
-                while pos > 0 {
-                    let prev = buf[..pos].chars().next_back().unwrap();
-                    if prev.is_whitespace() {
-                        break;
-                    }
-                    pos -= prev.len_utf8();
-                }
-                self.input.cursor = pos;
-                None
-            }
-            Some(KeyAction::DeleteChar) => {
-                if self.input.cursor < self.input.buffer.len() {
-                    self.input.buffer.remove(self.input.cursor);
-                    if self.input.cursor > 0 && self.input.cursor >= self.input.buffer.len() {
-                        self.input.cursor =
-                            prev_char_pos(&self.input.buffer, self.input.buffer.len());
-                    }
-                }
-                None
-            }
-            Some(KeyAction::DeleteToEnd) => {
-                let line_end = self.current_line_end();
-                self.input.buffer.drain(self.input.cursor..line_end);
-                None
-            }
-            Some(KeyAction::StartSearch) => {
-                self.input.buffer = "/".to_string();
-                self.input.cursor = 1;
-                self.mode = InputMode::Insert;
-                self.update_autocomplete();
-                None
-            }
-            Some(KeyAction::SidebarSearch) => {
-                self.sidebar_visible = true;
-                self.open_overlay(OverlayKind::SidebarFilter);
-                self.sidebar_filter.clear();
-                self.sidebar_filtered.clear();
-                None
-            }
-            Some(KeyAction::ClearInput) => {
-                if !self.input.buffer.is_empty() {
-                    self.input.buffer.clear();
-                    self.input.cursor = 0;
-                    self.autocomplete.pending_mentions.clear();
-                }
-                None
-            }
-            // Actions
-            Some(KeyAction::CopyMessage) => {
-                self.copy_selected_message(false);
-                None
-            }
-            Some(KeyAction::CopyAllMessages) => {
-                self.copy_selected_message(true);
-                None
-            }
-            Some(KeyAction::React) => crate::handlers::keys::execute_react(self),
-            Some(KeyAction::Quote) => crate::handlers::keys::execute_reply(self),
-            Some(KeyAction::EditMessage) => crate::handlers::keys::execute_edit(self),
-            Some(KeyAction::ForwardMessage) => crate::handlers::keys::execute_forward(self),
-            Some(KeyAction::NextSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, true)
-            }
-            Some(KeyAction::PrevSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, false)
-            }
-            Some(KeyAction::OpenActionMenu) => {
-                crate::handlers::keys::execute_open_action_menu(self)
-            }
-            Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
-            Some(KeyAction::JumpToQuote) => {
-                self.jump_to_quote();
-                None
-            }
-            Some(KeyAction::JumpBack) => {
-                self.jump_back();
-                None
-            }
-            _ => {
-                // Handle prefix keys that aren't in the binding map
-                if let KeyCode::Char(c @ ('g' | 'd')) = code
-                    && modifiers.is_empty()
-                {
-                    self.pending_normal_key = Some(c);
-                }
-                None
-            }
-        }
+        crate::handlers::keys::handle_normal_key(self, modifiers, code)
     }
 
     /// Handle Insert mode key.
@@ -3495,7 +3262,7 @@ impl App {
     }
 
     /// Returns the byte offset of the start of the current line.
-    fn current_line_start(&self) -> usize {
+    pub(crate) fn current_line_start(&self) -> usize {
         self.input.buffer[..self.input.cursor]
             .rfind('\n')
             .map(|p| p + 1)
@@ -3503,7 +3270,7 @@ impl App {
     }
 
     /// Returns the byte offset of the end of the current line (before the newline or buffer end).
-    fn current_line_end(&self) -> usize {
+    pub(crate) fn current_line_end(&self) -> usize {
         self.input.buffer[self.input.cursor..]
             .find('\n')
             .map(|p| self.input.cursor + p)
@@ -3952,7 +3719,7 @@ impl App {
 
     /// Jump to the next or previous non-system message.
     /// `older` = true means go toward older messages (K), false means newer (J).
-    fn jump_to_adjacent_message(&mut self, older: bool) {
+    pub(crate) fn jump_to_adjacent_message(&mut self, older: bool) {
         let conv_id = match self.active_conversation.as_ref() {
             Some(id) => id.clone(),
             None => return,
