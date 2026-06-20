@@ -64,7 +64,42 @@ threading the new `ViewState` through `drain_events`, `dispatch_send`,
 surface the #494 handler extraction just touched. It is one large PR, not a
 series of small ones.
 
-## Recommended plan for the dedicated pass
+## Measured constraint: the render layer reads almost all of App
+
+A borrow-split (`&App` + `&mut ViewState`, or a `ViewCtx` of granular field
+references) only pays off if the render layer reads a *small, separable* slice of
+`App`. It does not. The `ui/` layer touches **66 distinct `app.*` members**
+(`grep -rhoE "app\.[a-z_]+" src/ui/ | sort -u | wc -l`), spanning roughly forty
+data fields (every overlay state, `store`, `theme`, `scroll`, `mouse`, `image`,
+`sync`, `input`, `autocomplete`, `lock`, ...) plus helper methods.
+
+So a `ViewCtx` borrow struct would have to enumerate ~50 fields and be threaded
+through every render function - which is just "pass all of `App` field-by-field."
+That is precisely why `draw` takes `&mut App`. Moving the three mutated
+sub-structs *off* `App` instead is worse: it breaks every `App` method that uses
+them alongside other state (`ensure_active_images`, the key handlers), forcing
+those off `App` too - a cross-layer rewrite.
+
+## Revised recommendation
+
+Given the read-set above, the clean `ViewState` split is not worth its cost, and
+the issue's *substantive* concern is already resolved:
+
+- The hazard the issue actually names - focus derivation/clearing being
+  "frame-order-dependent and untestable" - is gone: that logic is now pure,
+  unit-tested functions (`window_start`, `bottom_align_scroll`,
+  `ensure_focus_visible`, `focus_line_span`) plus snapshot coverage at non-default
+  scroll/focus.
+- The remaining render-time writes are the layout feedback a TUI must do
+  (clamping scroll to the realised wrapped height) and frame caches; the `draw`
+  contract is now documented honestly rather than claimed "stateless."
+
+Recommendation: treat #496 as resolved by the derivation extraction + contract
+docs + snapshots, and keep `&mut App` for `draw`. Only revisit a borrow split if
+`App` is later decomposed for other reasons. The original plan below is retained
+for that hypothetical.
+
+## Original plan (retained, only if App is decomposed later)
 
 1. Introduce `struct ViewState { scroll: ScrollState, mouse: MouseState, image: ImageState }`
    owned by `run_app` next to `App` (remove those three fields from `App`; the
