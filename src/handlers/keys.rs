@@ -8,6 +8,8 @@
 //! calls are now internal to `handlers::keys` rather than crossing the
 //! `app.rs` boundary.
 
+use std::time::Instant;
+
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -298,6 +300,161 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Handle an Insert-mode key. Edits the composer and drives typing-indicator
+/// dispatch; alternative keybinding profiles may also bind message actions here.
+pub fn handle_insert_key(
+    app: &mut App,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> Option<SendRequest> {
+    match app
+        .keybindings
+        .resolve(modifiers, code, BindingMode::Insert)
+    {
+        Some(KeyAction::ExitInsert) => {
+            app.mode = InputMode::Normal;
+            app.pending_normal_key = None; // defensive reset
+            app.close_overlay();
+            app.reply_target = None;
+            app.editing_message = None;
+            if app.typing.reset() {
+                return app.build_typing_request(true);
+            }
+            None
+        }
+        Some(KeyAction::InsertNewline) => {
+            app.input.buffer.insert(app.input.cursor, '\n');
+            app.input.cursor += 1;
+            app.close_overlay();
+            app.typing.last_keypress = Some(Instant::now());
+            if !app.typing.sent
+                && !app.input.buffer.starts_with('/')
+                && app
+                    .active_conversation
+                    .as_ref()
+                    .is_some_and(|id| !app.blocked_conversations.contains(id))
+            {
+                app.typing.sent = true;
+                return app.build_typing_request(false);
+            }
+            None
+        }
+        Some(KeyAction::SendMessage) => {
+            let was_typing = app.typing.reset();
+            let result = app.handle_input();
+            if result.is_some() {
+                result
+            } else if was_typing {
+                app.build_typing_request(true)
+            } else {
+                None
+            }
+        }
+        Some(KeyAction::DeleteWordBack) => {
+            app.delete_word_back();
+            None
+        }
+        // Actions that alternative profiles (Emacs/Minimal) may bind in Insert mode
+        Some(KeyAction::ScrollDown) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_sub(1);
+            app.scroll.focused_index = None;
+            None
+        }
+        Some(KeyAction::ScrollUp) => {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_add(1);
+            app.scroll.focused_index = None;
+            None
+        }
+        Some(KeyAction::CursorLeft) => {
+            app.input.cursor = prev_char_pos(&app.input.buffer, app.input.cursor);
+            None
+        }
+        Some(KeyAction::CursorRight) => {
+            app.input.cursor = next_char_pos(&app.input.buffer, app.input.cursor);
+            None
+        }
+        Some(KeyAction::LineStart) => {
+            app.input.cursor = app.current_line_start();
+            None
+        }
+        Some(KeyAction::LineEnd) => {
+            app.input.cursor = app.current_line_end();
+            None
+        }
+        Some(KeyAction::DeleteChar) => {
+            if app.input.cursor < app.input.buffer.len() {
+                app.input.buffer.remove(app.input.cursor);
+            }
+            None
+        }
+        Some(KeyAction::DeleteToEnd) => {
+            let line_end = app.current_line_end();
+            app.input.buffer.drain(app.input.cursor..line_end);
+            None
+        }
+        Some(KeyAction::CopyMessage) => {
+            app.copy_selected_message(false);
+            None
+        }
+        Some(KeyAction::CopyAllMessages) => {
+            app.copy_selected_message(true);
+            None
+        }
+        Some(KeyAction::React) => execute_react(app),
+        Some(KeyAction::Quote) => execute_reply(app),
+        Some(KeyAction::EditMessage) => execute_edit(app),
+        Some(KeyAction::ForwardMessage) => execute_forward(app),
+        Some(KeyAction::DeleteMessage) => execute_delete_confirm(app),
+        Some(KeyAction::NextSearchResult) => execute_search_jump(app, true),
+        Some(KeyAction::PrevSearchResult) => execute_search_jump(app, false),
+        Some(KeyAction::OpenActionMenu) => execute_open_action_menu(app),
+        Some(KeyAction::PinMessage) => execute_pin_toggle(app),
+        Some(KeyAction::JumpToQuote) => {
+            app.jump_to_quote();
+            None
+        }
+        Some(KeyAction::JumpBack) => {
+            app.jump_back();
+            None
+        }
+        _ => {
+            let needs_ac_update = matches!(
+                code,
+                KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)
+            );
+            app.apply_input_edit(code);
+            if needs_ac_update {
+                app.update_autocomplete();
+            }
+            if matches!(
+                code,
+                KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
+            ) {
+                app.typing.last_keypress = Some(Instant::now());
+                if app.input.buffer.is_empty() && app.typing.sent {
+                    app.typing.sent = false;
+                    app.typing.last_keypress = None;
+                    return app.build_typing_request(true);
+                }
+                if !app.typing.sent
+                    && !app.input.buffer.is_empty()
+                    && !app.input.buffer.starts_with('/')
+                    && app
+                        .active_conversation
+                        .as_ref()
+                        .is_some_and(|id| !app.blocked_conversations.contains(id))
+                {
+                    app.typing.sent = true;
+                    return app.build_typing_request(false);
+                }
+            }
+            None
+        }
     }
 }
 

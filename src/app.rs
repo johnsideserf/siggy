@@ -2281,7 +2281,7 @@ impl App {
     }
 
     /// Build a Typing SendRequest for the active conversation, or None if no conversation is active.
-    fn build_typing_request(&self, stop: bool) -> Option<SendRequest> {
+    pub(crate) fn build_typing_request(&self, stop: bool) -> Option<SendRequest> {
         let conv_id = self.active_conversation.as_ref()?;
         let is_group = self
             .store
@@ -2517,158 +2517,7 @@ impl App {
         modifiers: KeyModifiers,
         code: KeyCode,
     ) -> Option<SendRequest> {
-        match self
-            .keybindings
-            .resolve(modifiers, code, BindingMode::Insert)
-        {
-            Some(KeyAction::ExitInsert) => {
-                self.mode = InputMode::Normal;
-                self.pending_normal_key = None; // defensive reset
-                self.close_overlay();
-                self.reply_target = None;
-                self.editing_message = None;
-                if self.typing.reset() {
-                    return self.build_typing_request(true);
-                }
-                None
-            }
-            Some(KeyAction::InsertNewline) => {
-                self.input.buffer.insert(self.input.cursor, '\n');
-                self.input.cursor += 1;
-                self.close_overlay();
-                self.typing.last_keypress = Some(Instant::now());
-                if !self.typing.sent
-                    && !self.input.buffer.starts_with('/')
-                    && self
-                        .active_conversation
-                        .as_ref()
-                        .is_some_and(|id| !self.blocked_conversations.contains(id))
-                {
-                    self.typing.sent = true;
-                    return self.build_typing_request(false);
-                }
-                None
-            }
-            Some(KeyAction::SendMessage) => {
-                let was_typing = self.typing.reset();
-                let result = self.handle_input();
-                if result.is_some() {
-                    result
-                } else if was_typing {
-                    self.build_typing_request(true)
-                } else {
-                    None
-                }
-            }
-            Some(KeyAction::DeleteWordBack) => {
-                self.delete_word_back();
-                None
-            }
-            // Actions that alternative profiles (Emacs/Minimal) may bind in Insert mode
-            Some(KeyAction::ScrollDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::ScrollUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::CursorLeft) => {
-                self.input.cursor = prev_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::CursorRight) => {
-                self.input.cursor = next_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::LineStart) => {
-                self.input.cursor = self.current_line_start();
-                None
-            }
-            Some(KeyAction::LineEnd) => {
-                self.input.cursor = self.current_line_end();
-                None
-            }
-            Some(KeyAction::DeleteChar) => {
-                if self.input.cursor < self.input.buffer.len() {
-                    self.input.buffer.remove(self.input.cursor);
-                }
-                None
-            }
-            Some(KeyAction::DeleteToEnd) => {
-                let line_end = self.current_line_end();
-                self.input.buffer.drain(self.input.cursor..line_end);
-                None
-            }
-            Some(KeyAction::CopyMessage) => {
-                self.copy_selected_message(false);
-                None
-            }
-            Some(KeyAction::CopyAllMessages) => {
-                self.copy_selected_message(true);
-                None
-            }
-            Some(KeyAction::React) => crate::handlers::keys::execute_react(self),
-            Some(KeyAction::Quote) => crate::handlers::keys::execute_reply(self),
-            Some(KeyAction::EditMessage) => crate::handlers::keys::execute_edit(self),
-            Some(KeyAction::ForwardMessage) => crate::handlers::keys::execute_forward(self),
-            Some(KeyAction::DeleteMessage) => crate::handlers::keys::execute_delete_confirm(self),
-            Some(KeyAction::NextSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, true)
-            }
-            Some(KeyAction::PrevSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, false)
-            }
-            Some(KeyAction::OpenActionMenu) => {
-                crate::handlers::keys::execute_open_action_menu(self)
-            }
-            Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
-            Some(KeyAction::JumpToQuote) => {
-                self.jump_to_quote();
-                None
-            }
-            Some(KeyAction::JumpBack) => {
-                self.jump_back();
-                None
-            }
-            _ => {
-                let needs_ac_update = matches!(
-                    code,
-                    KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)
-                );
-                self.apply_input_edit(code);
-                if needs_ac_update {
-                    self.update_autocomplete();
-                }
-                if matches!(
-                    code,
-                    KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
-                ) {
-                    self.typing.last_keypress = Some(Instant::now());
-                    if self.input.buffer.is_empty() && self.typing.sent {
-                        self.typing.sent = false;
-                        self.typing.last_keypress = None;
-                        return self.build_typing_request(true);
-                    }
-                    if !self.typing.sent
-                        && !self.input.buffer.is_empty()
-                        && !self.input.buffer.starts_with('/')
-                        && self
-                            .active_conversation
-                            .as_ref()
-                            .is_some_and(|id| !self.blocked_conversations.contains(id))
-                    {
-                        self.typing.sent = true;
-                        return self.build_typing_request(false);
-                    }
-                }
-                None
-            }
-        }
+        crate::handlers::keys::handle_insert_key(self, modifiers, code)
     }
 
     /// Handle an event from signal-cli
@@ -3278,7 +3127,7 @@ impl App {
     }
 
     /// Delete the word before the cursor (Ctrl+W behavior).
-    fn delete_word_back(&mut self) {
+    pub(crate) fn delete_word_back(&mut self) {
         if self.input.cursor == 0 {
             return;
         }
