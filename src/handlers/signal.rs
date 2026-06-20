@@ -33,6 +33,66 @@ fn path_to_file_uri(path: &str) -> String {
     }
 }
 
+/// Actionable hint for a known class of signal-cli error (#530).
+///
+/// signal-cli surfaces low-level failures as `SignalEvent::Error` with cryptic
+/// text (e.g. `getServerGuid(...) must not be null`) and emits them one per bad
+/// envelope, so a burst of four flashes the raw exception four times and tells
+/// the user nothing. This maps the recognized classes to one clear message;
+/// the raw error always still goes to the debug log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalCliHint {
+    /// signal-cli lacks a JSON-RPC method siggy called: the build is outdated.
+    Outdated,
+    /// signal-cli threw while processing an incoming envelope, so the message
+    /// never reached siggy. Typically an outdated build or a drifted session.
+    UnprocessableMessage,
+}
+
+impl SignalCliHint {
+    /// Classify an error string, or `None` to fall back to showing it raw.
+    fn classify(err: &str) -> Option<Self> {
+        if err.contains("Method not implemented") {
+            return Some(Self::Outdated);
+        }
+        const MARKERS: &[&str] = &[
+            "getServerGuid",
+            "must not be null",
+            "InvalidMessage",
+            "ProtocolInvalidMessage",
+            "No valid sessions",
+            "InvalidKey",
+        ];
+        if MARKERS.iter().any(|m| err.contains(m)) {
+            return Some(Self::UnprocessableMessage);
+        }
+        None
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Outdated => {
+                "signal-cli looks outdated (missing a feature siggy uses); upgrade it to the latest version"
+            }
+            Self::UnprocessableMessage => {
+                "signal-cli could not process an incoming message, so some messages may not appear; upgrade signal-cli, and re-link with --setup if it persists"
+            }
+        }
+    }
+
+    /// Per-session, per-category "already warned" flag so a burst shows the
+    /// hint once rather than flickering it repeatedly.
+    fn warned_flag(self) -> &'static std::sync::atomic::AtomicBool {
+        use std::sync::atomic::AtomicBool;
+        static OUTDATED: AtomicBool = AtomicBool::new(false);
+        static UNPROCESSABLE: AtomicBool = AtomicBool::new(false);
+        match self {
+            Self::Outdated => &OUTDATED,
+            Self::UnprocessableMessage => &UNPROCESSABLE,
+        }
+    }
+}
+
 /// Dispatch a `SignalEvent` from the signal-cli backend to the appropriate handler.
 pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
     match event {
@@ -218,7 +278,21 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
         SignalEvent::IdentityList(identities) => handle_identity_list(app, identities),
         SignalEvent::Error(ref err) => {
             crate::debug_log::logf(format_args!("signal event error: {err}"));
-            app.status_message = format!("error: {err}");
+            match SignalCliHint::classify(err) {
+                Some(hint) => {
+                    // Show the actionable hint once per session per category;
+                    // signal-cli emits these in bursts, all kept in the log.
+                    if !hint
+                        .warned_flag()
+                        .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        app.status_message = hint.message().to_string();
+                    }
+                }
+                None => {
+                    app.status_message = format!("error: {err}");
+                }
+            }
         }
     }
 }
@@ -1602,5 +1676,48 @@ fn handle_receipt(app: &mut App, sender: &str, receipt_type: &str, timestamps: &
             crate::debug_log::mask_phone(sender)
         ));
         buffer_receipt(app, sender, receipt_type, unmatched, 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SignalCliHint;
+
+    // #530: the exact errors from the bug report classify into actionable hints.
+    #[test]
+    fn classifies_outdated_signal_cli() {
+        assert_eq!(
+            SignalCliHint::classify("sendTypingIndicator: Method not implemented"),
+            Some(SignalCliHint::Outdated)
+        );
+    }
+
+    #[test]
+    fn classifies_unprocessable_message() {
+        assert_eq!(
+            SignalCliHint::classify("signal-cli: getServerGuid(...) must not be null"),
+            Some(SignalCliHint::UnprocessableMessage)
+        );
+    }
+
+    #[test]
+    fn classifies_decrypt_failures_as_unprocessable() {
+        for err in [
+            "signal-cli: No valid sessions",
+            "signal-cli: ProtocolInvalidMessageException",
+            "signal-cli: InvalidKeyException",
+        ] {
+            assert_eq!(
+                SignalCliHint::classify(err),
+                Some(SignalCliHint::UnprocessableMessage),
+                "expected UnprocessableMessage for {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn generic_errors_fall_through_to_raw() {
+        assert_eq!(SignalCliHint::classify("connection lost"), None);
+        assert_eq!(SignalCliHint::classify("some other thing"), None);
     }
 }
