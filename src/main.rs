@@ -194,7 +194,13 @@ async fn main() -> Result<()> {
                 eprintln!("      --debug             Write debug log (PII redacted)");
                 eprintln!("      --debug-full        Write debug log (full, unredacted)");
                 eprintln!("      --reset-lock        Delete the session-lock passphrase and exit");
+                eprintln!("  -V, --version           Print version and exit");
                 eprintln!("      --help              Show this help");
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                // Plain "siggy x.y.z" on stdout for scripts/CI (#257).
+                println!("siggy {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {

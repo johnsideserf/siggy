@@ -4,7 +4,7 @@ use crate::signal::types::{
     Attachment, Contact, Group, IdentityInfo, Mention, PollData, PollOption, ReceiptKind,
     SignalEvent, SignalMessage, StyleType, TextStyle, TrustLevel,
 };
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use rstest::{fixture, rstest};
 
 #[fixture]
