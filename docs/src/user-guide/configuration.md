@@ -92,6 +92,7 @@ CLI flags override config file values for the current session:
 | `--debug-full` | Same as `--debug` but without redaction |
 | `--reset-lock` | Delete the session-lock passphrase hash and exit |
 | `--check` | Print a setup health report (config, account, signal-cli, download dir) and exit; exit code 0 when ready, 1 otherwise |
+| `--send <TO> <MSG>` | Send one message non-interactively and exit (`TO` = `+E164` for a 1:1 or a group id); exit 0 on confirmed send, 1 on failure/timeout |
 | `-V`, `--version` | Print `siggy <version>` to stdout and exit |
 
 ## Environment variables
