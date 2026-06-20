@@ -1066,44 +1066,7 @@ impl App {
 
     /// Handle keybinding capture: intercepts ALL keys when capturing a new binding.
     pub fn handle_keybinding_capture(&mut self, modifiers: KeyModifiers, code: KeyCode) {
-        if code == KeyCode::Esc && modifiers == KeyModifiers::NONE {
-            self.keybindings_overlay.capturing = false;
-            self.status_message.clear();
-            return;
-        }
-
-        let (mode, action) = self.keybindings_overlay_item(self.keybindings_overlay.index);
-        let Some(action) = action else {
-            self.keybindings_overlay.capturing = false;
-            return;
-        };
-
-        // Strip SHIFT for Char keys — case is encoded in the character itself
-        let modifiers = if matches!(code, KeyCode::Char(_)) {
-            modifiers - KeyModifiers::SHIFT
-        } else {
-            modifiers
-        };
-        let combo = keybindings::KeyCombo { modifiers, code };
-        let displaced = self.keybindings.rebind(mode, action, combo.clone());
-        self.keybindings_overlay.capturing = false;
-
-        if let Some(displaced_action) = displaced
-            && displaced_action != action
-        {
-            self.status_message = format!(
-                "'{}' was bound to {}. Accept? (y/n)",
-                keybindings::format_key_combo(&combo),
-                keybindings::action_label(displaced_action)
-            );
-            self.keybindings_overlay.conflict = Some((displaced_action, combo));
-            return;
-        }
-        self.status_message = format!(
-            "{} → {}",
-            keybindings::action_label(action),
-            keybindings::format_key_combo(&combo)
-        );
+        crate::handlers::keys::handle_keybinding_capture(self, modifiers, code)
     }
 
     /// Total number of rows in the keybindings overlay (profile + sections + actions).

@@ -9,7 +9,7 @@
 //! `app.rs` boundary.
 
 use chrono::Utc;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::{
     ActionMenuHint, App, GroupMenuHint, GroupMenuState, InputMode, OverlayKind, PIN_DURATIONS,
@@ -298,6 +298,48 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
         }
         _ => None,
     }
+}
+
+/// Handle keybinding capture: intercepts ALL keys when capturing a new binding.
+pub fn handle_keybinding_capture(app: &mut App, modifiers: KeyModifiers, code: KeyCode) {
+    if code == KeyCode::Esc && modifiers == KeyModifiers::NONE {
+        app.keybindings_overlay.capturing = false;
+        app.status_message.clear();
+        return;
+    }
+
+    let (mode, action) = app.keybindings_overlay_item(app.keybindings_overlay.index);
+    let Some(action) = action else {
+        app.keybindings_overlay.capturing = false;
+        return;
+    };
+
+    // Strip SHIFT for Char keys -- case is encoded in the character itself
+    let modifiers = if matches!(code, KeyCode::Char(_)) {
+        modifiers - KeyModifiers::SHIFT
+    } else {
+        modifiers
+    };
+    let combo = keybindings::KeyCombo { modifiers, code };
+    let displaced = app.keybindings.rebind(mode, action, combo.clone());
+    app.keybindings_overlay.capturing = false;
+
+    if let Some(displaced_action) = displaced
+        && displaced_action != action
+    {
+        app.status_message = format!(
+            "'{}' was bound to {}. Accept? (y/n)",
+            keybindings::format_key_combo(&combo),
+            keybindings::action_label(displaced_action)
+        );
+        app.keybindings_overlay.conflict = Some((displaced_action, combo));
+        return;
+    }
+    app.status_message = format!(
+        "{} \u{2192} {}",
+        keybindings::action_label(action),
+        keybindings::format_key_combo(&combo)
+    );
 }
 
 /// Handle a key press while the /group menu (and its sub-states) is open.
