@@ -299,6 +299,165 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
     }
 }
 
+/// Handle a key press while the settings profile manager overlay is open.
+pub fn handle_settings_profile_manager_key(app: &mut App, code: KeyCode) {
+    // Save-as text input mode
+    if app.settings_profiles.save_as {
+        match code {
+            KeyCode::Enter => {
+                let name = app.settings_profiles.save_as_input.trim().to_string();
+                if name.is_empty() {
+                    app.status_message = "Profile name cannot be empty".to_string();
+                } else if crate::settings_profile::is_builtin(&name) {
+                    app.status_message = "Cannot overwrite built-in profile".to_string();
+                } else {
+                    let profile =
+                        crate::settings_profile::SettingsProfile::from_app(app, name.clone());
+                    match crate::settings_profile::save_custom_profile(&profile) {
+                        Ok(()) => {
+                            app.settings_profiles.name = name;
+                            app.settings_profiles.available =
+                                crate::settings_profile::all_settings_profiles();
+                            app.settings_profiles.index = app
+                                .settings_profiles
+                                .available
+                                .iter()
+                                .position(|p| p.name == app.settings_profiles.name)
+                                .unwrap_or(0);
+                            app.save_settings();
+                            app.status_message = "Profile saved".to_string();
+                        }
+                        Err(e) => {
+                            app.status_message = format!("Save failed: {e}");
+                        }
+                    }
+                    app.settings_profiles.save_as = false;
+                }
+            }
+            KeyCode::Esc => {
+                app.settings_profiles.save_as = false;
+            }
+            KeyCode::Backspace => {
+                app.settings_profiles.save_as_input.pop();
+            }
+            KeyCode::Char(c) if app.settings_profiles.save_as_input.len() < 30 => {
+                app.settings_profiles.save_as_input.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // List navigation mode
+    match code {
+        KeyCode::Char('j') | KeyCode::Down
+            if app.settings_profiles.index
+                < app.settings_profiles.available.len().saturating_sub(1) =>
+        {
+            app.settings_profiles.index += 1;
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.settings_profiles.index = app.settings_profiles.index.saturating_sub(1);
+        }
+        KeyCode::Enter => {
+            // Load the selected profile (stay open for preview)
+            if let Some(profile) = app
+                .settings_profiles
+                .available
+                .get(app.settings_profiles.index)
+                .cloned()
+            {
+                app.apply_settings_profile_deferred(&profile);
+                app.save_settings();
+                app.status_message = format!("Loaded profile: {}", profile.name);
+            }
+        }
+        KeyCode::Char('s') => {
+            // Save over current custom profile (only if custom and settings differ)
+            if let Some(profile) = app
+                .settings_profiles
+                .available
+                .get(app.settings_profiles.index)
+            {
+                if crate::settings_profile::is_builtin(&profile.name) {
+                    return;
+                }
+                if profile.matches_app(app) {
+                    return;
+                }
+                let updated =
+                    crate::settings_profile::SettingsProfile::from_app(app, profile.name.clone());
+                match crate::settings_profile::save_custom_profile(&updated) {
+                    Ok(()) => {
+                        app.settings_profiles.name = updated.name.clone();
+                        app.settings_profiles.available =
+                            crate::settings_profile::all_settings_profiles();
+                        app.settings_profiles.index = app
+                            .settings_profiles
+                            .available
+                            .iter()
+                            .position(|p| p.name == app.settings_profiles.name)
+                            .unwrap_or(0);
+                        app.save_settings();
+                        app.status_message = "Profile saved".to_string();
+                    }
+                    Err(e) => {
+                        app.status_message = format!("Save failed: {e}");
+                    }
+                }
+            }
+        }
+        KeyCode::Char('S') => {
+            // Save-as: open name input
+            let has_changes = !app
+                .settings_profiles
+                .available
+                .iter()
+                .any(|p| p.name == app.settings_profiles.name && p.matches_app(app));
+            if has_changes {
+                app.settings_profiles.save_as = true;
+                app.settings_profiles.save_as_input.clear();
+            }
+        }
+        KeyCode::Char('d') => {
+            // Delete custom profile
+            if let Some(profile) = app
+                .settings_profiles
+                .available
+                .get(app.settings_profiles.index)
+            {
+                if crate::settings_profile::is_builtin(&profile.name) {
+                    return;
+                }
+                let name = profile.name.clone();
+                match crate::settings_profile::delete_custom_profile(&name) {
+                    Ok(()) => {
+                        if app.settings_profiles.name == name {
+                            app.settings_profiles.name = "Default".to_string();
+                        }
+                        app.settings_profiles.available =
+                            crate::settings_profile::all_settings_profiles();
+                        if app.settings_profiles.index >= app.settings_profiles.available.len() {
+                            app.settings_profiles.index =
+                                app.settings_profiles.available.len().saturating_sub(1);
+                        }
+                        app.save_settings();
+                        app.status_message = format!("Deleted profile: {name}");
+                    }
+                    Err(e) => {
+                        app.status_message = format!("Delete failed: {e}");
+                    }
+                }
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_overlay();
+            app.fire_deferred_settings_hooks();
+        }
+        _ => {}
+    }
+}
+
 /// Handle a key press while the message search overlay is open.
 pub fn handle_search_key(app: &mut App, code: KeyCode) {
     let active = app.active_conversation.as_deref().map(str::to_owned);
