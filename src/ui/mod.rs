@@ -518,6 +518,28 @@ mod snapshot_tests {
         insta::assert_snapshot!(output);
     }
 
+    // Scrolled-state render coverage (#496 / #503): every other snapshot renders
+    // at the default bottom-anchored scroll, leaving the scroll-windowing path
+    // (the v0.6.1 stuck-viewport bug surface) uncovered at the buffer level.
+
+    #[test]
+    fn chat_scrolled_up_shows_older_messages() {
+        let mut app = demo_app();
+        // Page up from the bottom; Alice has enough messages to scroll.
+        app.scroll.offset = 6;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn chat_scroll_offset_clamps_at_top() {
+        let mut app = demo_app();
+        // A huge offset must clamp to the top of the content, not overscroll.
+        app.scroll.offset = 100_000;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
     #[test]
     fn body_newlines_render_as_separate_lines() {
         use crate::conversation_store::DisplayMessage;
