@@ -20,7 +20,7 @@ use crate::db::Database;
 use crate::image_render;
 use crate::signal::types::{
     Contact, Group, IdentityInfo, LinkPreview, Mention, MessageStatus, PollData, PollVote,
-    Reaction, SignalEvent, SignalMessage, StyleType,
+    Reaction, ReceiptKind, SignalEvent, SignalMessage, StyleType,
 };
 
 /// Convert a local file path to a file:/// URI (forward slashes, for terminal Ctrl+Click).
@@ -102,7 +102,7 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
             receipt_type,
             timestamps,
         } => {
-            handle_receipt(app, &sender, &receipt_type, &timestamps);
+            handle_receipt(app, &sender, receipt_type, &timestamps);
         }
         SignalEvent::SendTimestamp { rpc_id, server_ts } => {
             handle_send_timestamp(app, &rpc_id, server_ts);
@@ -1485,9 +1485,7 @@ fn handle_send_timestamp(app: &mut App, rpc_id: &str, server_ts: i64) {
         if !app.pending.receipts.is_empty() {
             let buffered = std::mem::take(&mut app.pending.receipts);
             for b in buffered {
-                let Some(status) = receipt_status(&b.receipt_type) else {
-                    continue;
-                };
+                let status = b.receipt_type.status();
                 let unmatched = apply_receipt(app, &b.sender, status, &b.timestamps);
                 if unmatched.is_empty() {
                     continue;
@@ -1495,7 +1493,7 @@ fn handle_send_timestamp(app: &mut App, rpc_id: &str, server_ts: i64) {
                 if b.attempts + 1 >= MAX_RECEIPT_REPLAYS {
                     resolve_receipt_against_db(app, status, &unmatched);
                 } else {
-                    buffer_receipt(app, &b.sender, &b.receipt_type, unmatched, b.attempts + 1);
+                    buffer_receipt(app, &b.sender, b.receipt_type, unmatched, b.attempts + 1);
                 }
             }
         }
@@ -1576,15 +1574,6 @@ const MAX_RECEIPT_REPLAYS: u8 = 8;
 /// evicted when full.
 const MAX_BUFFERED_RECEIPTS: usize = 64;
 
-fn receipt_status(receipt_type: &str) -> Option<MessageStatus> {
-    match receipt_type.to_uppercase().as_str() {
-        "DELIVERY" => Some(MessageStatus::Delivered),
-        "READ" => Some(MessageStatus::Read),
-        "VIEWED" => Some(MessageStatus::Viewed),
-        _ => None,
-    }
-}
-
 /// Apply a receipt to in-memory messages, per timestamp: try the 1:1
 /// conversation keyed by the receipt sender first, then scan all
 /// conversations (group receipts come from a member but the conv is keyed
@@ -1635,34 +1624,31 @@ fn resolve_receipt_against_db(app: &App, new_status: MessageStatus, timestamps: 
 fn buffer_receipt(
     app: &mut App,
     sender: &str,
-    receipt_type: &str,
+    receipt_type: ReceiptKind,
     timestamps: Vec<i64>,
     attempts: u8,
 ) {
     if app.pending.receipts.len() >= MAX_BUFFERED_RECEIPTS {
         let evicted = app.pending.receipts.remove(0);
-        if let Some(status) = receipt_status(&evicted.receipt_type) {
-            resolve_receipt_against_db(app, status, &evicted.timestamps);
-        }
+        resolve_receipt_against_db(app, evicted.receipt_type.status(), &evicted.timestamps);
     }
     app.pending.receipts.push(crate::domain::BufferedReceipt {
         sender: sender.to_string(),
-        receipt_type: receipt_type.to_string(),
+        receipt_type,
         timestamps,
         attempts,
     });
 }
 
-fn handle_receipt(app: &mut App, sender: &str, receipt_type: &str, timestamps: &[i64]) {
-    let Some(new_status) = receipt_status(receipt_type) else {
-        return;
-    };
+fn handle_receipt(app: &mut App, sender: &str, receipt_type: ReceiptKind, timestamps: &[i64]) {
+    let new_status = receipt_type.status();
 
     let unmatched = apply_receipt(app, sender, new_status, timestamps);
 
     if unmatched.is_empty() {
         crate::debug_log::logf(format_args!(
-            "receipt: {receipt_type} from {} -> {new_status:?}",
+            "receipt: {} from {} -> {new_status:?}",
+            receipt_type.as_str(),
             crate::debug_log::mask_phone(sender)
         ));
     } else {
@@ -1671,8 +1657,9 @@ fn handle_receipt(app: &mut App, sender: &str, receipt_type: &str, timestamps: &
         // old per-event flag dropped unmatched timestamps whenever any
         // sibling timestamp in the same event matched, #484.)
         crate::debug_log::logf(format_args!(
-            "receipt: buffering {} unmatched {receipt_type} ts from {}",
+            "receipt: buffering {} unmatched {} ts from {}",
             unmatched.len(),
+            receipt_type.as_str(),
             crate::debug_log::mask_phone(sender)
         ));
         buffer_receipt(app, sender, receipt_type, unmatched, 0);
