@@ -91,6 +91,7 @@ CLI flags override config file values for the current session:
 | `--debug` | Write debug log to `~/.cache/siggy/debug.log` (PII redacted) |
 | `--debug-full` | Same as `--debug` but without redaction |
 | `--reset-lock` | Delete the session-lock passphrase hash and exit |
+| `--check` | Print a setup health report (config, account, signal-cli, download dir) and exit; exit code 0 when ready, 1 otherwise |
 | `-V`, `--version` | Print `siggy <version>` to stdout and exit |
 
 ## Environment variables

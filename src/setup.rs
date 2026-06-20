@@ -287,7 +287,7 @@ pub async fn run_setup(
 /// let the wizard report success via the `where` fallback and then fail at the
 /// linking step when it re-tried the unspawnable bare name. We now verify that
 /// whatever path we return can actually be spawned.
-async fn check_signal_cli(path: &str) -> (bool, String, String) {
+pub(crate) async fn check_signal_cli(path: &str) -> (bool, String, String) {
     // Try the path as given.
     if let Some(display) = try_spawn_version(path).await {
         return (true, display, path.to_string());
