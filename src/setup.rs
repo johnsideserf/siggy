@@ -163,47 +163,28 @@ pub async fn run_setup(
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                    match handle_account_key(
+                        &mut phone_input,
+                        &mut phone_cursor,
+                        &mut phone_error,
+                        key.modifiers,
+                        key.code,
+                    ) {
+                        AccountStepOutcome::Continue => {}
+                        AccountStepOutcome::Cancel => {
                             return Ok(SetupResult::Cancelled);
                         }
-                        (_, KeyCode::Esc) => {
+                        AccountStepOutcome::Back => {
+                            // Phone state is cleared by the handler; reset the
+                            // signal-cli step flags so it re-checks on return.
                             step = Step::SignalCli;
                             signal_cli_found = false;
                             custom_path_mode = false;
-                            phone_input.clear();
-                            phone_cursor = 0;
-                            phone_error = None;
                         }
-                        (_, KeyCode::Enter) => match validate_phone(&phone_input) {
-                            Ok(()) => {
-                                working_config.account = phone_input.clone();
-                                phone_error = None;
-                                step = Step::Linking;
-                            }
-                            Err(msg) => {
-                                phone_error = Some(msg);
-                            }
-                        },
-                        (_, KeyCode::Backspace) => {
-                            if phone_cursor > 0 {
-                                phone_cursor -= 1;
-                                phone_input.remove(phone_cursor);
-                            }
-                            phone_error = None;
+                        AccountStepOutcome::Submit(account) => {
+                            working_config.account = account;
+                            step = Step::Linking;
                         }
-                        (_, KeyCode::Left) => {
-                            phone_cursor = phone_cursor.saturating_sub(1);
-                        }
-                        (_, KeyCode::Right) if phone_cursor < phone_input.len() => {
-                            phone_cursor += 1;
-                        }
-                        (_, KeyCode::Char(c)) => {
-                            phone_input.insert(phone_cursor, c);
-                            phone_cursor += 1;
-                            phone_error = None;
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -404,6 +385,74 @@ fn validate_phone(input: &str) -> Result<(), String> {
         return Err("Only digits allowed after +".to_string());
     }
     Ok(())
+}
+
+/// What a key press on the Account (phone-entry) step decided. Lets the pure
+/// input/transition logic be unit-tested without driving a real terminal (#503).
+#[derive(Debug, PartialEq, Eq)]
+enum AccountStepOutcome {
+    /// Stay on the step (text edited, cursor moved, or invalid submit).
+    Continue,
+    /// Ctrl-C: cancel setup entirely.
+    Cancel,
+    /// Esc: go back to the signal-cli step.
+    Back,
+    /// Enter with a valid phone number (carries the validated input).
+    Submit(String),
+}
+
+/// Apply a key press to the Account step's phone-entry state. Pure: mutates only
+/// the passed-in buffers and returns the transition decision. On `Back` it
+/// clears the phone state itself; the caller resets the signal-cli step flags.
+fn handle_account_key(
+    phone_input: &mut String,
+    phone_cursor: &mut usize,
+    phone_error: &mut Option<String>,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> AccountStepOutcome {
+    match (modifiers, code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => AccountStepOutcome::Cancel,
+        (_, KeyCode::Esc) => {
+            phone_input.clear();
+            *phone_cursor = 0;
+            *phone_error = None;
+            AccountStepOutcome::Back
+        }
+        (_, KeyCode::Enter) => match validate_phone(phone_input) {
+            Ok(()) => {
+                *phone_error = None;
+                AccountStepOutcome::Submit(phone_input.clone())
+            }
+            Err(msg) => {
+                *phone_error = Some(msg);
+                AccountStepOutcome::Continue
+            }
+        },
+        (_, KeyCode::Backspace) => {
+            if *phone_cursor > 0 {
+                *phone_cursor -= 1;
+                phone_input.remove(*phone_cursor);
+            }
+            *phone_error = None;
+            AccountStepOutcome::Continue
+        }
+        (_, KeyCode::Left) => {
+            *phone_cursor = phone_cursor.saturating_sub(1);
+            AccountStepOutcome::Continue
+        }
+        (_, KeyCode::Right) if *phone_cursor < phone_input.len() => {
+            *phone_cursor += 1;
+            AccountStepOutcome::Continue
+        }
+        (_, KeyCode::Char(c)) => {
+            phone_input.insert(*phone_cursor, c);
+            *phone_cursor += 1;
+            *phone_error = None;
+            AccountStepOutcome::Continue
+        }
+        _ => AccountStepOutcome::Continue,
+    }
 }
 
 fn step_label(current: Step) -> &'static str {
@@ -930,5 +979,97 @@ mod tests {
             validate_phone("+1555+234567").unwrap_err(),
             "Only digits allowed after +"
         );
+    }
+
+    // --- handle_account_key (#503) ---
+
+    fn account_key(
+        input: &str,
+        cursor: usize,
+        modifiers: KeyModifiers,
+        code: KeyCode,
+    ) -> (AccountStepOutcome, String, usize, Option<String>) {
+        let mut phone = input.to_string();
+        let mut cur = cursor;
+        let mut err: Option<String> = Some("stale".to_string());
+        let outcome = handle_account_key(&mut phone, &mut cur, &mut err, modifiers, code);
+        (outcome, phone, cur, err)
+    }
+
+    #[test]
+    fn account_key_typing_inserts_and_clears_error() {
+        let (outcome, phone, cur, err) =
+            account_key("+1", 2, KeyModifiers::NONE, KeyCode::Char('5'));
+        assert_eq!(outcome, AccountStepOutcome::Continue);
+        assert_eq!(phone, "+15");
+        assert_eq!(cur, 3);
+        assert_eq!(err, None);
+    }
+
+    #[test]
+    fn account_key_inserts_at_cursor() {
+        let (_, phone, cur, _) = account_key("+19", 1, KeyModifiers::NONE, KeyCode::Char('5'));
+        assert_eq!(phone, "+519");
+        assert_eq!(cur, 2);
+    }
+
+    #[test]
+    fn account_key_backspace_removes_before_cursor() {
+        let (outcome, phone, cur, err) =
+            account_key("+159", 4, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!(outcome, AccountStepOutcome::Continue);
+        assert_eq!(phone, "+15");
+        assert_eq!(cur, 3);
+        assert_eq!(err, None);
+        // Backspace at the start is a no-op.
+        let (_, phone, cur, _) = account_key("+15", 0, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!(phone, "+15");
+        assert_eq!(cur, 0);
+    }
+
+    #[test]
+    fn account_key_cursor_nav_is_bounded() {
+        let (_, _, cur, _) = account_key("+15", 0, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(cur, 0, "left saturates at 0");
+        let (_, _, cur, _) = account_key("+15", 3, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(cur, 3, "right past the end is a no-op");
+        let (_, _, cur, _) = account_key("+15", 1, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(cur, 2);
+    }
+
+    #[test]
+    fn account_key_esc_goes_back_and_clears_state() {
+        let (outcome, phone, cur, err) =
+            account_key("+15551234567", 5, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(outcome, AccountStepOutcome::Back);
+        assert_eq!(phone, "");
+        assert_eq!(cur, 0);
+        assert_eq!(err, None);
+    }
+
+    #[test]
+    fn account_key_ctrl_c_cancels() {
+        let (outcome, _, _, _) =
+            account_key("+15551234567", 0, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(outcome, AccountStepOutcome::Cancel);
+    }
+
+    #[test]
+    fn account_key_enter_invalid_sets_error_and_stays() {
+        let (outcome, phone, _, err) = account_key("123", 3, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(outcome, AccountStepOutcome::Continue);
+        assert_eq!(phone, "123", "input is preserved on invalid submit");
+        assert_eq!(err.as_deref(), Some("Must start with + (E.164 format)"));
+    }
+
+    #[test]
+    fn account_key_enter_valid_submits() {
+        let (outcome, _, _, err) =
+            account_key("+15551234567", 12, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(
+            outcome,
+            AccountStepOutcome::Submit("+15551234567".to_string())
+        );
+        assert_eq!(err, None);
     }
 }
