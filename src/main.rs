@@ -74,6 +74,14 @@ fn reconnect_backoff(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.min(6)).min(30))
 }
 
+/// Whether the session should auto-lock now (#438). `timeout_mins == 0` disables
+/// it; otherwise lock once keyboard `idle` reaches that many minutes and we are
+/// not already locked. Only keypresses reset idle (the caller excludes mouse
+/// motion), so a wireless mouse on a desk can't hold the lock open forever.
+fn should_auto_lock(timeout_mins: u64, idle: Duration, already_locked: bool) -> bool {
+    timeout_mins > 0 && !already_locked && idle >= Duration::from_secs(timeout_mins * 60)
+}
+
 /// Set restrictive permissions (0600) on a sensitive file (Unix only).
 #[cfg(unix)]
 fn set_file_permissions(path: &std::path::Path) {
@@ -1363,6 +1371,8 @@ async fn run_app(
     // earliest time the next spawn attempt may run; None means "try now".
     let mut reconnect_attempts: u32 = 0;
     let mut next_reconnect_at: Option<Instant> = None;
+    // Auto-lock idle tracking (#438): reset on every keypress (not mouse).
+    let mut last_activity = Instant::now();
     // Loop-rate diagnostics: only counted/logged when --debug is on. Helps
     // locate non-converging redraw triggers (see issue #408). Cheap when off.
     let mut diag_last = Instant::now();
@@ -1496,6 +1506,7 @@ async fn run_app(
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
+                    last_activity = Instant::now();
                     if app.keybindings_overlay.capturing {
                         app.handle_keybinding_capture(key.modifiers, key.code);
                     } else if !app.handle_global_key(key.modifiers, key.code) {
@@ -1536,6 +1547,16 @@ async fn run_app(
                 _ => {}
             }
             had_terminal_event = event::poll(Duration::ZERO)?;
+        }
+
+        // Auto-lock after configured keyboard inactivity (#438).
+        if should_auto_lock(
+            config.lock_timeout,
+            last_activity.elapsed(),
+            app.lock.is_locked(),
+        ) {
+            app.lock_now();
+            needs_redraw = true;
         }
 
         // Drain signal events (non-blocking), detect disconnect
@@ -1710,6 +1731,24 @@ async fn run_app(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_auto_lock_respects_timeout_and_state() {
+        let min = Duration::from_secs(60);
+        // Disabled: never locks, however idle.
+        assert!(!should_auto_lock(0, Duration::from_secs(99999), false));
+        // Enabled, idle past the threshold, not yet locked -> lock.
+        assert!(should_auto_lock(1, min, false));
+        assert!(should_auto_lock(5, 5 * min, false));
+        // Idle below the threshold -> don't lock.
+        assert!(!should_auto_lock(
+            5,
+            5 * min - Duration::from_secs(1),
+            false
+        ));
+        // Already locked -> no-op (don't re-lock).
+        assert!(!should_auto_lock(1, 10 * min, true));
+    }
 
     #[test]
     fn reconnect_backoff_is_exponential_and_capped() {
