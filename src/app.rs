@@ -1058,6 +1058,26 @@ impl App {
         if len == 0 {
             return drained;
         }
+
+        // Skip the viewport scan when nothing that affects it has changed since
+        // the last scan. ensure_active_images runs every 50ms tick; without this
+        // gate it rescans up to 60 messages and rebuilds probe keys on every idle
+        // frame (#492). The signature observes the scan's inputs directly (conv,
+        // scroll, message count, image settings) so it can't miss a trigger the
+        // way per-mutation dirty flags can. A completed background render
+        // (`drained`) frees an in-flight slot, so always rescan after one.
+        let signature = (
+            id.clone(),
+            self.scroll.offset,
+            len,
+            self.image.image_mode,
+            self.image.show_link_previews,
+        );
+        if !drained && self.image.scan_signature.as_ref() == Some(&signature) {
+            return drained;
+        }
+        self.image.scan_signature = Some(signature);
+
         let end = len
             .saturating_sub(self.scroll.offset.saturating_sub(5))
             .min(len);
@@ -7410,6 +7430,67 @@ mod tests {
             "focus must follow the same message after the shift"
         );
         assert_eq!(conv.messages[1].body, "newest");
+    }
+
+    #[rstest]
+    fn ensure_active_images_scan_is_gated_by_signature(mut app: App) {
+        let conv_id = "+1";
+        app.store
+            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
+            // Plain (non-image) message: the scan finds no work and spawns
+            // nothing, so no tokio runtime is needed for this test.
+            conv.messages.push(outgoing_sending_msg(1000, "hi"));
+        }
+        app.active_conversation = Some(conv_id.to_string());
+        app.image.image_mode = crate::domain::ImageMode::Halfblock;
+        app.image.show_link_previews = true;
+        app.scroll.offset = 0;
+
+        // First scan records the signature of its inputs.
+        assert!(app.image.scan_signature.is_none());
+        app.ensure_active_images();
+        assert_eq!(
+            app.image.scan_signature,
+            Some((
+                conv_id.to_string(),
+                0,
+                1,
+                crate::domain::ImageMode::Halfblock,
+                true
+            ))
+        );
+
+        // Scrolling changes the signature on the next scan.
+        app.scroll.offset = 3;
+        app.ensure_active_images();
+        assert_eq!(
+            app.image.scan_signature,
+            Some((
+                conv_id.to_string(),
+                3,
+                1,
+                crate::domain::ImageMode::Halfblock,
+                true
+            ))
+        );
+
+        // None mode short-circuits before the signature is touched, so a
+        // subsequent scroll while disabled does not update it.
+        app.image.image_mode = crate::domain::ImageMode::None;
+        app.scroll.offset = 9;
+        app.ensure_active_images();
+        assert_eq!(
+            app.image.scan_signature,
+            Some((
+                conv_id.to_string(),
+                3,
+                1,
+                crate::domain::ImageMode::Halfblock,
+                true
+            )),
+            "None mode returns before recording a new signature"
+        );
     }
 
     #[rstest]

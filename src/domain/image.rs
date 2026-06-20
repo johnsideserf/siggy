@@ -59,6 +59,11 @@ pub struct ImageState {
     pub image_render_rx: mpsc::Receiver<ImageRenderResult>,
     /// In-flight background renders: (conv_id, timestamp, is_preview)
     pub image_render_in_flight: HashSet<(String, i64, bool)>,
+    /// Cached inputs of the last viewport scan in `ensure_active_images`:
+    /// (conv_id, scroll_offset, message_count, image_mode, show_link_previews).
+    /// When unchanged and no render just completed, the per-tick scan is
+    /// skipped to avoid idle CPU churn (#492).
+    pub scan_signature: Option<(String, usize, usize, ImageMode, bool)>,
 }
 
 impl ImageState {
@@ -88,6 +93,7 @@ impl ImageState {
             image_render_tx,
             image_render_rx,
             image_render_in_flight: HashSet::new(),
+            scan_signature: None,
         }
     }
 }
