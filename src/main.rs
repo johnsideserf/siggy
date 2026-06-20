@@ -172,6 +172,7 @@ async fn main() -> Result<()> {
     let mut debug_full = false;
     let mut reset_lock = false;
     let mut check = false;
+    let mut list = false;
     let mut send_args: Option<(String, String)> = None;
 
     let mut i = 1;
@@ -223,6 +224,10 @@ async fn main() -> Result<()> {
                 check = true;
                 i += 1;
             }
+            "--list" => {
+                list = true;
+                i += 1;
+            }
             "--send" => {
                 if i + 2 < args.len() {
                     send_args = Some((args[i + 1].clone(), args[i + 2].clone()));
@@ -252,6 +257,9 @@ async fn main() -> Result<()> {
                     "      --check             Print a setup health report and exit (0 = ready)"
                 );
                 eprintln!("      --send <TO> <MSG>   Send one message non-interactively and exit");
+                eprintln!(
+                    "      --list              List cached conversations (tab-separated) and exit"
+                );
                 eprintln!("  -V, --version           Print version and exit");
                 eprintln!("      --help              Show this help");
                 std::process::exit(0);
@@ -331,6 +339,29 @@ async fn main() -> Result<()> {
             if ready { "ready" } else { "not ready" }
         );
         std::process::exit(if ready { 0 } else { 1 });
+    }
+
+    // Non-interactive conversation list for scripts (#257). Reads the cached DB
+    // (no signal-cli spawn) and prints tab-separated rows: unread, type, name, id
+    // -- no header, so it pipes cleanly into grep/cut/awk.
+    if list {
+        let db_path = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("siggy")
+            .join("siggy.db");
+        if !db_path.exists() {
+            eprintln!(
+                "no database at {} (run siggy once to create it)",
+                db_path.display()
+            );
+            std::process::exit(1);
+        }
+        let db = db::Database::open(&db_path)?;
+        for c in db.load_conversations(1)? {
+            let kind = if c.is_group { "group" } else { "dm" };
+            println!("{}\t{}\t{}\t{}", c.unread, kind, c.name, c.id);
+        }
+        std::process::exit(0);
     }
 
     // Non-interactive one-shot send for scripts/cron (#257). No TUI; exit 0 on
