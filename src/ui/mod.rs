@@ -16,7 +16,9 @@ mod welcome;
 
 use autocomplete::draw_autocomplete;
 use chat_pane::draw_chat_area;
-pub use links::LinkRegion;
+// LinkRegion now lives in `domain` (#495); keep `crate::ui::LinkRegion` working
+// for existing callers by re-exporting it here.
+pub use crate::domain::LinkRegion;
 use links::collect_link_regions;
 use overlays::about::draw_about;
 use overlays::action_menu::{draw_action_menu, draw_delete_confirm};
