@@ -224,21 +224,16 @@ pub fn handle_pin_duration_key(app: &mut App, code: KeyCode) -> Option<SendReque
 
 /// Handle a key press while the poll vote overlay is open.
 pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
-    let pending = app.poll_vote.pending.as_ref()?;
-    let option_count = pending.options.len();
+    let (option_count, allow_multiple) = {
+        let pending = app.poll_vote.pending.as_ref()?;
+        (pending.options.len(), pending.allow_multiple)
+    };
+    let action = classify_list_key(code, false);
+    if crate::list_overlay::apply_nav(&action, &mut app.poll_vote.index, option_count) {
+        return None;
+    }
     match code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.poll_vote.index < option_count.saturating_sub(1) {
-                app.poll_vote.index += 1;
-            }
-            None
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.poll_vote.index = app.poll_vote.index.saturating_sub(1);
-            None
-        }
         KeyCode::Char(' ') => {
-            let allow_multiple = pending.allow_multiple;
             if allow_multiple {
                 if let Some(sel) = app.poll_vote.selections.get_mut(app.poll_vote.index) {
                     *sel = !*sel;

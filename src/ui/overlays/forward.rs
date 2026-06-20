@@ -46,13 +46,10 @@ pub(in crate::ui) fn draw_forward(frame: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(""));
 
-    // Conversation list
-    let visible_rows = inner.height.saturating_sub(3) as usize;
-    let scroll_offset = if app.forward.index >= visible_rows {
-        app.forward.index - visible_rows + 1
-    } else {
-        0
-    };
+    // Conversation list. Three lines are reserved around it: the filter line,
+    // the blank spacer, and the footer.
+    let (visible_rows, scroll_offset) =
+        list_overlay::scroll_layout(inner.height as usize, 3, app.forward.index);
     let end = (scroll_offset + visible_rows).min(app.forward.filtered.len());
 
     if app.forward.filtered.is_empty() {

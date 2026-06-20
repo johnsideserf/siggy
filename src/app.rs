@@ -1218,16 +1218,11 @@ impl App {
     /// Handle a key press in the Customize sub-menu (Theme, Keybindings, Profile).
     pub fn handle_customize_key(&mut self, code: KeyCode) {
         const ITEMS: usize = 3; // Theme, Keybindings, Profile
+        let action = classify_list_key(code, false);
+        if list_overlay::apply_nav(&action, &mut self.settings_overlay.customize_index, ITEMS) {
+            return;
+        }
         match code {
-            KeyCode::Char('j') | KeyCode::Down
-                if self.settings_overlay.customize_index + 1 < ITEMS =>
-            {
-                self.settings_overlay.customize_index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.settings_overlay.customize_index =
-                    self.settings_overlay.customize_index.saturating_sub(1);
-            }
             KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
                 self.close_overlay();
                 self.save_settings();
@@ -2514,52 +2509,48 @@ impl App {
 
     /// Handle a key press while the safety-number verify overlay is open.
     pub fn handle_verify_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.verify.confirming = false;
-                if !self.verify.identities.is_empty()
-                    && self.verify.index < self.verify.identities.len() - 1
-                {
-                    self.verify.index += 1;
+        let action = classify_list_key(code, false);
+        // Any navigation cancels a pending confirmation, matching the original
+        // per-key reset.
+        if list_overlay::apply_nav(
+            &action,
+            &mut self.verify.index,
+            self.verify.identities.len(),
+        ) {
+            self.verify.confirming = false;
+            return None;
+        }
+        if action == ListKeyAction::Close {
+            self.verify.confirming = false;
+            self.close_overlay();
+            return None;
+        }
+        // 'v' and Enter both trigger verification; every other key cancels a
+        // pending confirm.
+        if action == ListKeyAction::Select || code == KeyCode::Char('v') {
+            if let Some(id) = self.verify.identities.get(self.verify.index) {
+                if id.safety_number.is_empty() {
+                    self.status_message = "Safety number not available — cannot verify".to_string();
+                    return None;
                 }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.verify.confirming = false;
-                if self.verify.index > 0 {
-                    self.verify.index -= 1;
-                }
-            }
-            KeyCode::Char('v') | KeyCode::Enter => {
-                if let Some(id) = self.verify.identities.get(self.verify.index) {
-                    if id.safety_number.is_empty() {
-                        self.status_message =
-                            "Safety number not available — cannot verify".to_string();
-                        return None;
+                if self.verify.confirming {
+                    // Second press: actually trust with the specific safety number
+                    if let Some(ref number) = id.number {
+                        let recipient = number.clone();
+                        let safety_number = id.safety_number.clone();
+                        self.verify.confirming = false;
+                        return Some(SendRequest::TrustIdentity {
+                            recipient,
+                            safety_number,
+                        });
                     }
-                    if self.verify.confirming {
-                        // Second press: actually trust with the specific safety number
-                        if let Some(ref number) = id.number {
-                            let recipient = number.clone();
-                            let safety_number = id.safety_number.clone();
-                            self.verify.confirming = false;
-                            return Some(SendRequest::TrustIdentity {
-                                recipient,
-                                safety_number,
-                            });
-                        }
-                    } else {
-                        // First press: ask for confirmation
-                        self.verify.confirming = true;
-                    }
+                } else {
+                    // First press: ask for confirmation
+                    self.verify.confirming = true;
                 }
             }
-            KeyCode::Esc => {
-                self.verify.confirming = false;
-                self.close_overlay();
-            }
-            _ => {
-                self.verify.confirming = false;
-            }
+        } else {
+            self.verify.confirming = false;
         }
         None
     }
@@ -4537,13 +4528,12 @@ impl App {
         }
 
         // Navigation mode
+        let action = classify_list_key(code, false);
+        // The list is the editable fields plus the Save button (SAVE_INDEX).
+        if list_overlay::apply_nav(&action, &mut self.profile.index, SAVE_INDEX + 1) {
+            return None;
+        }
         match code {
-            KeyCode::Char('j') | KeyCode::Down if self.profile.index < SAVE_INDEX => {
-                self.profile.index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up if self.profile.index > 0 => {
-                self.profile.index -= 1;
-            }
             KeyCode::Enter => {
                 if self.profile.index < FIELD_COUNT {
                     // Start editing the selected field
@@ -7491,6 +7481,135 @@ mod tests {
             )),
             "None mode returns before recording a new signature"
         );
+    }
+
+    // --- list_overlay nav adoption (#499) ---
+
+    fn ident(number: &str, safety: &str) -> crate::signal::types::IdentityInfo {
+        crate::signal::types::IdentityInfo {
+            number: Some(number.to_string()),
+            uuid: None,
+            fingerprint: String::new(),
+            safety_number: safety.to_string(),
+            trust_level: TrustLevel::Untrusted,
+            added_timestamp: 0,
+        }
+    }
+
+    fn poll_opt(id: i64, text: &str) -> crate::signal::types::PollOption {
+        crate::signal::types::PollOption {
+            id,
+            text: text.to_string(),
+        }
+    }
+
+    #[rstest]
+    fn verify_nav_clamps_and_cancels_confirming(mut app: App) {
+        app.verify.identities = vec![ident("+1", "aaa"), ident("+2", "bbb")];
+        app.verify.index = 0;
+
+        app.handle_verify_key(KeyCode::Char('j'));
+        assert_eq!(app.verify.index, 1);
+        app.handle_verify_key(KeyCode::Char('j'));
+        assert_eq!(app.verify.index, 1, "must clamp at len - 1");
+
+        // 'v' arms confirmation; a nav key must cancel it (preserved side effect).
+        app.handle_verify_key(KeyCode::Char('v'));
+        assert!(app.verify.confirming);
+        app.handle_verify_key(KeyCode::Char('k'));
+        assert!(
+            !app.verify.confirming,
+            "navigation cancels a pending confirm"
+        );
+        assert_eq!(app.verify.index, 0);
+    }
+
+    #[rstest]
+    fn verify_nav_on_empty_list_is_safe_noop(mut app: App) {
+        app.verify.identities.clear();
+        app.verify.index = 0;
+        // The old hand-rolled Down arm guarded against an empty list; apply_nav
+        // must preserve that (no panic, no movement).
+        assert!(app.handle_verify_key(KeyCode::Char('j')).is_none());
+        assert_eq!(app.verify.index, 0);
+    }
+
+    #[rstest]
+    fn verify_second_press_emits_trust_identity(mut app: App) {
+        app.verify.identities = vec![ident("+15551234567", "safety-1")];
+        app.verify.index = 0;
+
+        assert!(app.handle_verify_key(KeyCode::Enter).is_none());
+        assert!(app.verify.confirming, "first press arms confirmation");
+
+        match app.handle_verify_key(KeyCode::Enter) {
+            Some(SendRequest::TrustIdentity {
+                recipient,
+                safety_number,
+            }) => {
+                assert_eq!(recipient, "+15551234567");
+                assert_eq!(safety_number, "safety-1");
+            }
+            Some(_) => panic!("expected TrustIdentity, got a different SendRequest"),
+            None => panic!("expected TrustIdentity, got None"),
+        }
+    }
+
+    fn seed_poll_vote(app: &mut App, allow_multiple: bool) {
+        app.poll_vote.pending = Some(PollVotePending {
+            conv_id: "+1".to_string(),
+            is_group: false,
+            poll_author: "+1".to_string(),
+            poll_timestamp: 1,
+            allow_multiple,
+            options: vec![poll_opt(0, "a"), poll_opt(1, "b")],
+        });
+        app.poll_vote.selections = vec![false, false];
+        app.poll_vote.index = 0;
+    }
+
+    #[rstest]
+    fn poll_vote_nav_clamps_within_options(mut app: App) {
+        seed_poll_vote(&mut app, false);
+
+        app.handle_poll_vote_key(KeyCode::Char('j'));
+        assert_eq!(app.poll_vote.index, 1);
+        app.handle_poll_vote_key(KeyCode::Char('j'));
+        assert_eq!(app.poll_vote.index, 1, "clamp at the last option");
+        app.handle_poll_vote_key(KeyCode::Char('k'));
+        assert_eq!(app.poll_vote.index, 0);
+        app.handle_poll_vote_key(KeyCode::Char('k'));
+        assert_eq!(app.poll_vote.index, 0, "saturate at the first option");
+    }
+
+    #[rstest]
+    fn poll_vote_space_single_select_replaces(mut app: App) {
+        // The borrow restructure must not break the Space toggle behavior.
+        seed_poll_vote(&mut app, false);
+        app.handle_poll_vote_key(KeyCode::Char(' '));
+        assert_eq!(app.poll_vote.selections, vec![true, false]);
+        app.poll_vote.index = 1;
+        app.handle_poll_vote_key(KeyCode::Char(' '));
+        assert_eq!(
+            app.poll_vote.selections,
+            vec![false, true],
+            "single-select replaces the prior choice"
+        );
+    }
+
+    #[rstest]
+    fn profile_nav_clamps_to_save_button(mut app: App) {
+        app.profile.editing = false;
+        app.profile.index = 0;
+        // Four editable fields plus the Save button: indices 0..=4.
+        for _ in 0..10 {
+            app.handle_profile_key(KeyCode::Char('j'));
+        }
+        assert_eq!(app.profile.index, 4, "clamp at the Save button");
+        for _ in 0..10 {
+            app.handle_profile_key(KeyCode::Char('k'));
+        }
+        assert_eq!(app.profile.index, 0, "saturate at the first field");
     }
 
     #[rstest]
