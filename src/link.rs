@@ -324,3 +324,62 @@ fn centered_rect(
         .areas(centered);
     centered
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- render_qr_lines (#503) ---
+    //
+    // A rendering bug here produces an unscannable QR, which is indistinguishable
+    // from a linking failure to the user. These assert the structure CI can check
+    // without a camera: dimensions, the quiet-zone border, and the glyph set.
+
+    #[test]
+    fn render_qr_lines_dimensions_and_quiet_zone() {
+        let qr = qrcode::QrCode::new(b"sgnl://linkdevice?uuid=test").unwrap();
+        let width = qr.width();
+        let total = width + 4; // 2-module quiet zone on each side
+        let lines = render_qr_lines(&qr);
+
+        // Two grid rows are packed per text line via half-blocks.
+        assert_eq!(lines.len(), total.div_ceil(2));
+
+        for line in &lines {
+            let spans: Vec<&str> = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            // Each line spans the full padded width.
+            assert_eq!(spans.len(), total);
+            // Only the four expected glyphs appear.
+            for ch in &spans {
+                assert!(
+                    matches!(*ch, "\u{2588}" | "\u{2580}" | "\u{2584}" | " "),
+                    "unexpected glyph: {ch:?}"
+                );
+            }
+            // The 2-module quiet columns on each side are always blank.
+            assert_eq!(spans[0], " ");
+            assert_eq!(spans[1], " ");
+            assert_eq!(spans[total - 2], " ");
+            assert_eq!(spans[total - 1], " ");
+        }
+
+        // Top quiet zone: the first line packs grid rows 0 and 1, both blank.
+        let first: Vec<&str> = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            first.iter().all(|c| *c == " "),
+            "top quiet row must be blank"
+        );
+    }
+
+    #[test]
+    fn render_qr_lines_contains_dark_modules() {
+        // A real QR has finder patterns; at least some non-blank glyphs must render.
+        let qr = qrcode::QrCode::new(b"sgnl://linkdevice?uuid=test").unwrap();
+        let lines = render_qr_lines(&qr);
+        let any_dark = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .any(|s| s.content.as_ref() != " ");
+        assert!(any_dark, "expected dark modules in a real QR code");
+    }
+}
