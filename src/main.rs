@@ -11,6 +11,7 @@ mod config;
 mod conversation_store;
 mod db;
 mod debug_log;
+mod demo;
 mod domain;
 mod fs_migrate;
 mod handlers;
