@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::db::Database;
 use crate::signal::types::{
