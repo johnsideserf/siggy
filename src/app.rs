@@ -38,7 +38,7 @@ use crate::image_render::ImageProtocol;
 use crate::input::COMMANDS;
 use crate::input::{next_char_pos, prev_char_pos};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
-use crate::list_overlay::{self, ListKeyAction, classify_list_key};
+use crate::list_overlay::{self, classify_list_key};
 use crate::mute::MuteState;
 use crate::signal::types::{MessageStatus, Reaction, SignalEvent, TrustLevel};
 use crate::theme::{self, Theme};
@@ -1969,53 +1969,13 @@ impl App {
 
     /// Handle a key press while the action menu overlay is open.
     pub fn handle_action_menu_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let item_count = self.action_menu_items().len();
-        if item_count == 0 {
-            self.close_overlay();
-            return None;
-        }
-        let action = classify_list_key(code, false);
-        if list_overlay::apply_nav(&action, &mut self.action_menu.index, item_count) {
-            return None;
-        }
-        match action {
-            ListKeyAction::Select => {
-                let items = self.action_menu_items();
-                if let Some(action) = items.get(self.action_menu.index) {
-                    let hint = action.key_hint;
-                    self.close_overlay();
-                    self.execute_action_by_hint(hint)
-                } else {
-                    self.close_overlay();
-                    None
-                }
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-                None
-            }
-            ListKeyAction::None => {
-                // Action menu shortcut keys: parse the keypress into a hint,
-                // then check that the hint corresponds to an action currently
-                // present in the menu (the menu items vary by message state).
-                let KeyCode::Char(c) = code else { return None };
-                let hint = ActionMenuHint::from_char(c)?;
-                let items = self.action_menu_items();
-                if items.iter().any(|a| a.key_hint == hint) {
-                    self.close_overlay();
-                    self.execute_action_by_hint(hint)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_action_menu_key(self, code)
     }
 
     /// Execute an action by its hint. Reuses the same logic as the direct
     /// Normal-mode keybinds. Exhaustive match: adding a variant to
     /// [`ActionMenuHint`] is a compiler error here until handled.
-    fn execute_action_by_hint(&mut self, hint: ActionMenuHint) -> Option<SendRequest> {
+    pub(crate) fn execute_action_by_hint(&mut self, hint: ActionMenuHint) -> Option<SendRequest> {
         use crate::handlers::keys;
         match hint {
             ActionMenuHint::Reply => keys::execute_reply(self),
