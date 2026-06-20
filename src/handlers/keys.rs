@@ -293,3 +293,111 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
         _ => None,
     }
 }
+
+/// Handle a key press while the safety-number verify overlay is open.
+pub fn handle_verify_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    let action = classify_list_key(code, false);
+    // Any navigation cancels a pending confirmation, matching the original
+    // per-key reset.
+    if crate::list_overlay::apply_nav(&action, &mut app.verify.index, app.verify.identities.len()) {
+        app.verify.confirming = false;
+        return None;
+    }
+    if action == ListKeyAction::Close {
+        app.verify.confirming = false;
+        app.close_overlay();
+        return None;
+    }
+    // 'v' and Enter both trigger verification; every other key cancels a
+    // pending confirm.
+    if action == ListKeyAction::Select || code == KeyCode::Char('v') {
+        if let Some(id) = app.verify.identities.get(app.verify.index) {
+            if id.safety_number.is_empty() {
+                app.status_message = "Safety number not available — cannot verify".to_string();
+                return None;
+            }
+            if app.verify.confirming {
+                // Second press: actually trust with the specific safety number
+                if let Some(ref number) = id.number {
+                    let recipient = number.clone();
+                    let safety_number = id.safety_number.clone();
+                    app.verify.confirming = false;
+                    return Some(SendRequest::TrustIdentity {
+                        recipient,
+                        safety_number,
+                    });
+                }
+            } else {
+                // First press: ask for confirmation
+                app.verify.confirming = true;
+            }
+        }
+    } else {
+        app.verify.confirming = false;
+    }
+    None
+}
+
+/// Handle a key press while the profile editor overlay is open.
+pub fn handle_profile_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    const FIELD_COUNT: usize = 4;
+    const SAVE_INDEX: usize = FIELD_COUNT;
+
+    if app.profile.editing {
+        // Editing a field
+        match code {
+            KeyCode::Esc => {
+                // Cancel edit, discard buffer
+                app.profile.editing = false;
+            }
+            KeyCode::Enter => {
+                // Confirm edit, write buffer back to field
+                app.profile.fields[app.profile.index] = app.profile.edit_buffer.clone();
+                app.profile.editing = false;
+            }
+            KeyCode::Backspace => {
+                app.profile.edit_buffer.pop();
+            }
+            KeyCode::Char(c) => {
+                app.profile.edit_buffer.push(c);
+            }
+            _ => {}
+        }
+        return None;
+    }
+
+    // Navigation mode
+    let action = classify_list_key(code, false);
+    // The list is the editable fields plus the Save button (SAVE_INDEX).
+    if crate::list_overlay::apply_nav(&action, &mut app.profile.index, SAVE_INDEX + 1) {
+        return None;
+    }
+    match code {
+        KeyCode::Enter => {
+            if app.profile.index < FIELD_COUNT {
+                // Start editing the selected field
+                app.profile.editing = true;
+                app.profile.edit_buffer = app.profile.fields[app.profile.index].clone();
+            } else {
+                // Save button
+                let [given_name, family_name, about, about_emoji] = app.profile.fields.clone();
+                if given_name.trim().is_empty() {
+                    app.status_message = "Given name is required".to_string();
+                    return None;
+                }
+                app.close_overlay();
+                return Some(SendRequest::UpdateProfile {
+                    given_name,
+                    family_name,
+                    about,
+                    about_emoji,
+                });
+            }
+        }
+        KeyCode::Esc => {
+            app.close_overlay();
+        }
+        _ => {}
+    }
+    None
+}

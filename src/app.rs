@@ -2339,50 +2339,7 @@ impl App {
 
     /// Handle a key press while the safety-number verify overlay is open.
     pub fn handle_verify_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let action = classify_list_key(code, false);
-        // Any navigation cancels a pending confirmation, matching the original
-        // per-key reset.
-        if list_overlay::apply_nav(
-            &action,
-            &mut self.verify.index,
-            self.verify.identities.len(),
-        ) {
-            self.verify.confirming = false;
-            return None;
-        }
-        if action == ListKeyAction::Close {
-            self.verify.confirming = false;
-            self.close_overlay();
-            return None;
-        }
-        // 'v' and Enter both trigger verification; every other key cancels a
-        // pending confirm.
-        if action == ListKeyAction::Select || code == KeyCode::Char('v') {
-            if let Some(id) = self.verify.identities.get(self.verify.index) {
-                if id.safety_number.is_empty() {
-                    self.status_message = "Safety number not available — cannot verify".to_string();
-                    return None;
-                }
-                if self.verify.confirming {
-                    // Second press: actually trust with the specific safety number
-                    if let Some(ref number) = id.number {
-                        let recipient = number.clone();
-                        let safety_number = id.safety_number.clone();
-                        self.verify.confirming = false;
-                        return Some(SendRequest::TrustIdentity {
-                            recipient,
-                            safety_number,
-                        });
-                    }
-                } else {
-                    // First press: ask for confirmation
-                    self.verify.confirming = true;
-                }
-            }
-        } else {
-            self.verify.confirming = false;
-        }
-        None
+        crate::handlers::keys::handle_verify_key(self, code)
     }
 
     pub(crate) fn open_forward_picker(&mut self) {
@@ -4331,66 +4288,7 @@ impl App {
 
     /// Handle keys in the profile editor overlay.
     pub fn handle_profile_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        const FIELD_COUNT: usize = 4;
-        const SAVE_INDEX: usize = FIELD_COUNT;
-
-        if self.profile.editing {
-            // Editing a field
-            match code {
-                KeyCode::Esc => {
-                    // Cancel edit, discard buffer
-                    self.profile.editing = false;
-                }
-                KeyCode::Enter => {
-                    // Confirm edit, write buffer back to field
-                    self.profile.fields[self.profile.index] = self.profile.edit_buffer.clone();
-                    self.profile.editing = false;
-                }
-                KeyCode::Backspace => {
-                    self.profile.edit_buffer.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.profile.edit_buffer.push(c);
-                }
-                _ => {}
-            }
-            return None;
-        }
-
-        // Navigation mode
-        let action = classify_list_key(code, false);
-        // The list is the editable fields plus the Save button (SAVE_INDEX).
-        if list_overlay::apply_nav(&action, &mut self.profile.index, SAVE_INDEX + 1) {
-            return None;
-        }
-        match code {
-            KeyCode::Enter => {
-                if self.profile.index < FIELD_COUNT {
-                    // Start editing the selected field
-                    self.profile.editing = true;
-                    self.profile.edit_buffer = self.profile.fields[self.profile.index].clone();
-                } else {
-                    // Save button
-                    let [given_name, family_name, about, about_emoji] = self.profile.fields.clone();
-                    if given_name.trim().is_empty() {
-                        self.status_message = "Given name is required".to_string();
-                        return None;
-                    }
-                    self.close_overlay();
-                    return Some(SendRequest::UpdateProfile {
-                        given_name,
-                        family_name,
-                        about,
-                        about_emoji,
-                    });
-                }
-            }
-            KeyCode::Esc => {
-                self.close_overlay();
-            }
-            _ => {}
-        }
-        None
+        crate::handlers::keys::handle_profile_key(self, code)
     }
 
     /// Handle a key press while the poll vote overlay is open.
