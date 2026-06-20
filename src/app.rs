@@ -20,12 +20,12 @@ pub use crate::conversation_store::{Conversation, DisplayMessage, Quote};
 use crate::conversation_store::{ConversationStore, db_warn};
 use crate::db::Database;
 use crate::domain::{
-    ActionMenuState, ContactsOverlayState, EmojiPickerAction, EmojiPickerSource, EmojiPickerState,
-    FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, InputState,
-    KeybindingsOverlayState, LockState, MouseState, NotificationState, PendingState,
-    PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, ScrollState,
-    SearchAction, SearchState, SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState,
-    TypingState, VerifyOverlayState,
+    ActionMenuState, ContactsOverlayState, EmojiPickerState, FilePickerState, ForwardOverlayState,
+    GroupMenuOverlayState, ImageState, InputState, KeybindingsOverlayState, LockState, MouseState,
+    NotificationState, PendingState, PinDurationOverlayState, PollVoteOverlayState,
+    ProfileOverlayState, ReactionState, ScrollState, SearchAction, SearchState,
+    SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState, TypingState,
+    VerifyOverlayState,
 };
 // These value types were relocated into `domain` so the domain layer is a leaf
 // (#495). Re-export them here so existing `crate::app::*` references across the
@@ -1303,11 +1303,11 @@ impl App {
     }
 
     /// Handle a key press while the message-request overlay is open.
-    fn handle_message_request_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+    pub(crate) fn handle_message_request_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         crate::handlers::keys::handle_message_request_key(self, code)
     }
 
-    fn handle_reaction_picker_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+    pub(crate) fn handle_reaction_picker_key(&mut self, code: KeyCode) -> Option<SendRequest> {
         crate::handlers::keys::handle_reaction_picker_key(self, code)
     }
 
@@ -1322,7 +1322,7 @@ impl App {
 
     /// Build a SendRequest::Reaction for an arbitrary emoji string.
     /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
-    fn prepare_reaction_send_emoji(&mut self, emoji: &str) -> Option<SendRequest> {
+    pub(crate) fn prepare_reaction_send_emoji(&mut self, emoji: &str) -> Option<SendRequest> {
         let conv_id = self.active_conversation.clone()?;
         let conv = self.store.conversations.get(&conv_id)?;
         let is_group = conv.is_group;
@@ -2112,7 +2112,7 @@ impl App {
     }
 
     /// Handle a key press while sidebar filter is active.
-    fn handle_sidebar_filter_key(&mut self, code: KeyCode) {
+    pub(crate) fn handle_sidebar_filter_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
                 self.clear_sidebar_filter();
@@ -2557,129 +2557,7 @@ impl App {
     }
 
     pub fn handle_overlay_key(&mut self, code: KeyCode) -> (bool, Option<SendRequest>) {
-        let Some(kind) = self.active_overlay() else {
-            return (false, None);
-        };
-        match kind {
-            OverlayKind::SidebarFilter => {
-                self.handle_sidebar_filter_key(code);
-                (true, None)
-            }
-            OverlayKind::PollVote => {
-                let send = self.handle_poll_vote_key(code);
-                (true, send)
-            }
-            OverlayKind::PinDuration => {
-                let send = self.handle_pin_duration_key(code);
-                (true, send)
-            }
-            OverlayKind::ActionMenu => {
-                let send = self.handle_action_menu_key(code);
-                (true, send)
-            }
-            OverlayKind::DeleteConfirm => {
-                let send = self.handle_delete_confirm_key(code);
-                (true, send)
-            }
-            OverlayKind::DeleteConversationConfirm => {
-                let send = self.handle_delete_conversation_confirm_key(code);
-                (true, send)
-            }
-            OverlayKind::FilePicker => {
-                self.handle_file_browser_key(code);
-                (true, None)
-            }
-            OverlayKind::EmojiPicker => match self.emoji_picker.handle_key(code) {
-                EmojiPickerAction::Select(emoji) => {
-                    let source = self.emoji_picker.source;
-                    self.emoji_picker.close();
-                    match source {
-                        EmojiPickerSource::Input => {
-                            self.input.buffer.insert_str(self.input.cursor, &emoji);
-                            self.input.cursor += emoji.len();
-                            (true, None)
-                        }
-                        EmojiPickerSource::Reaction => {
-                            let send = self.prepare_reaction_send_emoji(&emoji);
-                            (true, send)
-                        }
-                    }
-                }
-                EmojiPickerAction::Close => {
-                    let was_reaction = self.emoji_picker.source == EmojiPickerSource::Reaction;
-                    self.emoji_picker.close();
-                    if was_reaction {
-                        self.open_overlay(OverlayKind::ReactionPicker);
-                    }
-                    (true, None)
-                }
-                EmojiPickerAction::None => (true, None),
-            },
-            OverlayKind::ReactionPicker => {
-                let send = self.handle_reaction_picker_key(code);
-                (true, send)
-            }
-            OverlayKind::MessageRequest => {
-                let send = self.handle_message_request_key(code);
-                (true, send)
-            }
-            OverlayKind::GroupMenu => {
-                let send = self.handle_group_menu_key(code);
-                (true, send)
-            }
-            OverlayKind::About => {
-                self.close_overlay();
-                (true, None)
-            }
-            OverlayKind::Profile => {
-                let send = self.handle_profile_key(code);
-                (true, send)
-            }
-            OverlayKind::Help => {
-                self.close_overlay();
-                (true, None)
-            }
-            OverlayKind::Verify => {
-                let send = self.handle_verify_key(code);
-                (true, send)
-            }
-            OverlayKind::Forward => {
-                let send = self.handle_forward_key(code);
-                (true, send)
-            }
-            OverlayKind::Contacts => {
-                self.handle_contacts_key(code);
-                (true, None)
-            }
-            OverlayKind::Search => {
-                self.handle_search_key(code);
-                (true, None)
-            }
-            OverlayKind::SettingsProfiles => {
-                self.handle_settings_profile_manager_key(code);
-                (true, None)
-            }
-            OverlayKind::ThemePicker => {
-                self.handle_theme_key(code);
-                (true, None)
-            }
-            OverlayKind::Keybindings => {
-                self.handle_keybindings_key(code);
-                (true, None)
-            }
-            OverlayKind::Customize => {
-                self.handle_customize_key(code);
-                (true, None)
-            }
-            OverlayKind::Settings => {
-                self.handle_settings_key(code);
-                (true, None)
-            }
-            OverlayKind::Autocomplete => {
-                let send = self.handle_autocomplete_key(code);
-                (true, send)
-            }
-        }
+        crate::handlers::keys::handle_overlay_key(self, code)
     }
 
     /// Handle Normal mode key. Dispatches to scroll, edit, or action sub-handlers.
