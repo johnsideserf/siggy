@@ -74,6 +74,45 @@ fn reconnect_backoff(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.min(6)).min(30))
 }
 
+/// Send a single message non-interactively, await confirmation, and return
+/// whether it was accepted (#257). Spawns signal-cli, sends, then waits up to
+/// 30s for the correlated `SendTimestamp` (ok) or `SendFailed`. A recipient that
+/// does not start with `+` is treated as a group id.
+async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Result<bool> {
+    let mut client = SignalClient::spawn(config).await?;
+    let is_group = !recipient.starts_with('+');
+    let rpc_id = client
+        .send_message(recipient, body, is_group, &[], &[], None)
+        .await?;
+
+    let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match client.event_rx.recv().await {
+                Some(signal::types::SignalEvent::SendTimestamp { rpc_id: id, .. })
+                    if id == rpc_id =>
+                {
+                    return Some(true);
+                }
+                Some(signal::types::SignalEvent::SendFailed { rpc_id: id }) if id == rpc_id => {
+                    return Some(false);
+                }
+                Some(_) => continue,
+                None => return None, // channel closed: child exited
+            }
+        }
+    })
+    .await;
+
+    let _ = client.shutdown().await;
+    match outcome {
+        Ok(Some(ok)) => Ok(ok),
+        Ok(None) => Err(anyhow::anyhow!(
+            "signal-cli disconnected before confirming the send"
+        )),
+        Err(_) => Err(anyhow::anyhow!("timed out waiting for send confirmation")),
+    }
+}
+
 /// Whether the session should auto-lock now (#438). `timeout_mins == 0` disables
 /// it; otherwise lock once keyboard `idle` reaches that many minutes and we are
 /// not already locked. Only keypresses reset idle (the caller excludes mouse
@@ -133,6 +172,7 @@ async fn main() -> Result<()> {
     let mut debug_full = false;
     let mut reset_lock = false;
     let mut check = false;
+    let mut send_args: Option<(String, String)> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -183,6 +223,15 @@ async fn main() -> Result<()> {
                 check = true;
                 i += 1;
             }
+            "--send" => {
+                if i + 2 < args.len() {
+                    send_args = Some((args[i + 1].clone(), args[i + 2].clone()));
+                    i += 3;
+                } else {
+                    eprintln!("--send requires <recipient> <message>");
+                    std::process::exit(2);
+                }
+            }
             "--help" => {
                 eprintln!("siggy - Terminal Signal client");
                 eprintln!();
@@ -202,6 +251,7 @@ async fn main() -> Result<()> {
                 eprintln!(
                     "      --check             Print a setup health report and exit (0 = ready)"
                 );
+                eprintln!("      --send <TO> <MSG>   Send one message non-interactively and exit");
                 eprintln!("  -V, --version           Print version and exit");
                 eprintln!("      --help              Show this help");
                 std::process::exit(0);
@@ -281,6 +331,25 @@ async fn main() -> Result<()> {
             if ready { "ready" } else { "not ready" }
         );
         std::process::exit(if ready { 0 } else { 1 });
+    }
+
+    // Non-interactive one-shot send for scripts/cron (#257). No TUI; exit 0 on
+    // confirmed send, 1 on rejection/timeout/error.
+    if let Some((recipient, body)) = send_args {
+        match run_send_oneshot(&config, &recipient, &body).await {
+            Ok(true) => {
+                println!("sent");
+                std::process::exit(0);
+            }
+            Ok(false) => {
+                eprintln!("send failed: signal-cli rejected the message");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("send failed: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     // Set up terminal BEFORE anything else so all errors render in the TUI
