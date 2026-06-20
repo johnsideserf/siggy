@@ -2361,32 +2361,7 @@ impl App {
     /// Backspace deletes, Esc clears the buffer (but does NOT unlock).
     /// Returns true if the key was consumed (always true when locked).
     pub fn handle_lock_key(&mut self, code: crossterm::event::KeyCode) -> bool {
-        use crossterm::event::KeyCode;
-        // Any char/Backspace clears the transient error so the user can retry.
-        // Leave error visible on Enter so a submit failure stays on screen.
-        if matches!(code, KeyCode::Char(_) | KeyCode::Backspace) {
-            self.lock.error = None;
-        }
-        match code {
-            KeyCode::Char(c) => {
-                self.lock.input_buffer.push(c);
-                true
-            }
-            KeyCode::Backspace => {
-                self.lock.input_buffer.pop();
-                true
-            }
-            KeyCode::Esc => {
-                // Esc clears the current input but does not unlock or change phase.
-                self.lock.input_buffer.clear();
-                true
-            }
-            KeyCode::Enter => {
-                self.submit_lock_input();
-                true
-            }
-            _ => true, // swallow all other keys; lock screen owns input fully
-        }
+        crate::handlers::keys::handle_lock_key(self, code)
     }
 
     /// Resolve an Enter press on the lock screen by advancing the phase
@@ -2400,7 +2375,7 @@ impl App {
     ///   stay and set the error.
     /// - ChangePassphraseNew: hash + save the new passphrase, transition
     ///   to Unlocked, clear old_passphrase_verified.
-    fn submit_lock_input(&mut self) {
+    pub(crate) fn submit_lock_input(&mut self) {
         use crate::domain::{LockPhase, hash_passphrase, load_hash, save_hash, verify_passphrase};
         let entered = std::mem::take(&mut self.lock.input_buffer);
         match self.lock.phase {
