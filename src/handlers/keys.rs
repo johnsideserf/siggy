@@ -299,6 +299,27 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
     }
 }
 
+/// Handle a key press while the message search overlay is open.
+pub fn handle_search_key(app: &mut App, code: KeyCode) {
+    let active = app.active_conversation.as_deref().map(str::to_owned);
+    let action = app.search.handle_key(code, active.as_deref(), &app.db);
+    app.dispatch_search_action(action);
+}
+
+/// Handle a key press while the file browser overlay is open.
+pub fn handle_file_browser_key(app: &mut App, code: KeyCode) {
+    match app.file_picker.handle_key(code) {
+        crate::domain::FilePickerOutcome::Continue => {}
+        crate::domain::FilePickerOutcome::Selected(path) => {
+            app.pending_attachment = Some(path);
+            app.close_overlay();
+        }
+        crate::domain::FilePickerOutcome::Cancelled => {
+            app.close_overlay();
+        }
+    }
+}
+
 /// Handle a key press while the settings overlay is open.
 pub fn handle_settings_key(app: &mut App, code: KeyCode) {
     let preview_index = SETTINGS.len();
