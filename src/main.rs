@@ -53,7 +53,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
-use app::{App, InputMode, SendRequest};
+use app::{App, InputMode, OverlayKind, SendRequest};
 use config::Config;
 use setup::SetupResult;
 use signal::client::SignalClient;
@@ -1409,6 +1409,16 @@ async fn run_app(
 
         // Background image rendering: drain completed renders and spawn new ones
         if app.ensure_active_images() {
+            needs_redraw = true;
+        }
+
+        // Debounced message search: keystrokes mark the query dirty; the DB
+        // scan runs here once typing pauses (#491).
+        if app.is_overlay(OverlayKind::Search)
+            && app
+                .search
+                .run_if_due(app.active_conversation.as_deref(), &app.db)
+        {
             needs_redraw = true;
         }
 

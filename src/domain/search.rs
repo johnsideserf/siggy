@@ -8,9 +8,19 @@
 //! `jump_to_result` powers `n`/`N` traversal within the active
 //! conversation with wrap-around.
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::KeyCode;
 
 use crate::db::Database;
+
+/// Idle time after the last keystroke before a debounced search runs, so a fast
+/// typist triggers one scan instead of one per character (#491).
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Minimum query length before scanning. A leading-wildcard LIKE scans the
+/// whole messages table, and a one-character query matches almost everything,
+/// so it is not worth running (#491).
+const MIN_SEARCH_LEN: usize = 2;
 
 /// A search result entry.
 #[derive(Debug, Clone)]
@@ -44,6 +54,10 @@ pub struct SearchState {
     pub query: String,
     pub results: Vec<SearchResult>,
     pub index: usize,
+    /// A query edit is pending a (debounced) run.
+    dirty: bool,
+    /// When the query was last edited, for the debounce window.
+    last_edit: Option<Instant>,
 }
 
 impl SearchState {
@@ -52,6 +66,7 @@ impl SearchState {
     pub fn open(&mut self, query: String, active_conversation: Option<&str>, db: &Database) {
         self.query = query;
         self.index = 0;
+        self.dirty = false;
         self.run(active_conversation, db);
     }
 
@@ -72,6 +87,12 @@ impl SearchState {
                 self.index = self.index.saturating_sub(1);
             }
             KeyCode::Enter => {
+                // Flush any pending debounced query so Enter selects from the
+                // current query's results, not a stale set.
+                if self.dirty {
+                    self.dirty = false;
+                    self.run(active_conversation, db);
+                }
                 if let Some(result) = self.results.get(self.index) {
                     let conv_id = result.conv_id.clone();
                     let target_ts = result.timestamp_ms;
@@ -90,20 +111,44 @@ impl SearchState {
             }
             KeyCode::Backspace if !self.query.is_empty() => {
                 self.query.pop();
-                self.run(active_conversation, db);
+                self.mark_dirty();
             }
             KeyCode::Char(c) => {
                 self.query.push(c);
-                self.run(active_conversation, db);
+                self.mark_dirty();
             }
             _ => {}
         }
         SearchAction::None
     }
 
+    /// Record a query edit as pending; the actual scan runs later via
+    /// `run_if_due` once typing pauses (#491).
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.last_edit = Some(Instant::now());
+    }
+
+    /// Run a pending debounced query if typing has paused. Called each main
+    /// loop tick while the search overlay is open. Returns true if it ran.
+    pub fn run_if_due(&mut self, active_conversation: Option<&str>, db: &Database) -> bool {
+        if !self.dirty {
+            return false;
+        }
+        if self
+            .last_edit
+            .is_some_and(|t| t.elapsed() < SEARCH_DEBOUNCE)
+        {
+            return false;
+        }
+        self.dirty = false;
+        self.run(active_conversation, db);
+        true
+    }
+
     /// Execute the current search query against the database.
     pub fn run(&mut self, active_conversation: Option<&str>, db: &Database) {
-        if self.query.is_empty() {
+        if self.query.chars().count() < MIN_SEARCH_LEN {
             self.results.clear();
             self.index = 0;
             return;
@@ -204,5 +249,75 @@ impl SearchState {
             };
         }
         SearchAction::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+
+    fn db_with(conv: &str, bodies: &[&str]) -> Database {
+        let db = Database::open_in_memory().unwrap();
+        db.upsert_conversation(conv, "Alice", false).unwrap();
+        for (i, body) in bodies.iter().enumerate() {
+            db.insert_message(
+                conv,
+                "Alice",
+                &format!("2025-01-01T00:{i:02}:00Z"),
+                body,
+                false,
+                None,
+                1000 + i as i64,
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    #[test]
+    fn run_skips_queries_below_min_length() {
+        let db = db_with("+1", &["hello world"]);
+        let mut s = SearchState {
+            query: "h".to_string(),
+            ..Default::default()
+        };
+        s.run(Some("+1"), &db);
+        assert!(s.results.is_empty(), "1-char query should not scan");
+        s.query = "he".to_string();
+        s.run(Some("+1"), &db);
+        assert_eq!(s.results.len(), 1);
+    }
+
+    #[test]
+    fn typing_defers_search_until_due() {
+        let db = db_with("+1", &["hello world"]);
+        let mut s = SearchState::default();
+        for c in ['h', 'e', 'l', 'l', 'o'] {
+            s.handle_key(KeyCode::Char(c), Some("+1"), &db);
+        }
+        assert!(s.results.is_empty(), "search must not run per keystroke");
+        assert!(s.dirty);
+        // Within the debounce window: not due.
+        assert!(!s.run_if_due(Some("+1"), &db));
+        assert!(s.results.is_empty());
+        // Simulate the debounce window elapsing.
+        s.last_edit = None;
+        assert!(s.run_if_due(Some("+1"), &db));
+        assert_eq!(s.results.len(), 1);
+        assert!(!s.dirty);
+    }
+
+    #[test]
+    fn enter_flushes_pending_query() {
+        let db = db_with("+1", &["hello world"]);
+        let mut s = SearchState::default();
+        for c in ['w', 'o', 'r', 'l', 'd'] {
+            s.handle_key(KeyCode::Char(c), Some("+1"), &db);
+        }
+        assert!(s.results.is_empty());
+        let action = s.handle_key(KeyCode::Enter, Some("+1"), &db);
+        assert_eq!(s.results.len(), 1, "Enter flushes the pending search");
+        assert!(matches!(action, SearchAction::Select { .. }));
     }
 }
