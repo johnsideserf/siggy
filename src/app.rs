@@ -2053,9 +2053,7 @@ impl App {
 
     /// Handle a key press while the search overlay is open.
     pub fn handle_search_key(&mut self, code: KeyCode) {
-        let active = self.active_conversation.as_deref().map(str::to_owned);
-        let action = self.search.handle_key(code, active.as_deref(), &self.db);
-        self.dispatch_search_action(action);
+        crate::handlers::keys::handle_search_key(self, code)
     }
 
     /// Jump to a message by its timestamp_ms in the active conversation.
@@ -2141,7 +2139,7 @@ impl App {
     }
 
     /// Dispatch a `SearchAction` returned by `SearchState` methods.
-    fn dispatch_search_action(&mut self, action: SearchAction) {
+    pub(crate) fn dispatch_search_action(&mut self, action: SearchAction) {
         match action {
             SearchAction::Select {
                 conv_id,
@@ -2177,16 +2175,7 @@ impl App {
 
     /// Handle a key press while the file browser overlay is open.
     pub fn handle_file_browser_key(&mut self, code: KeyCode) {
-        match self.file_picker.handle_key(code) {
-            crate::domain::FilePickerOutcome::Continue => {}
-            crate::domain::FilePickerOutcome::Selected(path) => {
-                self.pending_attachment = Some(path);
-                self.close_overlay();
-            }
-            crate::domain::FilePickerOutcome::Cancelled => {
-                self.close_overlay();
-            }
-        }
+        crate::handlers::keys::handle_file_browser_key(self, code)
     }
 
     /// Handle a key press while the autocomplete popup is visible.
