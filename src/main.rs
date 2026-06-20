@@ -68,6 +68,13 @@ fn set_file_permissions(path: &std::path::Path) {
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
+// On Windows there is no portable chmod equivalent, so siggy relies on the
+// default per-user ACLs that Windows applies to the profile directories these
+// files live under (%APPDATA%, %USERPROFILE%, %LOCALAPPDATA%): other standard
+// users cannot read them, though local administrators still can. Setting an
+// owner-only DACL would mean linking the Win32 security APIs and could lock a
+// user out of their own files if SID resolution failed, so the reliance is
+// documented in docs/src/user-guide/security.md instead (#504).
 #[cfg(not(unix))]
 fn set_file_permissions(_path: &std::path::Path) {}
 
@@ -78,6 +85,7 @@ fn set_dir_permissions(path: &std::path::Path) {
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
 }
 
+// No-op on Windows for the same reason as `set_file_permissions` above.
 #[cfg(not(unix))]
 fn set_dir_permissions(_path: &std::path::Path) {}
 
