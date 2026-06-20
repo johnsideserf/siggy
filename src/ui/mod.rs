@@ -541,6 +541,18 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn chat_focused_message_scrolls_into_view() {
+        let mut app = demo_app();
+        app.mode = InputMode::Normal;
+        // Focus an early message: the render pass must derive focus, scroll it
+        // into view, and highlight it -- the focus-derivation-during-render path
+        // #496 flags as frame-order-dependent and previously untested.
+        app.scroll.focused_index = Some(2);
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
     fn body_newlines_render_as_separate_lines() {
         use crate::conversation_store::DisplayMessage;
         let mut app = demo_app();
