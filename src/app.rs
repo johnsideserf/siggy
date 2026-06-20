@@ -2349,7 +2349,7 @@ impl App {
         self.update_forward_filter();
     }
 
-    fn update_forward_filter(&mut self) {
+    pub(crate) fn update_forward_filter(&mut self) {
         let filter = self.forward.filter.to_lowercase();
         self.forward.filtered = self
             .store
@@ -2376,97 +2376,11 @@ impl App {
     }
 
     pub fn handle_forward_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let action = classify_list_key(code, true);
-        if list_overlay::apply_nav(
-            &action,
-            &mut self.forward.index,
-            self.forward.filtered.len(),
-        ) {
-            return None;
-        }
-        match action {
-            ListKeyAction::Select => {
-                if let Some((conv_id, name)) =
-                    self.forward.filtered.get(self.forward.index).cloned()
-                {
-                    let is_group = self
-                        .store
-                        .conversations
-                        .get(&conv_id)
-                        .map(|c| c.is_group)
-                        .unwrap_or(false);
-                    let body = format!("[Forwarded]\n{}", self.forward.body);
-                    let local_ts_ms = chrono::Utc::now().timestamp_millis();
-                    self.close_overlay();
-                    self.status_message = format!("Forwarded to {name}");
-                    self.store.move_conversation_to_top(&conv_id);
-                    return Some(SendRequest::Message {
-                        recipient: conv_id,
-                        body,
-                        is_group,
-                        local_ts_ms,
-                        mentions: Vec::new(),
-                        attachment: None,
-                        quote_timestamp: None,
-                        quote_author: None,
-                        quote_body: None,
-                    });
-                }
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-            }
-            ListKeyAction::FilterPush(c) => {
-                if !c.is_control() {
-                    self.forward.filter.push(c);
-                    self.update_forward_filter();
-                }
-            }
-            ListKeyAction::FilterPop => {
-                self.forward.filter.pop();
-                self.update_forward_filter();
-            }
-            ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
-        }
-        None
+        crate::handlers::keys::handle_forward_key(self, code)
     }
 
     pub fn handle_contacts_key(&mut self, code: KeyCode) {
-        let action = classify_list_key(code, true);
-        if list_overlay::apply_nav(
-            &action,
-            &mut self.contacts_overlay.index,
-            self.contacts_overlay.filtered.len(),
-        ) {
-            return;
-        }
-        match action {
-            ListKeyAction::Select => {
-                if let Some((number, _)) = self
-                    .contacts_overlay
-                    .filtered
-                    .get(self.contacts_overlay.index)
-                {
-                    let number = number.clone();
-                    self.close_overlay();
-                    self.contacts_overlay.filter.clear();
-                    self.join_conversation(&number);
-                }
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-                self.contacts_overlay.filter.clear();
-            }
-            ListKeyAction::FilterPush(c) => {
-                self.contacts_overlay.filter.push(c);
-                self.refresh_contacts_filter();
-            }
-            ListKeyAction::FilterPop => {
-                self.contacts_overlay.filter.pop();
-                self.refresh_contacts_filter();
-            }
-            ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
-        }
+        crate::handlers::keys::handle_contacts_key(self, code)
     }
 
     /// Handle a key press while the search overlay is open.

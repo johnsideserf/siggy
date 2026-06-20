@@ -294,6 +294,96 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
     }
 }
 
+/// Handle a key press while the forward-message picker overlay is open.
+pub fn handle_forward_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    let action = classify_list_key(code, true);
+    if crate::list_overlay::apply_nav(&action, &mut app.forward.index, app.forward.filtered.len()) {
+        return None;
+    }
+    match action {
+        ListKeyAction::Select => {
+            if let Some((conv_id, name)) = app.forward.filtered.get(app.forward.index).cloned() {
+                let is_group = app
+                    .store
+                    .conversations
+                    .get(&conv_id)
+                    .map(|c| c.is_group)
+                    .unwrap_or(false);
+                let body = format!("[Forwarded]\n{}", app.forward.body);
+                let local_ts_ms = chrono::Utc::now().timestamp_millis();
+                app.close_overlay();
+                app.status_message = format!("Forwarded to {name}");
+                app.store.move_conversation_to_top(&conv_id);
+                return Some(SendRequest::Message {
+                    recipient: conv_id,
+                    body,
+                    is_group,
+                    local_ts_ms,
+                    mentions: Vec::new(),
+                    attachment: None,
+                    quote_timestamp: None,
+                    quote_author: None,
+                    quote_body: None,
+                });
+            }
+        }
+        ListKeyAction::Close => {
+            app.close_overlay();
+        }
+        ListKeyAction::FilterPush(c) => {
+            if !c.is_control() {
+                app.forward.filter.push(c);
+                app.update_forward_filter();
+            }
+        }
+        ListKeyAction::FilterPop => {
+            app.forward.filter.pop();
+            app.update_forward_filter();
+        }
+        ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
+    }
+    None
+}
+
+/// Handle a key press while the contacts picker overlay is open.
+pub fn handle_contacts_key(app: &mut App, code: KeyCode) {
+    let action = classify_list_key(code, true);
+    if crate::list_overlay::apply_nav(
+        &action,
+        &mut app.contacts_overlay.index,
+        app.contacts_overlay.filtered.len(),
+    ) {
+        return;
+    }
+    match action {
+        ListKeyAction::Select => {
+            if let Some((number, _)) = app
+                .contacts_overlay
+                .filtered
+                .get(app.contacts_overlay.index)
+            {
+                let number = number.clone();
+                app.close_overlay();
+                app.contacts_overlay.filter.clear();
+                app.join_conversation(&number);
+            }
+        }
+        ListKeyAction::Close => {
+            app.close_overlay();
+            app.contacts_overlay.filter.clear();
+        }
+        ListKeyAction::FilterPush(c) => {
+            app.contacts_overlay.filter.push(c);
+            app.refresh_contacts_filter();
+        }
+        ListKeyAction::FilterPop => {
+            app.contacts_overlay.filter.pop();
+            app.refresh_contacts_filter();
+        }
+        ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
+    }
+}
+
 /// Handle a key press in the message delete confirmation overlay.
 pub fn handle_delete_confirm_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
     match code {
