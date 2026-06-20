@@ -764,4 +764,89 @@ mod tests {
         let wrapped = wrap_for_tmux("plain ascii");
         assert_eq!(wrapped, "\x1bPtmux;plain ascii\x1b\\");
     }
+
+    /// Encode a solid-color PNG of the given pixel size to an in-memory buffer.
+    fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([120, 40, 200, 255]));
+        let mut bytes: Vec<u8> = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
+    /// Write a solid-color PNG to a `.png` temp file (kept alive by the caller).
+    fn write_test_png(w: u32, h: u32) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+        f.write_all(&png_bytes(w, h)).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    fn sixel_band_count(sixel: &str) -> usize {
+        let body_start = sixel.find('q').unwrap() + 1;
+        let body_end = sixel.rfind("\x1b\\").unwrap();
+        let body = &sixel[body_start..body_end];
+        let preamble_end = find_preamble_end(body);
+        body[preamble_end..]
+            .split('-')
+            .filter(|b| !b.is_empty())
+            .count()
+    }
+
+    #[test]
+    fn render_image_with_limits_respects_height_cap() {
+        // Tall image; with max_height_cells = 8 the output is at most 8 rows
+        // (each halfblock row encodes 2 pixel rows).
+        let f = write_test_png(20, 600);
+        let lines = render_image_with_limits(f.path(), 40, 8).expect("render");
+        assert!(!lines.is_empty());
+        assert!(lines.len() <= 8, "expected <= 8 rows, got {}", lines.len());
+    }
+
+    #[test]
+    fn render_image_with_limits_respects_width_cap() {
+        // Wide image; each line carries a 2-space indent, so width <= cap + 2.
+        let f = write_test_png(600, 20);
+        let lines = render_image_with_limits(f.path(), 10, 30).expect("render");
+        for line in &lines {
+            assert!(
+                line.width() <= 10 + 2,
+                "line width {} exceeds cap+indent",
+                line.width()
+            );
+        }
+    }
+
+    #[test]
+    fn encode_sixel_does_not_upscale_small_image() {
+        use base64::Engine;
+        // 6px tall source, huge cell target. The no-upscale clamp must keep the
+        // encode near the source size (1 band) rather than blowing it up to the
+        // 400px target (~67 bands).
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes(6, 6));
+        let sixel =
+            encode_sixel(&b64, 40, 40, (10, 10), SixelEncodeSettings::default()).expect("encode");
+        assert!(
+            sixel_band_count(&sixel) < 10,
+            "small image was upscaled: {} bands",
+            sixel_band_count(&sixel)
+        );
+    }
+
+    #[test]
+    fn encode_sixel_clamps_settings_out_of_range() {
+        use base64::Engine;
+        // Out-of-range palette/diffusion must not panic and still produce output.
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes(12, 12));
+        let settings = SixelEncodeSettings {
+            max_colors: 9999,
+            diffusion: 5.0,
+        };
+        let sixel = encode_sixel(&b64, 6, 6, (8, 8), settings);
+        assert!(sixel.is_some());
+    }
 }

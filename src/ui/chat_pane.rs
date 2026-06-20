@@ -40,6 +40,17 @@ fn sixel_placeholder_line(line: &Line<'static>) -> Line<'static> {
     Line::from(Span::raw(" ".repeat(line.width())))
 }
 
+/// Blank rows reserved below a Sixel image, beyond its own placeholder rows.
+///
+/// A Sixel graphic is positioned at a cell origin but sized in pixels. When the
+/// terminal's true cell-pixel height is smaller than the detected/configured
+/// `cell_px` (common in browser-backed terminals such as ttyd), the encoded
+/// graphic renders a few pixels past its reserved rows and bleeds into the top
+/// of the following text line. One blank guard row gives that sub-row overflow
+/// somewhere harmless to land. It does not fix gross cell-pixel misdetection;
+/// see the cell-pixel calibration follow-up.
+const SIXEL_GUARD_ROWS: usize = 1;
+
 /// Convert emoji in a string to text emoticons or :shortcodes:.
 /// Common emoji get classic emoticons (e.g. :) <3), others get :shortcode: format.
 fn emoji_to_text(input: &str) -> String {
@@ -523,6 +534,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 if use_native && let Some(ref path) = msg.image_path {
                     image_records.push((first_idx, count, path.clone()));
                 }
+                // Sixel overflow guard (see SIXEL_GUARD_ROWS). The blank rows
+                // sit below the image record, so the Sixel still covers exactly
+                // `count` rows and the guard rows absorb any sub-row bleed.
+                if use_sixel {
+                    for _ in 0..SIXEL_GUARD_ROWS {
+                        lines.push(Line::from(""));
+                        line_msg_idx.push(Some(msg_index));
+                    }
+                }
             }
 
             // Render link preview block
@@ -575,6 +595,13 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     }
                     if use_native && let Some(ref path) = msg.preview_image_path {
                         image_records.push((first_idx, count, path.clone()));
+                    }
+                    // Sixel overflow guard (see SIXEL_GUARD_ROWS).
+                    if use_sixel {
+                        for _ in 0..SIXEL_GUARD_ROWS {
+                            lines.push(Line::from(""));
+                            line_msg_idx.push(Some(msg_index));
+                        }
                     }
                 }
             }
