@@ -257,6 +257,10 @@ pub enum SignalEvent {
     GroupList(Vec<Group>),
     IdentityList(Vec<IdentityInfo>),
     Error(String),
+    /// The signal-cli stdout reader reached EOF (the child exited). Emitted
+    /// explicitly so the app can mark itself disconnected and fail any in-flight
+    /// sends, instead of relying solely on the mpsc channel closing (#497).
+    Disconnected,
 }
 
 impl SignalEvent {
@@ -375,6 +379,7 @@ impl SignalEvent {
             Self::GroupList(groups) => format!("GroupList(count={})", groups.len()),
             Self::IdentityList(ids) => format!("IdentityList(count={})", ids.len()),
             Self::Error(e) => format!("Error({e})"),
+            Self::Disconnected => "Disconnected".to_string(),
         }
     }
 }

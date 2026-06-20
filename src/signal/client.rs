@@ -86,9 +86,19 @@ impl SignalClient {
                 }
 
                 if event_tx.send(event).await.is_err() {
-                    break;
+                    return;
                 }
             }
+
+            // stdout hit EOF: signal-cli exited. Fail any in-flight sends so their
+            // local messages leave the Sending state, then emit an explicit
+            // Disconnected before the channel closes (#497).
+            for event in drain_pending_as_failures(&pending_clone) {
+                if event_tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+            let _ = event_tx.send(SignalEvent::Disconnected).await;
         });
 
         // Stdin writer task — send JSON-RPC requests to signal-cli
@@ -690,6 +700,20 @@ fn build_block_params(account: &str, recipient: &str, is_group: bool) -> serde_j
     }
 }
 
+/// Drain `pending` and turn every tracked send method (`send` / `sendPollCreate`,
+/// the ones dispatch_send registers) into a `SendFailed` event. Called when the
+/// stdout reader exits so in-flight sends do not hang in the Sending state
+/// forever after the child dies (#497). Recovers from a poisoned lock (REL-002).
+fn drain_pending_as_failures(
+    pending: &Mutex<HashMap<String, (String, Instant)>>,
+) -> Vec<SignalEvent> {
+    let mut map = pending.lock().unwrap_or_else(|e| e.into_inner());
+    map.drain()
+        .filter(|(_, (method, _))| method == "send" || method == "sendPollCreate")
+        .map(|(id, _)| SignalEvent::SendFailed { rpc_id: id })
+        .collect()
+}
+
 /// Parse one JSON-RPC line from signal-cli's stdout into an optional event.
 ///
 /// Pure given the shared `pending` correlation map and `download_dir`, so it can
@@ -987,6 +1011,39 @@ mod tests {
         let map = pending.lock().unwrap();
         assert!(!map.contains_key("stale"), "stale entry must be swept");
         assert!(!map.contains_key("fresh"), "correlated id consumed");
+    }
+
+    #[test]
+    fn drain_pending_as_failures_fails_tracked_sends_only() {
+        let pending = pending_map();
+        {
+            let mut map = pending.lock().unwrap();
+            map.insert("s1".to_string(), ("send".to_string(), Instant::now()));
+            map.insert(
+                "p1".to_string(),
+                ("sendPollCreate".to_string(), Instant::now()),
+            );
+            map.insert(
+                "lc".to_string(),
+                ("listContacts".to_string(), Instant::now()),
+            );
+        }
+
+        let events = drain_pending_as_failures(&pending);
+
+        // Only the two tracked send methods become SendFailed.
+        let mut failed: Vec<String> = events
+            .into_iter()
+            .map(|e| match e {
+                SignalEvent::SendFailed { rpc_id } => rpc_id,
+                other => panic!("expected SendFailed, got {other:?}"),
+            })
+            .collect();
+        failed.sort();
+        assert_eq!(failed, vec!["p1".to_string(), "s1".to_string()]);
+
+        // The map is fully drained (the untracked entry is dropped too).
+        assert!(pending.lock().unwrap().is_empty());
     }
 
     #[test]

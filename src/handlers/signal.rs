@@ -294,6 +294,13 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
                 }
             }
         }
+        SignalEvent::Disconnected => {
+            // The signal-cli child exited. Any in-flight sends were already
+            // failed via SendFailed events emitted just before this one. Mark
+            // disconnected immediately; the main loop's channel-closed path
+            // fills in the detailed exit reason (#497).
+            app.connected = false;
+        }
     }
 }
 
