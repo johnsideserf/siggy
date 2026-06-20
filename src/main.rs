@@ -113,6 +113,41 @@ async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Resul
     }
 }
 
+/// Stream incoming messages to stdout, one tab-separated line each
+/// (`timestamp_ms`, sender, group-id-or-empty, body), until signal-cli
+/// disconnects or the user interrupts (Ctrl-C) (#257). Outgoing/sync and
+/// body-less (attachment-only) messages are skipped; the body has control
+/// characters stripped so each message stays a single clean line.
+async fn run_receive_stream(config: &Config) -> Result<()> {
+    use std::io::Write;
+    let mut client = SignalClient::spawn(config).await?;
+    loop {
+        match client.event_rx.recv().await {
+            Some(signal::types::SignalEvent::MessageReceived(msg)) => {
+                if msg.is_outgoing {
+                    continue;
+                }
+                if let Some(body) = msg.body.as_deref().filter(|b| !b.is_empty()) {
+                    let clean = debug_log::strip_control_chars(body, false);
+                    let group = msg.group_id.as_deref().unwrap_or("");
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        msg.timestamp.timestamp_millis(),
+                        msg.source,
+                        group,
+                        clean
+                    );
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            Some(signal::types::SignalEvent::Disconnected) | None => break,
+            Some(_) => {}
+        }
+    }
+    let _ = client.shutdown().await;
+    Ok(())
+}
+
 /// Whether the session should auto-lock now (#438). `timeout_mins == 0` disables
 /// it; otherwise lock once keyboard `idle` reaches that many minutes and we are
 /// not already locked. Only keypresses reset idle (the caller excludes mouse
@@ -151,16 +186,6 @@ fn set_dir_permissions(_path: &std::path::Path) {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Disable the default Windows Ctrl+C handler — crossterm captures it as a
-    // key event in raw mode, so the OS handler just causes a noisy exit code.
-    #[cfg(windows)]
-    unsafe {
-        unsafe extern "system" {
-            fn SetConsoleCtrlHandler(handler: usize, add: i32) -> i32;
-        }
-        SetConsoleCtrlHandler(0, 1);
-    }
-
     // Parse CLI args
     let args: Vec<String> = std::env::args().collect();
     let mut config_path: Option<&str> = None;
@@ -173,6 +198,7 @@ async fn main() -> Result<()> {
     let mut reset_lock = false;
     let mut check = false;
     let mut list = false;
+    let mut receive = false;
     let mut send_args: Option<(String, String)> = None;
 
     let mut i = 1;
@@ -228,6 +254,10 @@ async fn main() -> Result<()> {
                 list = true;
                 i += 1;
             }
+            "--receive" => {
+                receive = true;
+                i += 1;
+            }
             "--send" => {
                 if i + 2 < args.len() {
                     send_args = Some((args[i + 1].clone(), args[i + 2].clone()));
@@ -259,6 +289,9 @@ async fn main() -> Result<()> {
                 eprintln!("      --send <TO> <MSG>   Send one message non-interactively and exit");
                 eprintln!(
                     "      --list              List cached conversations (tab-separated) and exit"
+                );
+                eprintln!(
+                    "      --receive           Stream incoming messages (tab-separated) until interrupted"
                 );
                 eprintln!("  -V, --version           Print version and exit");
                 eprintln!("      --help              Show this help");
@@ -364,6 +397,18 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     }
 
+    // Non-interactive incoming-message stream for scripts (#257). Runs until
+    // signal-cli disconnects or Ctrl-C; no TUI.
+    if receive {
+        match run_receive_stream(&config).await {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("receive failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Non-interactive one-shot send for scripts/cron (#257). No TUI; exit 0 on
     // confirmed send, 1 on rejection/timeout/error.
     if let Some((recipient, body)) = send_args {
@@ -381,6 +426,18 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+    }
+
+    // Disable the default Windows Ctrl+C handler for the TUI only — crossterm
+    // captures it as a key event in raw mode, so the OS handler would just cause
+    // a noisy exit. Done here (not at startup) so non-interactive commands above
+    // (--receive etc.) stay interruptible with Ctrl-C.
+    #[cfg(windows)]
+    unsafe {
+        unsafe extern "system" {
+            fn SetConsoleCtrlHandler(handler: usize, add: i32) -> i32;
+        }
+        SetConsoleCtrlHandler(0, 1);
     }
 
     // Set up terminal BEFORE anything else so all errors render in the TUI
