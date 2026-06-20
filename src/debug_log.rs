@@ -95,9 +95,24 @@ pub fn mask_phone(phone: &str) -> String {
 /// Summarize a message body for redacted logging: "hello world" → "[msg: 11 chars]"
 pub fn mask_body(body: &str) -> String {
     if !redact() {
-        return body.to_string();
+        // --debug-full writes the raw body to a file a user may later cat;
+        // strip control chars so it cannot inject terminal escapes (#504).
+        return strip_control_chars(body, false);
     }
     format!("[msg: {} chars]", body.len())
+}
+
+/// Remove terminal control characters from attacker-controlled text before it
+/// is written somewhere that may later be viewed in a terminal (chat exports,
+/// the debug log, desktop notifications). Without this, a crafted message body
+/// or contact name can carry escape sequences that execute when the file is
+/// cat'd or the notification rendered (#504). `keep_newlines` preserves `\n`
+/// and `\t` for multi-line file output; everything else in the control range
+/// (including ESC and DEL) is dropped.
+pub fn strip_control_chars(s: &str, keep_newlines: bool) -> String {
+    s.chars()
+        .filter(|&c| (keep_newlines && (c == '\n' || c == '\t')) || !c.is_control())
+        .collect()
 }
 
 pub fn log(msg: &str) {
@@ -136,5 +151,34 @@ pub fn warnf(args: std::fmt::Arguments<'_>) {
     {
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let _ = writeln!(f, "[{now}] {msg}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_control_chars;
+
+    #[test]
+    fn strips_escape_and_control_chars() {
+        // ESC-based OSC 52 clipboard-injection attempt plus a bare CR.
+        let evil = "hi\u{1b}]52;c;ZWxz\u{7}\rthere\u{1b}[2J";
+        let cleaned = strip_control_chars(evil, false);
+        assert_eq!(cleaned, "hi]52;c;ZWxzthere[2J");
+        assert!(!cleaned.contains('\u{1b}'));
+        assert!(!cleaned.contains('\r'));
+    }
+
+    #[test]
+    fn keep_newlines_preserves_structure() {
+        let s = "line1\nline2\tcol\u{1b}x";
+        assert_eq!(strip_control_chars(s, true), "line1\nline2\tcolx");
+        // Without keep_newlines, the newline and tab go too.
+        assert_eq!(strip_control_chars(s, false), "line1line2colx");
+    }
+
+    #[test]
+    fn leaves_plain_and_unicode_text_untouched() {
+        let s = "Hello, world! caf\u{e9} \u{1f600}";
+        assert_eq!(strip_control_chars(s, false), s);
     }
 }
