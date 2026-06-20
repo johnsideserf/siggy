@@ -1,0 +1,73 @@
+# siggy custom theme template (#476)
+#
+# Copy this file to your themes directory and edit the colors, then pick it in
+# the app via /theme (or set `theme = "My Theme"` in config.toml).
+#
+#   Linux / macOS:  ~/.config/siggy/themes/my-theme.toml
+#   Windows:        %APPDATA%\siggy\themes\my-theme.toml
+#
+# The file name does not matter (any *.toml in that folder is loaded); the theme
+# is identified by its `name` field below. Every field is required.
+#
+# Color formats (any field accepts any of these):
+#   - Named 16-color:  "black" "red" "green" "yellow" "blue" "magenta" "cyan"
+#                      "gray" "dark_gray" "light_red" "light_green"
+#                      "light_yellow" "light_blue" "light_magenta" "light_cyan"
+#                      "white" "reset"
+#                      (named colors follow the terminal palette, so they adapt
+#                      to the user's terminal theme)
+#   - Hex truecolor:   "#rrggbb"  e.g. "#cba6f7"
+#   - 256-color index: "indexed(N)"  where N is 0-255  e.g. "indexed(236)"
+
+name = "My Theme"
+
+# --- Base ---
+bg = "black"             # main background
+bg_selected = "dark_gray" # selected sidebar row / highlighted background
+fg = "white"             # primary text
+fg_secondary = "gray"    # secondary text (timestamps, etc.)
+fg_muted = "dark_gray"   # muted text (hints, separators)
+
+# --- Accent ---
+accent = "cyan"            # titles, active conversation name
+accent_secondary = "yellow" # secondary accents
+
+# --- Status indicators ---
+success = "green"
+error = "red"
+warning = "yellow"
+
+# --- Messages ---
+sender_self = "green"      # your own name/messages
+# Eight colors hashed across other senders (group chats). Must be exactly 8.
+sender_palette = [
+    "cyan",
+    "magenta",
+    "yellow",
+    "blue",
+    "light_red",
+    "light_green",
+    "light_cyan",
+    "light_magenta",
+]
+link = "blue"              # hyperlinks
+mention = "cyan"           # @mentions
+quote = "dark_gray"        # quoted-reply text
+system_msg = "dark_gray"   # system / status messages in the chat
+msg_selected_bg = "indexed(236)" # background of the focused message in Normal mode
+
+# --- Input box ---
+input_insert = "cyan"      # border/cursor accent in Insert mode
+input_normal = "yellow"    # border/cursor accent in Normal mode
+
+# --- Status bar ---
+statusbar_bg = "dark_gray"
+statusbar_fg = "white"
+
+# --- Delivery receipt colors ---
+receipt_failed = "red"
+receipt_sending = "dark_gray"
+receipt_sent = "dark_gray"
+receipt_delivered = "white"
+receipt_read = "green"
+receipt_viewed = "cyan"
