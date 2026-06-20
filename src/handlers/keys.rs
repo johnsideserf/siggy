@@ -13,7 +13,7 @@ use crossterm::event::KeyCode;
 
 use crate::app::{
     ActionMenuHint, App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, QUICK_REACTIONS,
-    SendRequest,
+    SETTINGS, SETTINGS_VISUAL_ORDER, SendRequest,
 };
 use crate::domain::EmojiPickerSource;
 use crate::keybindings;
@@ -296,6 +296,85 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Handle a key press while the settings overlay is open.
+pub fn handle_settings_key(app: &mut App, code: KeyCode) {
+    let preview_index = SETTINGS.len();
+    let image_mode_index = SETTINGS.len() + 1;
+    let customize_index = SETTINGS.len() + 2;
+
+    // Find current position in visual order
+    let visual_pos = SETTINGS_VISUAL_ORDER
+        .iter()
+        .position(|&i| i == app.settings_overlay.index)
+        .unwrap_or(0);
+
+    match code {
+        KeyCode::Char('j') | KeyCode::Down if visual_pos + 1 < SETTINGS_VISUAL_ORDER.len() => {
+            app.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos + 1];
+        }
+        KeyCode::Char('k') | KeyCode::Up if visual_pos > 0 => {
+            app.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos - 1];
+        }
+        KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
+            if app.settings_overlay.index == preview_index {
+                app.notifications.notification_preview =
+                    app.notifications.notification_preview.cycle();
+            } else if app.settings_overlay.index == image_mode_index {
+                app.image.image_mode = app.image.image_mode.cycle();
+            } else if app.settings_overlay.index == customize_index {
+                app.open_overlay(OverlayKind::Customize);
+                app.settings_overlay.customize_index = 0;
+            } else {
+                app.toggle_setting(app.settings_overlay.index);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_overlay();
+            app.save_settings();
+            app.fire_deferred_settings_hooks();
+        }
+        _ => {}
+    }
+}
+
+/// Handle a key press in the Customize sub-menu (Theme, Keybindings, Profile).
+pub fn handle_customize_key(app: &mut App, code: KeyCode) {
+    const ITEMS: usize = 3; // Theme, Keybindings, Profile
+    let action = classify_list_key(code, false);
+    if crate::list_overlay::apply_nav(&action, &mut app.settings_overlay.customize_index, ITEMS) {
+        return;
+    }
+    match code {
+        KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
+            app.close_overlay();
+            app.save_settings();
+            match app.settings_overlay.customize_index {
+                0 => {
+                    app.open_overlay(OverlayKind::ThemePicker);
+                    app.theme_picker.index = app
+                        .theme_picker
+                        .available_themes
+                        .iter()
+                        .position(|t| t.name == app.theme.name)
+                        .unwrap_or(0);
+                }
+                1 => {
+                    app.open_overlay(OverlayKind::Keybindings);
+                    app.keybindings_overlay.index = 0;
+                }
+                2 => {
+                    app.open_settings_profile_manager();
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_overlay();
+        }
+        _ => {}
     }
 }
 
