@@ -1936,88 +1936,16 @@ impl App {
 
     /// Handle a key press while the message-request overlay is open.
     fn handle_message_request_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let conv_id = match self.active_conversation.clone() {
-            Some(id) => id,
-            None => {
-                self.close_overlay();
-                return None;
-            }
-        };
-        match code {
-            KeyCode::Char('a') => {
-                let is_group = self
-                    .store
-                    .conversations
-                    .get(&conv_id)
-                    .map(|c| c.is_group)
-                    .unwrap_or(false);
-                if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-                    conv.accepted = true;
-                }
-                self.db_warn_visible(self.db.update_accepted(&conv_id, true), "update_accepted");
-                self.close_overlay();
-                Some(SendRequest::MessageRequestResponse {
-                    recipient: conv_id,
-                    is_group,
-                    response_type: "accept".to_string(),
-                })
-            }
-            KeyCode::Char('d') => {
-                self.close_overlay();
-                self.delete_active_conversation()
-            }
-            KeyCode::Esc => {
-                self.close_overlay();
-                self.active_conversation = None;
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_message_request_key(self, code)
     }
 
     fn handle_reaction_picker_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.reactions.picker_index = self.reactions.picker_index.saturating_sub(1);
-                None
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                if self.reactions.picker_index < QUICK_REACTIONS.len() - 1 {
-                    self.reactions.picker_index += 1;
-                }
-                None
-            }
-            KeyCode::Char(c @ '1'..='8') => {
-                let idx = (c as u8 - b'1') as usize;
-                if idx < QUICK_REACTIONS.len() {
-                    self.reactions.picker_index = idx;
-                    self.close_overlay();
-                    self.prepare_reaction_send()
-                } else {
-                    None
-                }
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                self.close_overlay();
-                self.prepare_reaction_send()
-            }
-            KeyCode::Char('e') | KeyCode::Char('/') => {
-                // Open full emoji picker from reaction context
-                self.emoji_picker.open(EmojiPickerSource::Reaction, None);
-                self.open_overlay(OverlayKind::EmojiPicker);
-                None
-            }
-            KeyCode::Esc => {
-                self.close_overlay();
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_reaction_picker_key(self, code)
     }
 
     /// Build a SendRequest::Reaction from the current picker selection and focused message.
     /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
-    fn prepare_reaction_send(&mut self) -> Option<SendRequest> {
+    pub(crate) fn prepare_reaction_send(&mut self) -> Option<SendRequest> {
         let emoji = QUICK_REACTIONS
             .get(self.reactions.picker_index)?
             .to_string();
