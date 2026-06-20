@@ -104,50 +104,33 @@ pub async fn run_setup(
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                    match handle_signal_cli_key(
+                        custom_path_mode,
+                        &mut custom_path_input,
+                        &mut custom_path_cursor,
+                        key.modifiers,
+                        key.code,
+                    ) {
+                        SignalCliStepOutcome::Continue => {}
+                        SignalCliStepOutcome::Cancel => {
                             return Ok(SetupResult::Cancelled);
                         }
-                        (_, KeyCode::Esc) if custom_path_mode => {
-                            custom_path_mode = false;
-                        }
-                        (_, KeyCode::Esc) => {
-                            return Ok(SetupResult::Cancelled);
-                        }
-                        _ if custom_path_mode => match key.code {
-                            KeyCode::Enter if !custom_path_input.is_empty() => {
-                                signal_cli_path = custom_path_input.clone();
-                                signal_cli_found = false;
-                                custom_path_mode = false;
-                                // Will re-check on next loop
-                            }
-                            KeyCode::Backspace if custom_path_cursor > 0 => {
-                                custom_path_cursor -= 1;
-                                custom_path_input.remove(custom_path_cursor);
-                            }
-                            KeyCode::Left => {
-                                custom_path_cursor = custom_path_cursor.saturating_sub(1);
-                            }
-                            KeyCode::Right if custom_path_cursor < custom_path_input.len() => {
-                                custom_path_cursor += 1;
-                            }
-                            KeyCode::Char(c) => {
-                                custom_path_input.insert(custom_path_cursor, c);
-                                custom_path_cursor += 1;
-                            }
-                            _ => {}
-                        },
-                        (_, KeyCode::Enter) => {
-                            // Retry check
+                        SignalCliStepOutcome::Retry => {
+                            // Re-check signal-cli on the next loop.
                             signal_cli_found = false;
                         }
-                        (_, KeyCode::Char('p')) => {
-                            // Enter custom path mode
+                        SignalCliStepOutcome::EnterCustomPath => {
+                            // Buffer already cleared by the handler.
                             custom_path_mode = true;
-                            custom_path_input.clear();
-                            custom_path_cursor = 0;
                         }
-                        _ => {}
+                        SignalCliStepOutcome::ExitCustomPath => {
+                            custom_path_mode = false;
+                        }
+                        SignalCliStepOutcome::SetPath(path) => {
+                            signal_cli_path = path;
+                            signal_cli_found = false;
+                            custom_path_mode = false;
+                        }
                     }
                 }
             }
@@ -385,6 +368,81 @@ fn validate_phone(input: &str) -> Result<(), String> {
         return Err("Only digits allowed after +".to_string());
     }
     Ok(())
+}
+
+/// What a key press on the signal-cli detection step decided (#503).
+#[derive(Debug, PartialEq, Eq)]
+enum SignalCliStepOutcome {
+    /// Stay on the step (custom-path text edited, or an ignored key).
+    Continue,
+    /// Ctrl-C, or Esc outside custom-path mode: cancel setup.
+    Cancel,
+    /// Enter outside custom-path mode: re-check for signal-cli.
+    Retry,
+    /// `p`: enter custom-path entry mode (buffer cleared by the handler).
+    EnterCustomPath,
+    /// Esc inside custom-path mode: leave it without applying.
+    ExitCustomPath,
+    /// Enter inside custom-path mode with a non-empty path (carries it).
+    SetPath(String),
+}
+
+/// Apply a key press to the signal-cli step. `custom_path_mode` selects between
+/// path-entry editing and the top-level keys. Pure: mutates only the custom-path
+/// buffers and returns the transition decision (#503).
+fn handle_signal_cli_key(
+    custom_path_mode: bool,
+    custom_path_input: &mut String,
+    custom_path_cursor: &mut usize,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> SignalCliStepOutcome {
+    if modifiers == KeyModifiers::CONTROL && code == KeyCode::Char('c') {
+        return SignalCliStepOutcome::Cancel;
+    }
+    if code == KeyCode::Esc {
+        return if custom_path_mode {
+            SignalCliStepOutcome::ExitCustomPath
+        } else {
+            SignalCliStepOutcome::Cancel
+        };
+    }
+    if custom_path_mode {
+        match code {
+            KeyCode::Enter if !custom_path_input.is_empty() => {
+                SignalCliStepOutcome::SetPath(custom_path_input.clone())
+            }
+            KeyCode::Backspace if *custom_path_cursor > 0 => {
+                *custom_path_cursor -= 1;
+                custom_path_input.remove(*custom_path_cursor);
+                SignalCliStepOutcome::Continue
+            }
+            KeyCode::Left => {
+                *custom_path_cursor = custom_path_cursor.saturating_sub(1);
+                SignalCliStepOutcome::Continue
+            }
+            KeyCode::Right if *custom_path_cursor < custom_path_input.len() => {
+                *custom_path_cursor += 1;
+                SignalCliStepOutcome::Continue
+            }
+            KeyCode::Char(c) => {
+                custom_path_input.insert(*custom_path_cursor, c);
+                *custom_path_cursor += 1;
+                SignalCliStepOutcome::Continue
+            }
+            _ => SignalCliStepOutcome::Continue,
+        }
+    } else {
+        match code {
+            KeyCode::Enter => SignalCliStepOutcome::Retry,
+            KeyCode::Char('p') => {
+                custom_path_input.clear();
+                *custom_path_cursor = 0;
+                SignalCliStepOutcome::EnterCustomPath
+            }
+            _ => SignalCliStepOutcome::Continue,
+        }
+    }
 }
 
 /// What a key press on the Account (phone-entry) step decided. Lets the pure
@@ -1071,5 +1129,88 @@ mod tests {
             AccountStepOutcome::Submit("+15551234567".to_string())
         );
         assert_eq!(err, None);
+    }
+
+    // --- handle_signal_cli_key (#503) ---
+
+    fn signal_cli_key(
+        custom_mode: bool,
+        input: &str,
+        cursor: usize,
+        modifiers: KeyModifiers,
+        code: KeyCode,
+    ) -> (SignalCliStepOutcome, String, usize) {
+        let mut buf = input.to_string();
+        let mut cur = cursor;
+        let outcome = handle_signal_cli_key(custom_mode, &mut buf, &mut cur, modifiers, code);
+        (outcome, buf, cur)
+    }
+
+    #[test]
+    fn signal_cli_key_ctrl_c_cancels_in_either_mode() {
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(o, SignalCliStepOutcome::Cancel);
+        let (o, _, _) = signal_cli_key(true, "x", 1, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(o, SignalCliStepOutcome::Cancel);
+    }
+
+    #[test]
+    fn signal_cli_key_esc_cancels_normal_but_exits_custom() {
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(o, SignalCliStepOutcome::Cancel);
+        let (o, _, _) = signal_cli_key(true, "x", 1, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(o, SignalCliStepOutcome::ExitCustomPath);
+    }
+
+    #[test]
+    fn signal_cli_key_normal_enter_retries_and_p_enters_custom() {
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(o, SignalCliStepOutcome::Retry);
+        // 'p' enters custom mode and clears the buffer.
+        let (o, buf, cur) =
+            signal_cli_key(false, "stale", 5, KeyModifiers::NONE, KeyCode::Char('p'));
+        assert_eq!(o, SignalCliStepOutcome::EnterCustomPath);
+        assert_eq!(buf, "");
+        assert_eq!(cur, 0);
+        // Other normal-mode chars are ignored.
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::NONE, KeyCode::Char('x'));
+        assert_eq!(o, SignalCliStepOutcome::Continue);
+    }
+
+    #[test]
+    fn signal_cli_key_custom_path_editing() {
+        // Typing inserts at the cursor.
+        let (o, buf, cur) = signal_cli_key(true, "/usr", 4, KeyModifiers::NONE, KeyCode::Char('/'));
+        assert_eq!(o, SignalCliStepOutcome::Continue);
+        assert_eq!(buf, "/usr/");
+        assert_eq!(cur, 5);
+        // Backspace removes before the cursor; no-op at start.
+        let (_, buf, cur) = signal_cli_key(true, "/usr", 4, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!((buf.as_str(), cur), ("/us", 3));
+        let (_, buf, cur) = signal_cli_key(true, "/usr", 0, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!((buf.as_str(), cur), ("/usr", 0));
+        // Cursor nav is bounded.
+        let (_, _, cur) = signal_cli_key(true, "/usr", 0, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(cur, 0);
+        let (_, _, cur) = signal_cli_key(true, "/usr", 4, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(cur, 4);
+    }
+
+    #[test]
+    fn signal_cli_key_custom_enter_sets_path_only_when_nonempty() {
+        let (o, _, _) = signal_cli_key(
+            true,
+            "/opt/signal-cli",
+            0,
+            KeyModifiers::NONE,
+            KeyCode::Enter,
+        );
+        assert_eq!(
+            o,
+            SignalCliStepOutcome::SetPath("/opt/signal-cli".to_string())
+        );
+        // Empty input: Enter is ignored (stays on the step).
+        let (o, _, _) = signal_cli_key(true, "", 0, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(o, SignalCliStepOutcome::Continue);
     }
 }
