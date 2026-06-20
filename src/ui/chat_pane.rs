@@ -330,6 +330,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let start = window_start(total, available_height, app.scroll.window_extra);
     let visible = &messages[start..total];
+    // Record the render-window start so off-window image_lines can be evicted to
+    // bound memory (#492); messages before `start` are never drawn this frame.
+    app.scroll.render_window_start = start;
 
     // Get last_read_index for unread marker
     let conv_id = app.active_conversation.as_ref().unwrap();
