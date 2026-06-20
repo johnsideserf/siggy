@@ -1603,6 +1603,8 @@ async fn run_app(
         if app.ensure_active_images() {
             needs_redraw = true;
         }
+        // Keep the encode caches bounded (#492). Cheap O(1) length check per tick.
+        app.image.enforce_cache_caps();
 
         // Debounced message search: keystrokes mark the query dirty; the DB
         // scan runs here once typing pauses (#491).

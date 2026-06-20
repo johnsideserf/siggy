@@ -136,4 +136,60 @@ impl ImageState {
             scan_signature: None,
         }
     }
+
+    /// Bound the encode caches so they can't grow without limit (#492). Called
+    /// once per frame. At these caps anything evicted is off-screen and
+    /// regenerates lazily via the background render path, so a crude cap (rather
+    /// than true LRU) is enough and avoids per-insert bookkeeping. Sixel strings
+    /// are large (0.5-3MB each) so that cache gets a smaller entry budget.
+    pub fn enforce_cache_caps(&mut self) {
+        const NATIVE_CACHE_CAP: usize = 256;
+        const ITERM2_CACHE_CAP: usize = 256;
+        const SIXEL_CACHE_CAP: usize = 64;
+        cap_map(&mut self.native_image_cache, NATIVE_CACHE_CAP);
+        cap_map(&mut self.iterm2_crop_cache, ITERM2_CACHE_CAP);
+        cap_map(&mut self.sixel_cache, SIXEL_CACHE_CAP);
+    }
+}
+
+/// Drop arbitrary entries from `map` until it holds at most `cap`. A no-op when
+/// already within budget. Eviction order is unspecified (HashMap iteration); at
+/// the call sites' caps the working set is far smaller than `cap`, so only stale
+/// off-screen entries are ever removed.
+fn cap_map<K: Eq + std::hash::Hash + Clone, V>(map: &mut HashMap<K, V>, cap: usize) {
+    if map.len() <= cap {
+        return;
+    }
+    let excess = map.len() - cap;
+    let victims: Vec<K> = map.keys().take(excess).cloned().collect();
+    for k in victims {
+        map.remove(&k);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cap_map;
+    use std::collections::HashMap;
+
+    #[test]
+    fn cap_map_is_noop_within_budget() {
+        let mut m: HashMap<u32, u32> = (0..5).map(|i| (i, i)).collect();
+        cap_map(&mut m, 10);
+        assert_eq!(m.len(), 5);
+    }
+
+    #[test]
+    fn cap_map_trims_to_cap() {
+        let mut m: HashMap<u32, u32> = (0..100).map(|i| (i, i)).collect();
+        cap_map(&mut m, 16);
+        assert_eq!(m.len(), 16);
+    }
+
+    #[test]
+    fn cap_map_exact_cap_unchanged() {
+        let mut m: HashMap<u32, u32> = (0..8).map(|i| (i, i)).collect();
+        cap_map(&mut m, 8);
+        assert_eq!(m.len(), 8);
+    }
 }
