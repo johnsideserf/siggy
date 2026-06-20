@@ -23,7 +23,7 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
     let input = app.input.buffer.clone();
     let trimmed = input.trim();
     if !trimmed.is_empty() {
-        app.input.history.push(trimmed.to_string());
+        app.input.push_history(trimmed.to_string());
     }
     app.input.history_index = None;
     app.input.buffer.clear();
