@@ -1692,23 +1692,15 @@ impl App {
 
     /// Build the filtered contacts list from contact_names using the current filter.
     pub fn refresh_contacts_filter(&mut self) {
-        let filter_lower = self.contacts_overlay.filter.to_lowercase();
-        let mut contacts: Vec<(String, String)> = self
+        let pairs: Vec<(String, String)> = self
             .store
             .contact_names
             .iter()
             .filter(|(_, name)| !name.is_empty())
-            .filter(|(number, name)| {
-                if filter_lower.is_empty() {
-                    return true;
-                }
-                name.to_lowercase().contains(&filter_lower)
-                    || number.to_lowercase().contains(&filter_lower)
-            })
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
-        contacts.sort_by_key(|a| a.1.to_lowercase());
-        self.contacts_overlay.filtered = contacts;
+        self.contacts_overlay.filtered =
+            list_overlay::filter_name_number_pairs(pairs, &self.contacts_overlay.filter);
         list_overlay::clamp_index(
             &mut self.contacts_overlay.index,
             self.contacts_overlay.filtered.len(),
@@ -1761,47 +1753,34 @@ impl App {
 
     /// Build filtered contacts list for the "Add member" picker (excludes existing group members).
     pub fn refresh_group_add_filter(&mut self) {
-        let filter_lower = self.group_menu.filter.to_lowercase();
         let existing_members: HashSet<&str> = self
             .active_conversation
             .as_ref()
             .and_then(|id| self.store.groups.get(id))
             .map(|g| g.members.iter().map(|s| s.as_str()).collect())
             .unwrap_or_default();
-        let mut contacts: Vec<(String, String)> = self
+        let pairs: Vec<(String, String)> = self
             .store
             .contact_names
             .iter()
             .filter(|(_, name)| !name.is_empty())
             .filter(|(number, _)| !existing_members.contains(number.as_str()))
-            .filter(|(number, name)| {
-                if filter_lower.is_empty() {
-                    return true;
-                }
-                name.to_lowercase().contains(&filter_lower)
-                    || number.to_lowercase().contains(&filter_lower)
-            })
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
-        contacts.sort_by_key(|a| a.1.to_lowercase());
-        self.group_menu.filtered = contacts;
-        if self.group_menu.filtered.is_empty() {
-            self.group_menu.index = 0;
-        } else if self.group_menu.index >= self.group_menu.filtered.len() {
-            self.group_menu.index = self.group_menu.filtered.len() - 1;
-        }
+        self.group_menu.filtered =
+            list_overlay::filter_name_number_pairs(pairs, &self.group_menu.filter);
+        list_overlay::clamp_index(&mut self.group_menu.index, self.group_menu.filtered.len());
     }
 
     /// Build filtered member list for the "Remove member" picker (excludes self).
     pub fn refresh_group_remove_filter(&mut self) {
-        let filter_lower = self.group_menu.filter.to_lowercase();
         let members: Vec<String> = self
             .active_conversation
             .as_ref()
             .and_then(|id| self.store.groups.get(id))
             .map(|g| g.members.clone())
             .unwrap_or_default();
-        let mut result: Vec<(String, String)> = members
+        let pairs: Vec<(String, String)> = members
             .into_iter()
             .filter(|phone| *phone != self.account)
             .map(|phone| {
@@ -1813,21 +1792,10 @@ impl App {
                     .unwrap_or_else(|| phone.clone());
                 (phone, name)
             })
-            .filter(|(phone, name)| {
-                if filter_lower.is_empty() {
-                    return true;
-                }
-                name.to_lowercase().contains(&filter_lower)
-                    || phone.to_lowercase().contains(&filter_lower)
-            })
             .collect();
-        result.sort_by_key(|a| a.1.to_lowercase());
-        self.group_menu.filtered = result;
-        if self.group_menu.filtered.is_empty() {
-            self.group_menu.index = 0;
-        } else if self.group_menu.index >= self.group_menu.filtered.len() {
-            self.group_menu.index = self.group_menu.filtered.len() - 1;
-        }
+        self.group_menu.filtered =
+            list_overlay::filter_name_number_pairs(pairs, &self.group_menu.filter);
+        list_overlay::clamp_index(&mut self.group_menu.index, self.group_menu.filtered.len());
     }
 
     /// Handle a key press while the group management menu is open.
