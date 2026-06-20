@@ -5548,3 +5548,35 @@ fn lock_flow_set_then_unlock(mut app: App) {
     assert_eq!(app.lock.phase, crate::domain::LockPhase::Unlocked);
     assert!(app.lock.error.is_none());
 }
+
+#[rstest]
+fn bound_key_dispatches_command_action(mut app: App) {
+    // #202: command actions (open overlays / toggle sidebar) are bindable. A key
+    // bound to OpenSettings in Global mode must open the settings overlay.
+    use crate::keybindings::{BindingMode, KeyAction, KeyCombo};
+    let combo = KeyCombo {
+        modifiers: KeyModifiers::CONTROL,
+        code: KeyCode::Char('y'),
+    };
+    app.keybindings
+        .rebind(BindingMode::Global, KeyAction::OpenSettings, combo);
+
+    assert!(!app.is_overlay(OverlayKind::Settings));
+    let consumed = app.handle_global_key(KeyModifiers::CONTROL, KeyCode::Char('y'));
+    assert!(consumed, "bound command action must consume the key");
+    assert!(app.is_overlay(OverlayKind::Settings));
+}
+
+#[rstest]
+fn toggle_sidebar_action_flips_visibility(mut app: App) {
+    use crate::keybindings::{BindingMode, KeyAction, KeyCombo};
+    let combo = KeyCombo {
+        modifiers: KeyModifiers::CONTROL,
+        code: KeyCode::Char('b'),
+    };
+    app.keybindings
+        .rebind(BindingMode::Global, KeyAction::ToggleSidebar, combo);
+    let before = app.sidebar_visible;
+    app.handle_global_key(KeyModifiers::CONTROL, KeyCode::Char('b'));
+    assert_eq!(app.sidebar_visible, !before);
+}
