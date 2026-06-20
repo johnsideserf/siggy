@@ -54,6 +54,30 @@ the install script uses the native signal-cli build which does not require Java.
    signal-cli -a +15551234567 receive
    ```
 
+## Messages from other devices aren't syncing
+
+**Symptom:** messages you send or receive on your phone (or another linked
+device) while siggy is closed do not show up when you reopen siggy, and the
+status bar briefly shows a signal-cli error such as `getServerGuid(...) must
+not be null` or `Method not implemented`.
+
+**Why:** siggy receives messages only while it is running, because it runs
+signal-cli as a child process. Nothing syncs while siggy is closed. On reopen,
+signal-cli drains the messages the server queued for it. If signal-cli is
+outdated or its session has drifted, it can fail to process some of those
+queued messages, and they never reach siggy.
+
+**Fix:**
+
+1. Upgrade signal-cli to the latest version. siggy uses newer signal-cli
+   features, and an older build is also more likely to fail decrypting queued
+   messages. Check your version with `signal-cli --version`.
+2. If it persists, re-link the device by re-running `siggy --setup`. Re-linking
+   resets the session. Note that it does not back-fill history, and messages
+   that were already dropped will not reappear.
+3. Linked devices only receive while connected, so for uninterrupted history
+   keep siggy (or another always-on signal-cli client) running.
+
 ## Images not rendering
 
 **Symptom:** images show as `[attachment: image.jpg]` instead of inline previews.
