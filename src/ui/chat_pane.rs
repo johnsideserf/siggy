@@ -738,21 +738,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     {
         if let Some(fi) = app.scroll.focused_index {
             // J/K already set scroll.focused_index — ensure it's visible by adjusting scroll.
-            let mut msg_start: Option<usize> = None;
-            let mut msg_end = 0usize;
-            let mut cumul = 0usize;
-            for (idx, &h) in line_heights.iter().enumerate() {
-                if line_msg_idx.get(idx) == Some(&Some(fi)) {
-                    if msg_start.is_none() {
-                        msg_start = Some(cumul);
-                    }
-                    msg_end = cumul + h;
-                }
-                cumul += h;
-            }
-            if let Some(start) = msg_start
+            if let Some((start, end)) = focus_line_span(&line_heights, &line_msg_idx, fi)
                 && let Some((offset, new_scroll_y)) =
-                    ensure_focus_visible(start, msg_end, base_scroll, scroll_y, available_height)
+                    ensure_focus_visible(start, end, base_scroll, scroll_y, available_height)
             {
                 app.scroll.offset = offset;
                 scroll_y = new_scroll_y;
@@ -1114,6 +1102,32 @@ pub(crate) fn bottom_align_scroll(
 /// above the viewport we scroll up so its first line is at the top; when it sits
 /// below we scroll down so its last line is at the bottom. Both branches recover
 /// the offset from `base_scroll` so the caller's `scroll_y` stays consistent.
+/// Cumulative line span `[start, end)` of the message with index `focus_idx`
+/// within the rendered lines, or `None` if that message contributed no lines.
+/// `line_heights` and `line_msg_idx` are parallel per-line arrays: the wrapped
+/// height of each line and the message index that produced it (separators and
+/// markers are `None`). Extracted from the render pass so the focus-derivation
+/// math is pure and unit-testable rather than buried inline (#496).
+pub(crate) fn focus_line_span(
+    line_heights: &[usize],
+    line_msg_idx: &[Option<usize>],
+    focus_idx: usize,
+) -> Option<(usize, usize)> {
+    let mut msg_start: Option<usize> = None;
+    let mut msg_end = 0usize;
+    let mut cumul = 0usize;
+    for (idx, &h) in line_heights.iter().enumerate() {
+        if line_msg_idx.get(idx) == Some(&Some(focus_idx)) {
+            if msg_start.is_none() {
+                msg_start = Some(cumul);
+            }
+            msg_end = cumul + h;
+        }
+        cumul += h;
+    }
+    msg_start.map(|s| (s, msg_end))
+}
+
 pub(crate) fn ensure_focus_visible(
     msg_start: usize,
     msg_end: usize,
@@ -1348,6 +1362,36 @@ mod tests {
         let (offset, scroll_y) = ensure_focus_visible(30, 35, 90, 10, 10).unwrap();
         assert_eq!(scroll_y, 25, "last line of focus sits at the bottom");
         assert_eq!(offset, 65, "offset = base_scroll - scroll_y");
+    }
+
+    #[test]
+    fn focus_line_span_spans_multi_line_message() {
+        // Lines:        0   1        2  3  4        5
+        // Message idx:  0   sep(-)   1  1  1        2
+        let heights = vec![1, 1, 1, 1, 1, 1];
+        let idx = vec![Some(0), None, Some(1), Some(1), Some(1), Some(2)];
+        // Message 1 occupies lines 2..=4 -> cumulative span [2, 5).
+        assert_eq!(focus_line_span(&heights, &idx, 1), Some((2, 5)));
+        // Message 0 is a single line at the top.
+        assert_eq!(focus_line_span(&heights, &idx, 0), Some((0, 1)));
+        // Message 2 is the last line.
+        assert_eq!(focus_line_span(&heights, &idx, 2), Some((5, 6)));
+    }
+
+    #[test]
+    fn focus_line_span_accounts_for_line_heights() {
+        // A wrapped message whose first line is 3 rows tall.
+        let heights = vec![3, 2];
+        let idx = vec![Some(0), Some(1)];
+        assert_eq!(focus_line_span(&heights, &idx, 0), Some((0, 3)));
+        assert_eq!(focus_line_span(&heights, &idx, 1), Some((3, 5)));
+    }
+
+    #[test]
+    fn focus_line_span_absent_message_is_none() {
+        let heights = vec![1, 1];
+        let idx = vec![Some(0), None];
+        assert_eq!(focus_line_span(&heights, &idx, 9), None);
     }
 
     // --- end scroll windowing ---
