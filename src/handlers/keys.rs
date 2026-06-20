@@ -15,6 +15,7 @@ use crate::app::{
     ActionMenuHint, App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, QUICK_REACTIONS,
     SETTINGS, SETTINGS_VISUAL_ORDER, SendRequest,
 };
+use crate::autocomplete::AutocompleteMode;
 use crate::domain::EmojiPickerSource;
 use crate::keybindings;
 use crate::list_overlay::{ListKeyAction, classify_list_key};
@@ -456,6 +457,53 @@ pub fn handle_settings_profile_manager_key(app: &mut App, code: KeyCode) {
         }
         _ => {}
     }
+}
+
+/// Handle a key press while the autocomplete popup is visible.
+/// Returns `Some(SendRequest)` when the user submits a command that requires
+/// sending a message. Returns `None` otherwise.
+pub fn handle_autocomplete_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    let list_len = app.autocomplete.len();
+    match code {
+        KeyCode::Up => {
+            if list_len > 0 {
+                app.autocomplete.index = if app.autocomplete.index == 0 {
+                    list_len - 1
+                } else {
+                    app.autocomplete.index - 1
+                };
+            }
+        }
+        KeyCode::Down => {
+            if list_len > 0 {
+                app.autocomplete.index = (app.autocomplete.index + 1) % list_len;
+            }
+        }
+        KeyCode::Tab => {
+            app.apply_autocomplete();
+        }
+        KeyCode::Esc => {
+            app.autocomplete.clear();
+            if app.is_overlay(OverlayKind::Autocomplete) {
+                app.close_overlay();
+            }
+        }
+        KeyCode::Enter => {
+            if app.autocomplete.mode == AutocompleteMode::Mention {
+                app.apply_autocomplete();
+                // Don't submit on Enter for mentions -- just complete
+            } else {
+                // Command and Join: apply + submit
+                app.apply_autocomplete();
+                return app.handle_input();
+            }
+        }
+        _ => {
+            app.apply_input_edit(code);
+            app.update_autocomplete();
+        }
+    }
+    None
 }
 
 /// Handle a key press while the message search overlay is open.

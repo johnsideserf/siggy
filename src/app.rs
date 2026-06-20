@@ -2024,47 +2024,7 @@ impl App {
     /// Returns `Some(SendRequest)` when the user submits a command
     /// that requires sending a message. Returns `None` otherwise.
     pub fn handle_autocomplete_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let list_len = self.autocomplete.len();
-        match code {
-            KeyCode::Up => {
-                if list_len > 0 {
-                    self.autocomplete.index = if self.autocomplete.index == 0 {
-                        list_len - 1
-                    } else {
-                        self.autocomplete.index - 1
-                    };
-                }
-            }
-            KeyCode::Down => {
-                if list_len > 0 {
-                    self.autocomplete.index = (self.autocomplete.index + 1) % list_len;
-                }
-            }
-            KeyCode::Tab => {
-                self.apply_autocomplete();
-            }
-            KeyCode::Esc => {
-                self.autocomplete.clear();
-                if self.is_overlay(OverlayKind::Autocomplete) {
-                    self.close_overlay();
-                }
-            }
-            KeyCode::Enter => {
-                if self.autocomplete.mode == AutocompleteMode::Mention {
-                    self.apply_autocomplete();
-                    // Don't submit on Enter for mentions — just complete
-                } else {
-                    // Command and Join: apply + submit
-                    self.apply_autocomplete();
-                    return self.handle_input();
-                }
-            }
-            _ => {
-                self.apply_input_edit(code);
-                self.update_autocomplete();
-            }
-        }
-        None
+        crate::handlers::keys::handle_autocomplete_key(self, code)
     }
 
     pub fn new(account: String, db: Database, config_path: &std::path::Path) -> Self {
