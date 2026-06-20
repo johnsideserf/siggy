@@ -214,6 +214,11 @@ pub(crate) fn show_desktop_notification(
         NotificationPreview::Sender => (sender_title(), "New message".to_string()),
         NotificationPreview::Full => (sender_title(), body.chars().take(100).collect()),
     };
+    // Sender/group names and message bodies are remote-controlled; strip
+    // control chars before handing them to the OS notification daemon, some of
+    // which interpret embedded escapes or markup (#504).
+    let title = crate::debug_log::strip_control_chars(&title, false);
+    let preview = crate::debug_log::strip_control_chars(&preview, false);
 
     tokio::task::spawn_blocking(move || {
         let _ = notify_rust::Notification::new()
@@ -5690,6 +5695,12 @@ impl App {
                 }
             }
         }
+
+        // Strip control characters from the assembled export (message bodies
+        // and names are remote-controlled) so the saved file cannot inject
+        // terminal escapes when viewed with cat/less (#504). Structural
+        // newlines and tabs are preserved.
+        let output = crate::debug_log::strip_control_chars(&output, true);
 
         // Write to download dir or home
         let dir = dirs::download_dir()
