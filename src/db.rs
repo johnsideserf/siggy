@@ -1162,6 +1162,144 @@ mod tests {
         Database::open_in_memory().unwrap()
     }
 
+    /// Build an in-memory database migrated only up to schema version `k`, to
+    /// simulate an existing user's database before a later release. Mirrors
+    /// `Database::migrate`'s setup so a subsequent `migrate()` applies exactly
+    /// the migrations above `k` against populated tables (#502).
+    fn db_at_version(k: i32) -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        for m in MIGRATIONS.iter().filter(|m| m.version <= k) {
+            conn.execute_batch(m.sql).unwrap();
+        }
+        Database { conn }
+    }
+
+    // #502: migrations were only ever tested against fresh databases. These
+    // exercise the path every existing user hits on upgrade day: ALTER TABLE
+    // backfills and new-table creation against rows that already exist.
+
+    #[test]
+    fn db_at_version_stops_at_requested_version() {
+        let db = db_at_version(8);
+        let v: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 8);
+        // A column added after v8 must not exist yet.
+        assert!(
+            db.conn
+                .query_row("SELECT blocked FROM conversations LIMIT 1", [], |_| Ok(()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn upgrade_from_v1_backfills_columns_and_preserves_rows() {
+        let db = db_at_version(1);
+        // Insert using only columns that exist at v1.
+        db.conn
+            .execute(
+                "INSERT INTO conversations (id, name, is_group) VALUES ('+1', 'Alice', 0)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO messages (conversation_id, sender, timestamp, body)
+                 VALUES ('+1', 'Alice', '2025-01-01T00:00:00Z', 'hi')",
+                [],
+            )
+            .unwrap();
+
+        db.migrate().unwrap();
+
+        // Schema reaches the latest version.
+        let v: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v as usize, MIGRATIONS.len());
+        // The existing row survives the upgrade.
+        let msgs: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(msgs, 1);
+        // NOT NULL DEFAULT columns added later are backfilled on the old row.
+        let status: i64 = db
+            .conn
+            .query_row(
+                "SELECT status FROM messages WHERE conversation_id='+1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, 0); // v3 default
+        let (accepted, blocked): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT accepted, blocked FROM conversations WHERE id='+1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((accepted, blocked), (1, 0)); // v8 / v9 defaults
+        // Tables added later exist and coexist with the old data.
+        let reactions: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM reactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reactions, 0);
+    }
+
+    #[test]
+    fn upgrade_from_v8_preserves_existing_values_and_loads() {
+        let db = db_at_version(8);
+        // accepted=0 to confirm a later migration does not reset it.
+        db.conn
+            .execute(
+                "INSERT INTO conversations (id, name, is_group, accepted) VALUES ('+1', 'Alice', 0, 0)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO messages (conversation_id, sender, timestamp, body, status, timestamp_ms)
+                 VALUES ('+1', 'Alice', '2025-01-01T00:00:00Z', 'hi', 3, 1000)",
+                [],
+            )
+            .unwrap();
+
+        db.migrate().unwrap();
+
+        let (accepted, blocked): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT accepted, blocked FROM conversations WHERE id='+1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((accepted, blocked), (0, 0)); // accepted preserved, blocked defaulted
+        let mute: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT mute_expires_at FROM conversations WHERE id='+1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(mute.is_none()); // v14 column present, NULL on the old row
+        // The real loader works against the upgraded schema (catches a
+        // migration that forgot a column the code selects).
+        let rows = db.load_messages_page("+1", 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
     // #484: your own sent messages are never "unread". Without the
     // incoming-only filter, sending N messages and restarting showed an
     // unread badge of N with the divider above your own messages.
