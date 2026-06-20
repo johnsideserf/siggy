@@ -20,20 +20,9 @@ use ratatui::{
     text::Span,
 };
 
+use crate::domain::LinkRegion;
 use crate::signal::types::StyleType;
 use crate::theme::Theme;
-
-/// A clickable link region detected in the rendered buffer.
-pub struct LinkRegion {
-    pub x: u16,
-    pub y: u16,
-    pub url: String,
-    pub text: String,
-    /// Display width in terminal columns (may differ from text.len() for Unicode).
-    pub width: u16,
-    /// Background color from the buffer cell, if non-default (e.g. highlight).
-    pub bg: Option<Color>,
-}
 
 /// Extract a URL from link-styled text.
 fn extract_url(text: &str) -> String {

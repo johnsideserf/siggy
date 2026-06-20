@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::app::SendRequest;
+use super::send::SendRequest;
 use crate::signal::types::ReceiptKind;
 
 /// A receipt that arrived before the message it targets was matchable

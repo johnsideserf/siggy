@@ -13,11 +13,51 @@ use std::collections::{HashMap, HashSet};
 
 use std::sync::mpsc;
 
+use ratatui::style::Color;
+use ratatui::text::Line;
+
 pub use crate::config::ImageMode;
 
-use crate::app::{ImageRenderResult, VisibleImage};
 use crate::image_render::ImageProtocol;
-use crate::ui::LinkRegion;
+
+/// An image visible on screen, for native protocol overlay rendering.
+#[derive(PartialEq, Eq)]
+pub struct VisibleImage {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    /// Total image height in cells (before viewport clipping).
+    pub full_height: u16,
+    /// Cells cropped from the top when the image is partially scrolled out.
+    pub crop_top: u16,
+    pub path: String,
+}
+
+/// Result from a background image render task.
+pub struct ImageRenderResult {
+    pub conv_id: String,
+    pub timestamp_ms: i64,
+    pub is_preview: bool,
+    pub lines: Option<Vec<Line<'static>>>,
+    pub image_path: Option<String>,
+    /// Pre-encoded PNG for native_image_cache: (path, base64, pixel_w, pixel_h)
+    pub pre_native_png: Option<(String, String, u32, u32)>,
+    /// Pre-encoded full Sixel for sixel_cache: (path, sixel_string)
+    pub pre_sixel: Option<(String, String)>,
+}
+
+/// A clickable link region detected in the rendered buffer.
+pub struct LinkRegion {
+    pub x: u16,
+    pub y: u16,
+    pub url: String,
+    pub text: String,
+    /// Display width in terminal columns (may differ from text.len() for Unicode).
+    pub width: u16,
+    /// Background color from the buffer cell, if non-default (e.g. highlight).
+    pub bg: Option<Color>,
+}
 
 /// State for image rendering, caching, and link overlay tracking.
 pub struct ImageState {
