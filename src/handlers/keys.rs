@@ -15,6 +15,7 @@ use crate::app::{
     App, InputMode, OverlayKind, PIN_DURATIONS, PinPending, QUICK_REACTIONS, SendRequest,
 };
 use crate::domain::EmojiPickerSource;
+use crate::keybindings;
 use crate::list_overlay::{ListKeyAction, classify_list_key};
 
 // ---------------------------------------------------------------------------
@@ -294,6 +295,165 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Handle a key press while the theme picker overlay is open.
+pub fn handle_theme_key(app: &mut App, code: KeyCode) {
+    // Theme-specific: space selects, q closes
+    let code = match code {
+        KeyCode::Char(' ') => KeyCode::Enter,
+        KeyCode::Char('q') => KeyCode::Esc,
+        other => other,
+    };
+    let action = classify_list_key(code, false);
+    if crate::list_overlay::apply_nav(
+        &action,
+        &mut app.theme_picker.index,
+        app.theme_picker.available_themes.len(),
+    ) {
+        return;
+    }
+    match action {
+        ListKeyAction::Select => {
+            if let Some(selected) = app
+                .theme_picker
+                .available_themes
+                .get(app.theme_picker.index)
+            {
+                app.theme = selected.clone();
+                app.save_settings();
+            }
+            app.close_overlay();
+        }
+        ListKeyAction::Close => {
+            app.close_overlay();
+        }
+        _ => {}
+    }
+}
+
+/// Handle a key press while the keybindings overlay is open.
+pub fn handle_keybindings_key(app: &mut App, code: KeyCode) {
+    if app.keybindings_overlay.profile_picker {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down
+                if app.keybindings_overlay.profile_index
+                    < app
+                        .keybindings_overlay
+                        .available_profiles
+                        .len()
+                        .saturating_sub(1) =>
+            {
+                app.keybindings_overlay.profile_index += 1;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                app.keybindings_overlay.profile_index =
+                    app.keybindings_overlay.profile_index.saturating_sub(1);
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                if let Some(name) = app
+                    .keybindings_overlay
+                    .available_profiles
+                    .get(app.keybindings_overlay.profile_index)
+                {
+                    let mut kb = keybindings::find_profile(name);
+                    let overrides = keybindings::load_overrides();
+                    kb.apply_overrides(&overrides);
+                    app.keybindings = kb;
+                    app.save_settings();
+                }
+                app.keybindings_overlay.profile_picker = false;
+            }
+            KeyCode::Esc => {
+                app.keybindings_overlay.profile_picker = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    if let Some((displaced_action, _combo)) = app.keybindings_overlay.conflict.take() {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                // Accept: the displaced action loses its binding
+                app.status_message = format!(
+                    "{} is now unbound",
+                    keybindings::action_label(displaced_action)
+                );
+            }
+            _ => {
+                // Undo the rebind -- restore both
+                let (mode, action) = app.keybindings_overlay_item(app.keybindings_overlay.index);
+                if let Some(action) = action {
+                    app.keybindings.reset_action(mode, action);
+                    app.keybindings.reset_action(mode, displaced_action);
+                }
+                app.status_message.clear();
+            }
+        }
+        return;
+    }
+
+    let total = app.keybindings_overlay_total();
+    match code {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if app.keybindings_overlay.index < total.saturating_sub(1) {
+                app.keybindings_overlay.index += 1;
+            }
+            // Skip section headers
+            while app.keybindings_overlay.index < total
+                && app
+                    .keybindings_overlay_item(app.keybindings_overlay.index)
+                    .1
+                    .is_none()
+            {
+                app.keybindings_overlay.index += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.keybindings_overlay.index = app.keybindings_overlay.index.saturating_sub(1);
+            // Skip section headers (index 0 is the profile row -- always selectable)
+            while app.keybindings_overlay.index > 0
+                && app
+                    .keybindings_overlay_item(app.keybindings_overlay.index)
+                    .1
+                    .is_none()
+            {
+                app.keybindings_overlay.index = app.keybindings_overlay.index.saturating_sub(1);
+            }
+        }
+        KeyCode::Enter => {
+            if app.keybindings_overlay.index == 0 {
+                // Profile row -> open profile picker
+                app.keybindings_overlay.profile_picker = true;
+                app.keybindings_overlay.profile_index = app
+                    .keybindings_overlay
+                    .available_profiles
+                    .iter()
+                    .position(|n| *n == app.keybindings.profile_name)
+                    .unwrap_or(0);
+            } else {
+                let (_, action) = app.keybindings_overlay_item(app.keybindings_overlay.index);
+                if action.is_some() {
+                    app.keybindings_overlay.capturing = true;
+                    app.status_message = "Press a key combo...".to_string();
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            // Reset to profile default
+            let (mode, action) = app.keybindings_overlay_item(app.keybindings_overlay.index);
+            if let Some(action) = action {
+                app.keybindings.reset_action(mode, action);
+                app.status_message = format!("Reset {}", keybindings::action_label(action));
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_overlay();
+            app.save_settings();
+        }
+        _ => {}
     }
 }
 
