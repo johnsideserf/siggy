@@ -312,6 +312,18 @@ Open the theme picker with `/theme` (alias `/t`) or from `/settings` > Theme.
 Choose from built-in themes with customizable sidebar, chat, status bar, and
 accent colors.
 
+### Custom themes
+
+Drop a `*.toml` theme file in your themes directory and it appears in the picker:
+
+- **Linux / macOS:** `~/.config/siggy/themes/`
+- **Windows:** `%APPDATA%\siggy\themes\`
+
+The repo ships a fully-commented starting point at
+[`themes/custom-theme-template.toml`](https://github.com/johnsideserf/siggy/blob/master/themes/custom-theme-template.toml):
+copy it in, edit the colors (named 16-color values, `#rrggbb` hex, or
+`indexed(N)` 256-color), set a unique `name`, and pick it via `/theme`.
+
 ## Pinned messages
 
 Pin important messages to the top of a conversation. Press `p` in Normal mode
