@@ -92,6 +92,28 @@ pub fn append_footer(
     )));
 }
 
+/// Filter `(id, name)` pairs by a case-insensitive substring match on either
+/// field (an empty filter matches all), sorted by name. This is the shared
+/// body of the contacts / add-member / remove-member type-to-filter pickers
+/// (#499); callers pre-build the source pairs with their own exclusions
+/// (non-empty name, existing members, self) and pass them in.
+pub fn filter_name_number_pairs(
+    pairs: impl IntoIterator<Item = (String, String)>,
+    filter: &str,
+) -> Vec<(String, String)> {
+    let filter = filter.to_lowercase();
+    let mut out: Vec<(String, String)> = pairs
+        .into_iter()
+        .filter(|(number, name)| {
+            filter.is_empty()
+                || name.to_lowercase().contains(&filter)
+                || number.to_lowercase().contains(&filter)
+        })
+        .collect();
+    out.sort_by_key(|(_, name)| name.to_lowercase());
+    out
+}
+
 /// Clamp a selection index to stay within list bounds.
 pub fn clamp_index(index: &mut usize, list_len: usize) {
     if list_len == 0 {
@@ -188,6 +210,31 @@ mod tests {
         let (visible, offset) = scroll_layout(10, 2, 10);
         assert_eq!(visible, 8);
         assert_eq!(offset, 3); // 10 - 8 + 1
+    }
+
+    #[test]
+    fn filter_name_number_pairs_matches_name_or_number_and_sorts() {
+        let pairs = vec![
+            ("+199".to_string(), "Zoe".to_string()),
+            ("+1234".to_string(), "Alice".to_string()),
+            ("+1999".to_string(), "Bob".to_string()),
+        ];
+        // Empty filter: all, sorted by name.
+        let all = filter_name_number_pairs(pairs.clone(), "");
+        assert_eq!(
+            all.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            ["Alice", "Bob", "Zoe"]
+        );
+        // Name match (case-insensitive).
+        let by_name = filter_name_number_pairs(pairs.clone(), "ALI");
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].1, "Alice");
+        // Number match: "+199" appears in Zoe (+199) and Bob (+1999).
+        let by_num = filter_name_number_pairs(pairs, "+199");
+        assert_eq!(
+            by_num.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            ["Bob", "Zoe"]
+        );
     }
 
     #[test]
