@@ -1253,25 +1253,16 @@ async fn run_app(
     config_path: &std::path::Path,
 ) -> Result<()> {
     let mut app = App::new(config.account.clone(), db, config_path);
-    app.notifications.notify_direct = config.notify_direct;
-    app.notifications.notify_group = config.notify_group;
-    app.notifications.desktop_notifications = config.desktop_notifications;
+    // Table-driven boolean toggles (notifications, display, messages,
+    // interface) load through the shared SETTINGS table, paired with the save
+    // loop in save_settings (#498).
+    app.apply_settings_from_config(config);
+    // Non-toggle scalar settings, copied directly.
     app.notifications.notification_preview = config.notification_preview;
     app.notifications.clipboard_clear_seconds = config.clipboard_clear_seconds;
     app.image.image_mode = config.image_mode.unwrap_or_default();
-    app.image.show_link_previews = config.show_link_previews;
     app.incognito = incognito;
     app.download_dir = config.download_dir.clone();
-    app.date_separators = config.date_separators;
-    app.show_receipts = config.show_receipts;
-    app.color_receipts = config.color_receipts;
-    app.nerd_fonts = config.nerd_fonts;
-    app.reactions.emoji_to_text = config.emoji_to_text;
-    app.reactions.show_reactions = config.show_reactions;
-    app.reactions.verbose = config.reaction_verbose;
-    app.send_read_receipts = config.send_read_receipts;
-    app.mouse.enabled = config.mouse_enabled;
-    app.sidebar_on_right = config.sidebar_on_right;
     app.sidebar_width = config.sidebar_width.clamp(14, 40);
     if config.cell_pixel_width > 0 && config.cell_pixel_height > 0 {
         app.image.cell_px = (config.cell_pixel_width, config.cell_pixel_height);

@@ -787,13 +787,19 @@ pub enum SendRequest {
     },
 }
 
-/// A single settings toggle entry: label, getter, setter, and optional config persistence.
+/// A single settings toggle entry: label, getter, setter, and optional config
+/// persistence. `save` (App -> Config) and `load` (Config -> App) are a pair:
+/// a persisted setting must be loadable and vice versa, or it silently works in
+/// only one direction (#498). The pairing is enforced by a test, and startup
+/// applies `load` through [`App::apply_settings_from_config`] rather than
+/// hand-copying each field.
 pub struct SettingDef {
     pub label: &'static str,
     pub hint: &'static str,
     get: fn(&App) -> bool,
     set: fn(&mut App, bool),
     save: Option<fn(&mut crate::config::Config, bool)>,
+    load: Option<fn(&crate::config::Config) -> bool>,
 }
 
 /// Section boundary indices within the SETTINGS array.
@@ -824,6 +830,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.notify_direct,
         set: |a, v| a.notifications.notify_direct = v,
         save: Some(|c, v| c.notify_direct = v),
+        load: Some(|c| c.notify_direct),
     },
     SettingDef {
         label: "Group message notifications",
@@ -831,6 +838,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.notify_group,
         set: |a, v| a.notifications.notify_group = v,
         save: Some(|c, v| c.notify_group = v),
+        load: Some(|c| c.notify_group),
     },
     SettingDef {
         label: "Desktop notifications",
@@ -838,6 +846,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.desktop_notifications,
         set: |a, v| a.notifications.desktop_notifications = v,
         save: Some(|c, v| c.desktop_notifications = v),
+        load: Some(|c| c.desktop_notifications),
     },
     // — Display (3–8) —
     SettingDef {
@@ -846,6 +855,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.image.show_link_previews,
         set: |a, v| a.image.show_link_previews = v,
         save: Some(|c, v| c.show_link_previews = v),
+        load: Some(|c| c.show_link_previews),
     },
     SettingDef {
         label: "Date separators",
@@ -853,6 +863,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.date_separators,
         set: |a, v| a.date_separators = v,
         save: Some(|c, v| c.date_separators = v),
+        load: Some(|c| c.date_separators),
     },
     SettingDef {
         label: "Read receipts",
@@ -860,6 +871,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.show_receipts,
         set: |a, v| a.show_receipts = v,
         save: Some(|c, v| c.show_receipts = v),
+        load: Some(|c| c.show_receipts),
     },
     SettingDef {
         label: "Receipt colors",
@@ -867,6 +879,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.color_receipts,
         set: |a, v| a.color_receipts = v,
         save: Some(|c, v| c.color_receipts = v),
+        load: Some(|c| c.color_receipts),
     },
     SettingDef {
         label: "Nerd Font icons",
@@ -874,6 +887,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.nerd_fonts,
         set: |a, v| a.nerd_fonts = v,
         save: Some(|c, v| c.nerd_fonts = v),
+        load: Some(|c| c.nerd_fonts),
     },
     SettingDef {
         label: "Emoji to text",
@@ -881,6 +895,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.emoji_to_text,
         set: |a, v| a.reactions.emoji_to_text = v,
         save: Some(|c, v| c.emoji_to_text = v),
+        load: Some(|c| c.emoji_to_text),
     },
     // — Messages (9–11) —
     SettingDef {
@@ -889,6 +904,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.show_reactions,
         set: |a, v| a.reactions.show_reactions = v,
         save: Some(|c, v| c.show_reactions = v),
+        load: Some(|c| c.show_reactions),
     },
     SettingDef {
         label: "Verbose reactions",
@@ -896,6 +912,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.verbose,
         set: |a, v| a.reactions.verbose = v,
         save: Some(|c, v| c.reaction_verbose = v),
+        load: Some(|c| c.reaction_verbose),
     },
     SettingDef {
         label: "Send read receipts",
@@ -903,6 +920,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.send_read_receipts,
         set: |a, v| a.send_read_receipts = v,
         save: Some(|c, v| c.send_read_receipts = v),
+        load: Some(|c| c.send_read_receipts),
     },
     // — Interface (12–14) —
     SettingDef {
@@ -911,6 +929,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.sidebar_visible,
         set: |a, v| a.sidebar_visible = v,
         save: None, // runtime-only, not persisted
+        load: None,
     },
     SettingDef {
         label: "Mouse support",
@@ -918,6 +937,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.mouse.enabled,
         set: |a, v| a.mouse.enabled = v,
         save: Some(|c, v| c.mouse_enabled = v),
+        load: Some(|c| c.mouse_enabled),
     },
     SettingDef {
         label: "Sidebar on right",
@@ -925,6 +945,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.sidebar_on_right,
         set: |a, v| a.sidebar_on_right = v,
         save: Some(|c, v| c.sidebar_on_right = v),
+        load: Some(|c| c.sidebar_on_right),
     },
 ];
 
@@ -933,6 +954,18 @@ impl App {
         if let Some(def) = SETTINGS.get(index) {
             let cur = (def.get)(self);
             (def.set)(self, !cur);
+        }
+    }
+
+    /// Apply every table-driven toggle from `config` into this `App`. The
+    /// inverse of the `save` loop in `save_settings`; both go through the same
+    /// SETTINGS table so a new toggle cannot silently load or persist in only
+    /// one direction (#498).
+    pub fn apply_settings_from_config(&mut self, config: &crate::config::Config) {
+        for def in SETTINGS {
+            if let Some(load) = def.load {
+                (def.set)(self, load(config));
+            }
         }
     }
 
@@ -9187,6 +9220,61 @@ mod tests {
             assert_eq!(GroupMenuHint::from_char(hint.key_char()), Some(hint));
         }
         assert_eq!(GroupMenuHint::from_char('z'), None);
+    }
+
+    // #498: save and load must be paired for every setting, or it silently
+    // works in only one direction. This is the guard that keeps the two
+    // config<->App mapping paths in sync.
+    #[test]
+    fn settings_save_and_load_are_paired() {
+        for def in SETTINGS {
+            assert_eq!(
+                def.save.is_some(),
+                def.load.is_some(),
+                "setting '{}' has save/load mismatch",
+                def.label
+            );
+        }
+    }
+
+    #[rstest]
+    #[allow(clippy::field_reassign_with_default)]
+    fn apply_settings_from_config_loads_toggles(mut app: App) {
+        let mut config = crate::config::Config::default();
+        // Flip a representative set away from their defaults.
+        config.notify_direct = false;
+        config.nerd_fonts = true;
+        config.send_read_receipts = false;
+        config.sidebar_on_right = true;
+
+        app.apply_settings_from_config(&config);
+
+        assert!(!app.notifications.notify_direct);
+        assert!(app.nerd_fonts);
+        assert!(!app.send_read_receipts);
+        assert!(app.sidebar_on_right);
+    }
+
+    #[rstest]
+    fn settings_round_trip_through_table(mut app: App) {
+        // Set an App toggle, persist via the save loop, reload into a fresh
+        // App via the load loop: the value must survive both directions.
+        app.nerd_fonts = true;
+        app.notifications.notify_group = false;
+        let mut config = crate::config::Config::default();
+        for def in SETTINGS {
+            if let Some(save) = def.save {
+                save(&mut config, (def.get)(&app));
+            }
+        }
+        let mut fresh = App::new(
+            "+10000000000".to_string(),
+            Database::open_in_memory().unwrap(),
+            std::path::Path::new("/tmp/x"),
+        );
+        fresh.apply_settings_from_config(&config);
+        assert!(fresh.nerd_fonts);
+        assert!(!fresh.notifications.notify_group);
     }
 
     #[rstest]
