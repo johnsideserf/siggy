@@ -804,6 +804,11 @@ impl Database {
 
     /// Load all reactions for a conversation.
     /// Returns (target_ts_ms, target_author, emoji, sender) tuples.
+    ///
+    /// Test-only: production paging uses `load_reactions_in_range` (#488), so
+    /// the unbounded variant now exists purely as a convenience for tests that
+    /// assert reaction storage across a whole conversation.
+    #[cfg(test)]
     pub fn load_reactions(&self, conv_id: &str) -> Result<Vec<(i64, String, String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT target_ts_ms, target_author, emoji, sender FROM reactions
