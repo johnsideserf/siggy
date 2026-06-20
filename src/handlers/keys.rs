@@ -11,11 +11,12 @@
 use std::time::Instant;
 
 use chrono::Utc;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
 use crate::app::{
     ActionMenuHint, App, GroupMenuHint, GroupMenuState, InputMode, OverlayKind, PIN_DURATIONS,
-    PinPending, QUICK_REACTIONS, SETTINGS, SETTINGS_VISUAL_ORDER, SendRequest,
+    PinPending, QUICK_REACTIONS, SETTINGS, SETTINGS_VISUAL_ORDER, SendRequest, floor_char_boundary,
+    is_in_rect,
 };
 use crate::autocomplete::AutocompleteMode;
 use crate::domain::{EmojiPickerAction, EmojiPickerSource};
@@ -300,6 +301,103 @@ pub fn handle_poll_vote_key(app: &mut App, code: KeyCode) -> Option<SendRequest>
             None
         }
         _ => None,
+    }
+}
+
+/// Handle a mouse event: scroll the message list, translate scroll to j/k while
+/// an overlay is open, and route left-clicks to links / sidebar / composer.
+pub fn handle_mouse_event(app: &mut App, event: MouseEvent) -> Option<SendRequest> {
+    if !app.mouse.enabled {
+        return None;
+    }
+
+    // When overlays are open, translate scroll to j/k navigation and Esc on outside click
+    if app.has_overlay() {
+        match event.kind {
+            MouseEventKind::ScrollUp => app.handle_overlay_key(KeyCode::Char('k')),
+            MouseEventKind::ScrollDown => app.handle_overlay_key(KeyCode::Char('j')),
+            _ => (false, None),
+        };
+        return None;
+    }
+
+    match event.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            handle_left_click(app, event.column, event.row);
+        }
+        MouseEventKind::ScrollUp
+            if is_in_rect(event.column, event.row, app.mouse.messages_area) =>
+        {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_add(3);
+            app.scroll.focused_index = None;
+        }
+        MouseEventKind::ScrollDown
+            if is_in_rect(event.column, event.row, app.mouse.messages_area) =>
+        {
+            app.sync.user_scrolled = true;
+            app.scroll.offset = app.scroll.offset.saturating_sub(3);
+            app.scroll.focused_index = None;
+        }
+        _ => {}
+    }
+    None
+}
+
+fn handle_left_click(app: &mut App, col: u16, row: u16) {
+    // 1. Check link regions first (highest priority -- links overlay everything)
+    for link in &app.image.link_regions {
+        if row == link.y && col >= link.x && col < link.x + link.width {
+            let url = link.url.clone();
+            app.open_url(&url);
+            return;
+        }
+    }
+
+    // 2. Sidebar click -- switch conversation
+    if let Some(inner) = app.mouse.sidebar_inner
+        && is_in_rect(col, row, inner)
+    {
+        let index = (row - inner.y) as usize;
+        let sidebar_list =
+            if app.is_overlay(OverlayKind::SidebarFilter) && !app.sidebar_filtered.is_empty() {
+                &app.sidebar_filtered
+            } else {
+                &app.store.conversation_order
+            };
+        if index < sidebar_list.len() {
+            let conv_id = sidebar_list[index].clone();
+            app.clear_sidebar_filter();
+            app.join_conversation(&conv_id);
+        }
+        return;
+    }
+
+    // 3. Input area click -- position cursor and enter Insert mode
+    if is_in_rect(col, row, app.mouse.input_area) {
+        app.mode = InputMode::Insert;
+        // Content starts after left border (1) + prefix
+        let content_start_col = app.mouse.input_area.x + 1 + app.mouse.input_prefix_len;
+        if col >= content_start_col {
+            let text_width = (app.mouse.input_area.width.saturating_sub(2)) as usize
+                - app.mouse.input_prefix_len as usize;
+            let input_scroll = floor_char_boundary(
+                &app.input.buffer,
+                app.input.cursor.saturating_sub(text_width),
+            );
+            let target_col = (col - content_start_col) as usize;
+            // Walk characters to find the byte offset for the target column
+            let mut byte_pos = input_scroll;
+            for (col_pos, ch) in app.input.buffer[input_scroll..].chars().enumerate() {
+                if col_pos >= target_col {
+                    break;
+                }
+                byte_pos += ch.len_utf8();
+            }
+            app.input.cursor = byte_pos.min(app.input.buffer.len());
+        } else {
+            app.input.cursor = 0;
+        }
     }
 }
 
