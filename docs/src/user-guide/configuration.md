@@ -28,6 +28,7 @@ notify_group = true
 desktop_notifications = false
 notification_preview = "full"
 clipboard_clear_seconds = 30
+lock_timeout = 0
 image_mode = "halfblock"
 show_link_previews = true
 date_separators = true
@@ -58,6 +59,7 @@ proxy = ""
 | `desktop_notifications` | bool | `false` | OS-level desktop notifications for incoming messages |
 | `notification_preview` | string | `"full"` | Notification content level: `full`, `sender`, or `minimal` |
 | `clipboard_clear_seconds` | int | `30` | Seconds before clipboard auto-clears after copying (0 = disabled) |
+| `lock_timeout` | int | `0` | Minutes of keyboard inactivity before the session auto-locks (0 = disabled) |
 | `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
 | `show_link_previews` | bool | `true` | Show link preview cards for URLs in messages |
 | `date_separators` | bool | `true` | Show date separator lines between messages from different days |

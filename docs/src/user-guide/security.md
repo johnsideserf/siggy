@@ -126,8 +126,11 @@ Copied message content is automatically cleared from the system clipboard after
 ### Session lock
 
 `Ctrl-L` (or `/lock`) blanks the chat behind a passphrase prompt for the
-"someone walked up to my terminal" case. The passphrase is stored as an argon2
-PHC hash at `{config_dir}/lock_hash`, never as plaintext. While locked:
+"someone walked up to my terminal" case. Set `lock_timeout = N` (minutes) in the
+config to also auto-lock after N minutes without a keypress (0, the default,
+disables it; mouse movement does not count as activity). The passphrase is
+stored as an argon2 PHC hash at `{config_dir}/lock_hash`, never as plaintext.
+While locked:
 
 - Keyboard input is intercepted; nothing reaches the composer
 - Terminal bell and OS desktop notifications are suppressed
