@@ -58,6 +58,22 @@ Platform config directories:
 - **Linux / macOS**: `~/.config/siggy/`
 - **Windows**: `%APPDATA%\siggy\`
 
+### File permissions
+
+On **Unix** (Linux / macOS), siggy creates its sensitive files and directories
+with restrictive permissions: the lock hash, debug log, and their parent
+directories are set to owner-only (`0600` for files, `0700` for directories).
+
+On **Windows** there is no portable equivalent of `chmod`, so siggy does not set
+an explicit DACL. Instead it relies on the default per-user ACLs that Windows
+applies to the profile directories these files live in (`%APPDATA%`,
+`%USERPROFILE%`, `%LOCALAPPDATA%`). Under those defaults other standard user
+accounts cannot read your siggy files, but **local administrators still can**.
+If that is part of your threat model, enable BitLocker (full-volume encryption)
+or store your profile on an encrypted volume. This is a deliberate choice over
+manipulating Win32 security descriptors, which could lock you out of your own
+files if it went wrong.
+
 ## Privacy features
 
 ### Incognito mode
@@ -93,7 +109,14 @@ Debug logging is **opt-in only** and disabled by default.
 
 Debug logs are written to `~/.cache/siggy/debug.log` with 10 MB rotation. On
 Unix systems, the log file and directory are created with restrictive permissions
-(0600 / 0700).
+(0600 / 0700). See [File permissions](#file-permissions) for how this differs on
+Windows.
+
+Chat exports (`/export`) and the unredacted `--debug-full` log have terminal
+control characters stripped on write (newlines and tabs are kept), so opening
+either with `cat`/`type` cannot execute escape sequences embedded in a message
+body. Desktop notification titles and previews are likewise stripped of control
+characters before being handed to the OS notifier.
 
 ### Clipboard
 
@@ -126,8 +149,12 @@ at-rest protection for the message DB, rely on full-disk encryption.
 - **Set `notification_preview = "sender"` or `"minimal"`** if you're concerned
   about notification content being visible on lock screens or in screen recordings.
 - **Use a screen lock** to prevent physical access to your terminal session.
-- **On shared systems**, restrict file permissions on the config directory
+- **On shared Unix systems**, restrict file permissions on the config directory
   (`chmod 700 ~/.config/siggy`).
+- **On Windows**, the config and cache directories inherit your user profile's
+  default ACLs (other standard users cannot read them; local administrators can).
+  Enable BitLocker if you need protection beyond that. See
+  [File permissions](#file-permissions).
 
 ## Reporting vulnerabilities
 
