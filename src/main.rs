@@ -132,6 +132,7 @@ async fn main() -> Result<()> {
     let mut debug = false;
     let mut debug_full = false;
     let mut reset_lock = false;
+    let mut check = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -178,6 +179,10 @@ async fn main() -> Result<()> {
                 reset_lock = true;
                 i += 1;
             }
+            "--check" => {
+                check = true;
+                i += 1;
+            }
             "--help" => {
                 eprintln!("siggy - Terminal Signal client");
                 eprintln!();
@@ -194,6 +199,9 @@ async fn main() -> Result<()> {
                 eprintln!("      --debug             Write debug log (PII redacted)");
                 eprintln!("      --debug-full        Write debug log (full, unredacted)");
                 eprintln!("      --reset-lock        Delete the session-lock passphrase and exit");
+                eprintln!(
+                    "      --check             Print a setup health report and exit (0 = ready)"
+                );
                 eprintln!("  -V, --version           Print version and exit");
                 eprintln!("      --help              Show this help");
                 std::process::exit(0);
@@ -241,6 +249,38 @@ async fn main() -> Result<()> {
     let mut config = Config::load(config_path)?;
     if let Some(acct) = account {
         config.account = acct;
+    }
+
+    // Non-interactive setup health report for scripts/CI (#257). Plain stdout,
+    // no TUI; exit 0 only when signal-cli is detected and an account is set.
+    if check {
+        let (found, location, _resolved) = setup::check_signal_cli(&config.signal_cli_path).await;
+        let account_ok = !config.account.is_empty();
+        println!("siggy {}", env!("CARGO_PKG_VERSION"));
+        println!("config:       {}", resolved_config_path.display());
+        println!(
+            "account:      {}",
+            if account_ok {
+                config.account.as_str()
+            } else {
+                "(not set)"
+            }
+        );
+        println!(
+            "signal-cli:   {}",
+            if found {
+                location
+            } else {
+                format!("NOT FOUND (configured: {})", config.signal_cli_path)
+            }
+        );
+        println!("download dir: {}", config.download_dir.display());
+        let ready = found && account_ok;
+        println!(
+            "status:       {}",
+            if ready { "ready" } else { "not ready" }
+        );
+        std::process::exit(if ready { 0 } else { 1 });
     }
 
     // Set up terminal BEFORE anything else so all errors render in the TUI
