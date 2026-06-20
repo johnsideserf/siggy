@@ -3,7 +3,25 @@
 //! Translates the user's typed input buffer into an [`InputAction`] enum
 //! consumed by the event loop. Slash commands (`/join`, `/part`, `/quit`,
 //! `/sidebar`, `/help`, ...) live in [`COMMANDS`] alongside their
-//! autocomplete metadata.
+//! autocomplete metadata. Also home to the composer's UTF-8 cursor-movement
+//! helpers, exported via `lib.rs` so the `fuzz_input_edit` harness drives the
+//! real code instead of a hand-copied duplicate.
+
+/// Find the byte position one character forward from `pos` in `buf`.
+pub fn next_char_pos(buf: &str, pos: usize) -> usize {
+    if pos >= buf.len() {
+        return buf.len();
+    }
+    pos + buf[pos..].chars().next().map_or(1, |c| c.len_utf8())
+}
+
+/// Find the byte position one character backward from `pos` in `buf`.
+pub fn prev_char_pos(buf: &str, pos: usize) -> usize {
+    if pos == 0 {
+        return 0;
+    }
+    pos - buf[..pos].chars().next_back().map_or(1, |c| c.len_utf8())
+}
 
 /// Metadata for a slash command (used for autocomplete + help)
 pub struct CommandInfo {
@@ -501,6 +519,28 @@ pub fn replace_shortcodes(input: &str) -> String {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    // --- Cursor helpers (fuzzed by fuzz_input_edit; #501) ---
+
+    #[test]
+    fn next_char_pos_steps_over_multibyte() {
+        // "a" + 4-byte emoji + "b"
+        let s = "a\u{1F600}b";
+        assert_eq!(next_char_pos(s, 0), 1); // past 'a'
+        assert_eq!(next_char_pos(s, 1), 5); // past the 4-byte emoji
+        assert_eq!(next_char_pos(s, 5), 6); // past 'b'
+        assert_eq!(next_char_pos(s, 6), 6); // clamps at end
+        assert_eq!(next_char_pos("", 0), 0);
+    }
+
+    #[test]
+    fn prev_char_pos_steps_over_multibyte() {
+        let s = "a\u{1F600}b";
+        assert_eq!(prev_char_pos(s, 6), 5); // before 'b'
+        assert_eq!(prev_char_pos(s, 5), 1); // before the emoji
+        assert_eq!(prev_char_pos(s, 1), 0); // before 'a'
+        assert_eq!(prev_char_pos(s, 0), 0); // clamps at start
+    }
 
     // --- No-arg commands: 19 cases → 1 parameterized test ---
 
