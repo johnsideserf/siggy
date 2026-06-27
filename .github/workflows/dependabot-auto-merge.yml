@@ -19,7 +19,7 @@ jobs:
     steps:
       - name: Fetch dependabot metadata
         id: meta
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
 
       - name: Enable auto-merge for patch and minor updates
         if: >-
