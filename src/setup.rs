@@ -772,12 +772,42 @@ fn draw_registered_screen(frame: &mut ratatui::Frame, account: &str) {
     frame.render_widget(paragraph, inner);
 }
 
+/// Plain-English recovery guidance for known `signal-cli link` failures, shown
+/// under the raw signal-cli error in the linking-error box. Returns an empty
+/// slice for unrecognised errors (the raw message is still shown above).
+///
+/// A 409 / "Link request error" from the Signal server survives clearing local
+/// account data (the conflicting registration lives server-side), so the fix is
+/// on the phone -- remove stale linked devices -- plus keeping signal-cli
+/// current, not deleting local files.
+fn link_error_hint(error: &str) -> &'static [&'static str] {
+    let e = error.to_ascii_lowercase();
+    if e.contains("409") || e.contains("link request error") {
+        &[
+            "This number still has a previous link registered with Signal.",
+            "Clearing local data will not fix it. Instead:",
+            "  1. On your phone, open Signal > Settings > Linked Devices",
+            "     and remove any old or unused devices.",
+            "  2. Make sure signal-cli is up to date.",
+            "  3. Press Enter to retry.",
+        ]
+    } else {
+        &[]
+    }
+}
+
 fn draw_link_error(frame: &mut ratatui::Frame, error: &str) {
     let area = frame.area();
 
+    let hint = link_error_hint(error);
+    // Size the box to its content: borders + a blank + the (wrapped) error
+    // + the footer, plus the hint block when present.
+    let hint_rows = if hint.is_empty() { 0 } else { hint.len() + 1 };
+    let content_height = ((8 + hint_rows) as u16).min(area.height.saturating_sub(2));
+
     let [_, content_area, _] = Layout::vertical([
         Constraint::Min(1),
-        Constraint::Length(10),
+        Constraint::Length(content_height),
         Constraint::Min(1),
     ])
     .flex(Flex::Center)
@@ -796,19 +826,27 @@ fn draw_link_error(frame: &mut ratatui::Frame, error: &str) {
     let inner = block.inner(content);
     frame.render_widget(block, content);
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("  {error}"),
             Style::default().fg(Color::Red),
         )),
-        Line::from(""),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Enter to retry | Esc to go back",
-            Style::default().fg(Color::DarkGray),
-        )),
     ];
+    if !hint.is_empty() {
+        lines.push(Line::from(""));
+        for h in hint {
+            lines.push(Line::from(Span::styled(
+                format!("  {h}"),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter to retry | Esc to go back",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
@@ -989,6 +1027,32 @@ mod tests {
         assert!(display.is_some());
         let display = display.unwrap();
         assert!(display.starts_with("cargo"));
+    }
+
+    // --- link_error_hint ---
+
+    #[test]
+    fn link_error_hint_matches_409_conflict() {
+        // The real signal-cli failure text the user hits after an unlink.
+        let err = "signal-cli link failed (exit code: Some(3)): \
+            Link request error: StatusCode: 409";
+        let hint = link_error_hint(err);
+        assert!(!hint.is_empty(), "a 409 must produce recovery guidance");
+        assert!(
+            hint.iter().any(|l| l.contains("Linked Devices")),
+            "guidance should point the user at the phone's Linked Devices screen"
+        );
+    }
+
+    #[test]
+    fn link_error_hint_matches_link_request_error_without_code() {
+        assert!(!link_error_hint("Link request error: something").is_empty());
+    }
+
+    #[test]
+    fn link_error_hint_empty_for_unknown_errors() {
+        assert!(link_error_hint("Timed out waiting for linking URI").is_empty());
+        assert!(link_error_hint("some other failure").is_empty());
     }
 
     // --- validate_phone (#503) ---
