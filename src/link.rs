@@ -217,7 +217,22 @@ async fn show_qr_and_wait(
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     return Ok(LinkResult::Success);
                 } else {
-                    anyhow::bail!("signal-cli link failed (exit code: {:?})", status.code());
+                    // signal-cli writes the real reason (timeout, rate limit,
+                    // stale account state) to stderr. Surface it instead of just
+                    // the numeric exit code, which is opaque on its own.
+                    let mut stderr_output = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        let _ = stderr.read_to_string(&mut stderr_output).await;
+                    }
+                    let detail = stderr_output.trim();
+                    if detail.is_empty() {
+                        anyhow::bail!("signal-cli link failed (exit code: {:?})", status.code());
+                    } else {
+                        anyhow::bail!(
+                            "signal-cli link failed (exit code: {:?}): {detail}",
+                            status.code()
+                        );
+                    }
                 }
             }
             Ok(None) => {} // Still running
