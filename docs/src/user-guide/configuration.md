@@ -92,6 +92,7 @@ CLI flags override config file values for the current session:
 | `--debug` | Write debug log to `~/.cache/siggy/debug.log` (PII redacted) |
 | `--debug-full` | Same as `--debug` but without redaction |
 | `--reset-lock` | Delete the session-lock passphrase hash and exit |
+| `--reset-account` | Clear local signal-cli account data for the configured account and exit, for a clean relink (`siggy --reset-account` then `siggy --setup`). Only removes local data; a server-side conflict also needs old devices removed on your phone |
 | `--check` | Print a setup health report (config, account, signal-cli, download dir) and exit; exit code 0 when ready, 1 otherwise |
 | `--send <TO> <MSG>` | Send one message non-interactively and exit (`TO` = `+E164` for a 1:1 or a group id); exit 0 on confirmed send, 1 on failure/timeout |
 | `--list` | Print cached conversations as tab-separated rows (`unread`, `type`, `name`, `id`) and exit; reads the local DB, no signal-cli needed |
