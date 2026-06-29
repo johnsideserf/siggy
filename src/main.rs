@@ -62,6 +62,14 @@ use signal::client::SignalClient;
 /// Keyboard polling interval for the main event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(50);
 
+/// How long to wait for the startup contact sync before giving up on the
+/// loading spinner. If the contact list never comes back (e.g. signal-cli is
+/// not properly linked), the app would otherwise spin on "Loading..." forever
+/// with no feedback. After this grace period we clear the loading state, show a
+/// diagnostic hint, and let the user reach the rest of the app. Generous enough
+/// not to fire on a slow-but-healthy first sync.
+const STARTUP_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// How many times to retry spawning signal-cli after the child dies before
 /// giving up and leaving the disconnect error on screen (#497).
 const MAX_RECONNECT_ATTEMPTS: u32 = 6;
@@ -174,6 +182,13 @@ async fn run_receive_stream(config: &Config) -> Result<()> {
 /// motion), so a wireless mouse on a desk can't hold the lock open forever.
 fn should_auto_lock(timeout_mins: u64, idle: Duration, already_locked: bool) -> bool {
     timeout_mins > 0 && !already_locked && idle >= Duration::from_secs(timeout_mins * 60)
+}
+
+/// Whether the startup contact sync has run past its grace period without
+/// completing (`loading` still true). Pure, like `should_auto_lock`, so the
+/// watchdog decision can be unit-tested without driving the event loop.
+fn startup_sync_timed_out(loading: bool, elapsed: Duration) -> bool {
+    loading && elapsed >= STARTUP_SYNC_TIMEOUT
 }
 
 /// Set restrictive permissions (0600) on a sensitive file (Unix only).
@@ -1606,6 +1621,10 @@ async fn run_app(
     let mut next_reconnect_at: Option<Instant> = None;
     // Auto-lock idle tracking (#438): reset on every keypress (not mouse).
     let mut last_activity = Instant::now();
+    // Startup-sync watchdog: when the loop begins, `app.loading` is still true
+    // until the contact list arrives. If it never does, the timeout below clears
+    // the spinner so the app does not appear hung (see STARTUP_SYNC_TIMEOUT).
+    let loop_started = Instant::now();
     // Loop-rate diagnostics: only counted/logged when --debug is on. Helps
     // locate non-converging redraw triggers (see issue #408). Cheap when off.
     let mut diag_last = Instant::now();
@@ -1721,6 +1740,20 @@ async fn run_app(
             if app.should_tick_spinner() {
                 needs_redraw = true;
             }
+        }
+
+        // Startup-sync watchdog: if the contact list never came back, stop
+        // spinning on "Loading..." forever and surface a diagnostic hint so the
+        // user knows to check their link instead of staring at a frozen screen.
+        // Fires once (clearing `loading` makes the guard false); a late contact
+        // list still clears the state again harmlessly.
+        if startup_sync_timed_out(app.loading, loop_started.elapsed()) {
+            app.loading = false;
+            app.startup_status.clear();
+            app.status_message =
+                "Sync is taking longer than expected. Run siggy --check to verify your link."
+                    .to_string();
+            needs_redraw = true;
         }
 
         // Extend the scrollback when scrolled to the top: widen the render
@@ -1983,6 +2016,20 @@ mod tests {
         ));
         // Already locked -> no-op (don't re-lock).
         assert!(!should_auto_lock(1, 10 * min, true));
+    }
+
+    #[test]
+    fn startup_sync_timed_out_only_fires_while_loading_past_grace() {
+        // Not loading -> never times out, however long it has been.
+        assert!(!startup_sync_timed_out(false, STARTUP_SYNC_TIMEOUT * 2));
+        // Loading but still within the grace period -> keep waiting.
+        assert!(!startup_sync_timed_out(
+            true,
+            STARTUP_SYNC_TIMEOUT - Duration::from_secs(1)
+        ));
+        // Loading past the grace period -> time out.
+        assert!(startup_sync_timed_out(true, STARTUP_SYNC_TIMEOUT));
+        assert!(startup_sync_timed_out(true, STARTUP_SYNC_TIMEOUT * 2));
     }
 
     #[test]
