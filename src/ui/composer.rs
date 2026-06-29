@@ -80,8 +80,12 @@ pub(super) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
     let text_width = inner_width.saturating_sub(prefix_len); // usable chars for buffer text
 
     if app.input.buffer.is_empty() && badge.is_none() {
+        // With no conversation open there is nowhere to send a message, so the
+        // hint points at slash commands (the only thing typing does here).
+        let no_conversation = app.active_conversation.is_none();
         let placeholder = match app.mode {
             InputMode::Normal => "  Press i to type, / for commands",
+            InputMode::Insert if no_conversation => "  Type / for commands...",
             InputMode::Insert => "  Type a message...",
         };
         let input = Paragraph::new(Span::styled(
