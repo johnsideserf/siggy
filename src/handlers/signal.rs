@@ -525,6 +525,19 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
                 body_raw: None,
                 mentions: Vec::new(),
             });
+        } else if crate::audio::is_audio(&att.content_type) {
+            // Voice notes / audio: a play affordance instead of a generic
+            // attachment label. `o` (open) plays it inline (#199).
+            entries.push(ResolvedEntry {
+                body: format!("[voice \u{25b6} {label}]{path_info}"),
+                image_lines: None,
+                image_path: None,
+                mention_ranges: Vec::new(),
+                style_ranges: Vec::new(),
+                quote: None,
+                body_raw: None,
+                mentions: Vec::new(),
+            });
         } else {
             entries.push(ResolvedEntry {
                 body: format!("[attachment: {label}]{path_info}"),
