@@ -82,6 +82,23 @@ fn reconnect_backoff(attempt: u32) -> Duration {
     Duration::from_secs((1u64 << attempt.min(6)).min(30))
 }
 
+/// Translate signal-cli stderr into a clearer message for the non-interactive
+/// CLI commands when it indicates a well-known fatal condition. signal-cli
+/// allows only one process per account, so running `--send`/`--receive` while
+/// the siggy TUI is open makes signal-cli block on the account lock and the
+/// command times out with an otherwise opaque error. Returns `None` when
+/// nothing recognised, so the caller keeps its generic message.
+fn cli_stderr_hint(stderr: &str) -> Option<&'static str> {
+    let e = stderr.to_ascii_lowercase();
+    if e.contains("is in use by another instance") || e.contains("config file is in use") {
+        Some("another siggy or signal-cli instance is using this account - close it and try again")
+    } else if e.contains("is not registered") {
+        Some("this account is not registered - run `siggy --setup` to link a device")
+    } else {
+        None
+    }
+}
+
 /// Send a single message non-interactively, await confirmation, and return
 /// whether it was accepted (#257). Spawns signal-cli, sends, then waits up to
 /// 30s for the correlated `SendTimestamp` (ok) or `SendFailed`. A recipient that
@@ -112,12 +129,17 @@ async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Resul
     .await;
 
     let _ = client.shutdown().await;
+    let stderr = client.stderr_output();
     match outcome {
         Ok(Some(ok)) => Ok(ok),
-        Ok(None) => Err(anyhow::anyhow!(
-            "signal-cli disconnected before confirming the send"
-        )),
-        Err(_) => Err(anyhow::anyhow!("timed out waiting for send confirmation")),
+        Ok(None) => Err(match cli_stderr_hint(&stderr) {
+            Some(hint) => anyhow::anyhow!("{hint}"),
+            None => anyhow::anyhow!("signal-cli disconnected before confirming the send"),
+        }),
+        Err(_) => Err(match cli_stderr_hint(&stderr) {
+            Some(hint) => anyhow::anyhow!("{hint}"),
+            None => anyhow::anyhow!("timed out waiting for send confirmation"),
+        }),
     }
 }
 
@@ -173,7 +195,12 @@ async fn run_receive_stream(config: &Config) -> Result<()> {
         }
     }
     let _ = client.shutdown().await;
-    Ok(())
+    // If signal-cli disconnected for a recognised reason (account lock held by
+    // another instance, not registered), report it instead of exiting cleanly.
+    match cli_stderr_hint(&client.stderr_output()) {
+        Some(hint) => Err(anyhow::anyhow!("{hint}")),
+        None => Ok(()),
+    }
 }
 
 /// Whether the session should auto-lock now (#438). `timeout_mins == 0` disables
@@ -2016,6 +2043,27 @@ mod tests {
         ));
         // Already locked -> no-op (don't re-lock).
         assert!(!should_auto_lock(1, 10 * min, true));
+    }
+
+    #[test]
+    fn cli_stderr_hint_recognises_known_fatal_conditions() {
+        // The lock-contention line signal-cli prints when the TUI is open.
+        assert_eq!(
+            cli_stderr_hint(
+                "INFO  SignalAccount - Config file is in use by another instance, waiting…"
+            ),
+            Some(
+                "another siggy or signal-cli instance is using this account - close it and try again"
+            )
+        );
+        // Unregistered account.
+        assert_eq!(
+            cli_stderr_hint("User +447588442858 is not registered."),
+            Some("this account is not registered - run `siggy --setup` to link a device")
+        );
+        // Unrecognised stderr -> no hint (caller keeps its generic message).
+        assert_eq!(cli_stderr_hint("some unrelated warning"), None);
+        assert_eq!(cli_stderr_hint(""), None);
     }
 
     #[test]
