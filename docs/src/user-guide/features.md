@@ -445,6 +445,14 @@ siggy --receive | while IFS=$'\t' read -r ts from group body; do
 done
 ```
 
+> **One instance per account.** signal-cli allows only one process per account
+> at a time, so `--send` and `--receive` cannot run while the siggy TUI is open
+> (or while another `--receive` is streaming). Close the running instance first.
+> If you forget, the command reports "another siggy or signal-cli instance is
+> using this account". `--check` and `--list` are unaffected: `--check` only
+> queries the signal-cli version (no account lock) and `--list` reads the cached
+> database.
+
 ### Scheduled messages
 
 There is no built-in scheduler; use your OS scheduler with `siggy --send`, which
