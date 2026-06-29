@@ -811,7 +811,7 @@ fn accounts_json_contains(json: &str, account: &str) -> bool {
 /// Whether `account` already has local signal-cli account data. Fails open: any
 /// error (no home dir, missing/unreadable/malformed file) returns false so the
 /// relink guard can only ever add a prompt, never block setup (#603).
-fn account_exists_locally(account: &str) -> bool {
+pub(crate) fn account_exists_locally(account: &str) -> bool {
     signal_cli_accounts_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .is_some_and(|contents| accounts_json_contains(&contents, account))
@@ -821,7 +821,7 @@ fn account_exists_locally(account: &str) -> bool {
 /// number before relinking. `--ignore-registered` lets it proceed even when
 /// signal-cli still considers the (now unlinked) account registered. Does not
 /// touch the Signal servers, so it is safe for the local-conflict case (#603).
-async fn delete_local_account_data(config: &Config) -> Result<()> {
+pub(crate) async fn delete_local_account_data(config: &Config) -> Result<()> {
     let status = Command::new(&config.signal_cli_path)
         .arg("-a")
         .arg(&config.account)

@@ -258,6 +258,7 @@ async fn main() -> Result<()> {
     let mut debug = false;
     let mut debug_full = false;
     let mut reset_lock = false;
+    let mut reset_account = false;
     let mut check = false;
     let mut list = false;
     let mut receive = false;
@@ -308,6 +309,10 @@ async fn main() -> Result<()> {
                 reset_lock = true;
                 i += 1;
             }
+            "--reset-account" => {
+                reset_account = true;
+                i += 1;
+            }
             "--check" => {
                 check = true;
                 i += 1;
@@ -345,6 +350,9 @@ async fn main() -> Result<()> {
                 eprintln!("      --debug             Write debug log (PII redacted)");
                 eprintln!("      --debug-full        Write debug log (full, unredacted)");
                 eprintln!("      --reset-lock        Delete the session-lock passphrase and exit");
+                eprintln!(
+                    "      --reset-account     Clear local signal-cli account data (for a clean relink) and exit"
+                );
                 eprintln!(
                     "      --check             Print a setup health report and exit (0 = ready)"
                 );
@@ -402,6 +410,35 @@ async fn main() -> Result<()> {
     let mut config = Config::load(config_path)?;
     if let Some(acct) = account {
         config.account = acct;
+    }
+
+    // Non-interactive counterpart to the relink guard (#603/#607): clear stale
+    // local signal-cli account data so a subsequent `--setup` can relink from a
+    // clean slate. Exits without launching the TUI. Note: this only removes
+    // local data; a server-side conflict also needs old devices removed on the
+    // phone.
+    if reset_account {
+        if config.account.is_empty() {
+            eprintln!("no account configured; nothing to reset");
+            std::process::exit(1);
+        }
+        if !setup::account_exists_locally(&config.account) {
+            println!("No local account data found for {}.", config.account);
+            std::process::exit(0);
+        }
+        match setup::delete_local_account_data(&config).await {
+            Ok(()) => {
+                println!(
+                    "Cleared local signal-cli account data for {}. Run `siggy --setup` to relink.",
+                    config.account
+                );
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("failed to clear account data: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     // Non-interactive setup health report for scripts/CI (#257). Plain stdout,
