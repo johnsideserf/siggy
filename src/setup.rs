@@ -13,7 +13,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Flex, Layout},
+    layout::{Alignment, Constraint, Flex, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
@@ -61,6 +61,9 @@ pub async fn run_setup(
     let mut custom_path_mode = false;
     let mut custom_path_input = String::new();
     let mut custom_path_cursor: usize = 0;
+    // Relink pre-flight (#603): only prompt about pre-existing local account
+    // data once, not on every link retry.
+    let mut reset_checked = false;
 
     loop {
         match step {
@@ -185,6 +188,56 @@ pub async fn run_setup(
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     step = Step::Preferences;
                     continue;
+                }
+
+                // Pre-flight (#603): if signal-cli already has local data for
+                // this number, a relink can fail with a server conflict. Offer
+                // to clear it first. Runs once (not on link retries), and only
+                // when local data actually exists.
+                if !reset_checked {
+                    reset_checked = true;
+                    if account_exists_locally(&working_config.account) {
+                        terminal.draw(|frame| {
+                            draw_relink_confirm(frame, &working_config.account);
+                        })?;
+                        let mut go_back = false;
+                        loop {
+                            if event::poll(Duration::from_millis(50))?
+                                && let Event::Key(key) = event::read()?
+                            {
+                                if key.kind != KeyEventKind::Press {
+                                    continue;
+                                }
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                        terminal.draw(|frame| {
+                                            draw_status_message(
+                                                frame,
+                                                "Clearing existing account data...",
+                                            );
+                                        })?;
+                                        // Best-effort: if the reset fails, fall
+                                        // through to linking anyway and let the
+                                        // normal error path report it.
+                                        let _ = delete_local_account_data(&working_config).await;
+                                        break;
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
+                                        break;
+                                    }
+                                    KeyCode::Esc => {
+                                        go_back = true;
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if go_back {
+                            step = Step::Account;
+                            continue;
+                        }
+                    }
                 }
 
                 // Run linking flow
@@ -725,6 +778,69 @@ fn draw_account_step(
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
+/// Path to signal-cli's `accounts.json` index, replicating signal-cli's own
+/// default-location logic (`$XDG_DATA_HOME/signal-cli` or, failing that,
+/// `~/.local/share/signal-cli`). siggy never passes `--config` to signal-cli,
+/// so signal-cli always uses this default on every platform (including Windows,
+/// where it still uses `~/.local/share`, not `%APPDATA%`). Returns `None` only
+/// if the home directory cannot be resolved (#603).
+fn signal_cli_accounts_path() -> Option<std::path::PathBuf> {
+    let base = match std::env::var_os("XDG_DATA_HOME") {
+        Some(x) if !x.is_empty() => std::path::PathBuf::from(x),
+        _ => dirs::home_dir()?.join(".local").join("share"),
+    };
+    Some(base.join("signal-cli").join("data").join("accounts.json"))
+}
+
+/// Whether signal-cli's `accounts.json` already lists `account`. Pure so it can
+/// be unit-tested without touching the filesystem; returns false for malformed
+/// JSON so a parse failure never blocks linking (#603).
+fn accounts_json_contains(json: &str, account: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("accounts"))
+        .and_then(|a| a.as_array())
+        .is_some_and(|accounts| {
+            accounts
+                .iter()
+                .any(|a| a.get("number").and_then(|n| n.as_str()) == Some(account))
+        })
+}
+
+/// Whether `account` already has local signal-cli account data. Fails open: any
+/// error (no home dir, missing/unreadable/malformed file) returns false so the
+/// relink guard can only ever add a prompt, never block setup (#603).
+fn account_exists_locally(account: &str) -> bool {
+    signal_cli_accounts_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|contents| accounts_json_contains(&contents, account))
+}
+
+/// Run `signal-cli deleteLocalAccountData` to clear stale local data for a
+/// number before relinking. `--ignore-registered` lets it proceed even when
+/// signal-cli still considers the (now unlinked) account registered. Does not
+/// touch the Signal servers, so it is safe for the local-conflict case (#603).
+async fn delete_local_account_data(config: &Config) -> Result<()> {
+    let status = Command::new(&config.signal_cli_path)
+        .arg("-a")
+        .arg(&config.account)
+        .arg("deleteLocalAccountData")
+        .arg("--ignore-registered")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "signal-cli deleteLocalAccountData exited with {:?}",
+            status.code()
+        )
+    }
+}
+
 fn draw_registered_screen(frame: &mut ratatui::Frame, account: &str) {
     let area = frame.area();
 
@@ -765,6 +881,89 @@ fn draw_registered_screen(frame: &mut ratatui::Frame, account: &str) {
         Line::from(Span::styled(
             "  Skipping device linking...",
             Style::default().fg(Color::Gray),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+/// A centered single-line status message (e.g. shown briefly while a
+/// background step runs).
+fn draw_status_message(frame: &mut ratatui::Frame, message: &str) {
+    let area = frame.area();
+    let msg = Paragraph::new(format!("  {message}"))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::Yellow));
+    let [_, line, _] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .flex(Flex::Center)
+    .areas(area);
+    frame.render_widget(msg, line);
+}
+
+/// Confirm screen shown before linking when local signal-cli data already
+/// exists for this number (#603). Offers to clear it first, since a stale local
+/// registration is a common cause of a relink conflict.
+fn draw_relink_confirm(frame: &mut ratatui::Frame, account: &str) {
+    let area = frame.area();
+
+    let [_, content_area, _] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(12),
+        Constraint::Min(1),
+    ])
+    .flex(Flex::Center)
+    .areas(area);
+
+    let [content] = Layout::horizontal([Constraint::Percentage(65)])
+        .flex(Flex::Center)
+        .areas(content_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Existing account data ")
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(content);
+    frame.render_widget(block, content);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  signal-cli already has local data for {account}."),
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(Span::styled(
+            "  Relinking on top of it can fail with a server conflict.",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Reset the local data and continue linking?",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  If linking still fails afterwards, remove old devices on your",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "  phone: Signal > Settings > Linked Devices.",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  y reset and continue | n keep and continue | Esc go back",
+            Style::default().fg(Color::DarkGray),
         )),
     ];
 
@@ -1027,6 +1226,38 @@ mod tests {
         assert!(display.is_some());
         let display = display.unwrap();
         assert!(display.starts_with("cargo"));
+    }
+
+    // --- accounts_json_contains (#603) ---
+
+    #[test]
+    fn accounts_json_contains_finds_matching_number() {
+        // The shape signal-cli writes (observed: data/accounts.json, version 2).
+        let json = r#"{
+            "accounts": [
+                { "path": "786736", "environment": "LIVE", "number": "+447588442858", "uuid": "abc" }
+            ],
+            "version": 2
+        }"#;
+        assert!(accounts_json_contains(json, "+447588442858"));
+        assert!(!accounts_json_contains(json, "+15551234567"));
+    }
+
+    #[test]
+    fn accounts_json_contains_handles_empty_and_missing() {
+        assert!(!accounts_json_contains(
+            r#"{"accounts": [], "version": 2}"#,
+            "+1"
+        ));
+        assert!(!accounts_json_contains(r#"{"version": 2}"#, "+1"));
+    }
+
+    #[test]
+    fn accounts_json_contains_fails_open_on_malformed_json() {
+        // Garbage must not match (and must not panic) so a bad file never blocks
+        // linking.
+        assert!(!accounts_json_contains("not json at all", "+447588442858"));
+        assert!(!accounts_json_contains("", "+447588442858"));
     }
 
     // --- link_error_hint ---
