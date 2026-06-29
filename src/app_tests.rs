@@ -4144,6 +4144,26 @@ fn attachment_without_filename_uses_content_type(mut app: App) {
     let mut msg = make_msg("+1", None, None, false);
     msg.attachments = vec![Attachment {
         id: "a1".to_string(),
+        content_type: "application/x-thing".to_string(),
+        filename: None,
+        local_path: None,
+    }];
+    app.handle_signal_event(SignalEvent::MessageReceived(msg));
+    let conv = &app.store.conversations["+1"];
+    assert!(
+        conv.messages
+            .iter()
+            .any(|m| m.body.contains("[attachment: application/x-thing]"))
+    );
+}
+
+#[rstest]
+fn audio_attachment_renders_as_voice(mut app: App) {
+    // Voice notes / audio attachments get a play affordance, not the generic
+    // attachment label (#199).
+    let mut msg = make_msg("+1", None, None, false);
+    msg.attachments = vec![Attachment {
+        id: "a1".to_string(),
         content_type: "audio/ogg".to_string(),
         filename: None,
         local_path: None,
@@ -4153,7 +4173,8 @@ fn attachment_without_filename_uses_content_type(mut app: App) {
     assert!(
         conv.messages
             .iter()
-            .any(|m| m.body.contains("[attachment: audio/ogg]"))
+            .any(|m| m.body.contains("[voice \u{25b6} audio/ogg]")),
+        "audio attachment should render as a voice play affordance"
     );
 }
 

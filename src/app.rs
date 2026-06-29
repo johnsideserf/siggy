@@ -3746,9 +3746,21 @@ impl App {
                     .and_then(|n| n.to_str())
                     .map(str::to_string)
                     .unwrap_or_else(|| path.clone());
-                match open::that(&canon) {
-                    Ok(()) => self.status_message = format!("Opened {filename}"),
-                    Err(e) => self.status_message = format!("Failed to open: {e}"),
+                // Voice/audio: play inline via a detected CLI player (#199)
+                // instead of handing off to the OS default app. Falls back to
+                // open::that when no player is installed.
+                if crate::audio::is_audio_path(&canon)
+                    && let Some(player) = crate::audio::detect_player(None)
+                {
+                    match crate::audio::play(&canon, &player) {
+                        Ok(_) => self.status_message = format!("Playing {filename}"),
+                        Err(e) => self.status_message = format!("Failed to play {filename}: {e}"),
+                    }
+                } else {
+                    match open::that(&canon) {
+                        Ok(()) => self.status_message = format!("Opened {filename}"),
+                        Err(e) => self.status_message = format!("Failed to open: {e}"),
+                    }
                 }
             }
         }

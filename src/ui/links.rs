@@ -182,9 +182,12 @@ pub(in crate::ui) fn styled_uri_spans(
         .fg(theme.mention)
         .add_modifier(Modifier::BOLD);
 
-    // Attachment/image patterns: extract bracket text as display, URI as hidden metadata
-    if body.starts_with("[image:") || body.starts_with("[attachment:") {
-        // Extract the bracket portion: [image: label] or [attachment: label]
+    // Attachment/image/voice patterns: extract bracket text as display, URI as hidden metadata
+    if body.starts_with("[image:")
+        || body.starts_with("[attachment:")
+        || body.starts_with("[voice ")
+    {
+        // Extract the bracket portion: [image: label], [attachment: label], or [voice ▶ label]
         if let Some(bracket_end) = body.find(']') {
             let display_text = &body[..=bracket_end]; // e.g. "[image: photo.jpg]"
 

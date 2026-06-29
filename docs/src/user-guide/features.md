@@ -17,6 +17,10 @@ linked devices) sync into the TUI automatically.
   Requires tmux 3.3+ with `set -g allow-passthrough on` plus the
   `SIGGY_IMAGE_PROTOCOL` env var to name the outer terminal (auto-detection
   cannot see through tmux). See the Troubleshooting page.
+- **Voice messages** -- audio attachments show as `[voice ▶ name]`. Press `o`
+  (open) on the focused message to play it inline through a detected command-line
+  player (`mpv`, `ffplay`, `afplay`, `cvlc`, `paplay`, or `aplay`, in that order).
+  If none is installed it falls back to opening the file in your OS default app.
 - **Other files** -- shown as `[attachment: filename]` with the download path
 - **Send files** -- use `/attach` to open a file browser and attach a file to
   your next message
