@@ -15,6 +15,7 @@ mod db;
 mod debug_log;
 mod demo;
 mod domain;
+mod export;
 mod fs_migrate;
 mod handlers;
 mod image_render;

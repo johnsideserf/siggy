@@ -435,13 +435,20 @@ conversation. A filterable picker overlay lets you choose the destination.
 
 ## Export chat history
 
-Use `/export` to save the active conversation's messages as a plain text file.
-The file is saved to your Downloads directory as `siggy-export-<name>-<date>.txt`.
+Use `/export` to save the active conversation's messages to a file in your
+Downloads directory as `siggy-export-<name>-<date>.<ext>`. Three formats are
+available:
 
-Use `/export <n>` to export only the last N messages (e.g. `/export 100`).
+- `/export` or `/export txt` - plain text in a simple IRC-style format
+- `/export md` - Markdown, nicer for reading and sharing
+- `/export json` - structured output for scripting (pipe through `jq`)
 
-The output includes timestamps, sender names, message bodies, "(edited)" labels,
-quoted replies, and system messages in a simple IRC-style format.
+Add a number to export only the last N messages, in either order:
+`/export md 100` or `/export 100 md`.
+
+All formats include timestamps, sender names, message bodies, "(edited)"
+labels, quoted replies, and reactions. JSON additionally carries sender IDs,
+millisecond timestamps, and deleted/system flags.
 
 ## Demo mode
 
