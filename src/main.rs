@@ -6,6 +6,7 @@
 //! startup.
 
 mod app;
+mod audio;
 mod autocomplete;
 mod config;
 mod conversation_store;
