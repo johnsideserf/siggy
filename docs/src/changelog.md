@@ -1,5 +1,50 @@
 # Changelog
 
+## v1.11.0
+
+The messaging-parity release: voice messages play inline, you can compose
+formatted text, exports come in three formats, spoilers reveal on focus, and
+conversations can be archived or flipped back to unread.
+
+### New features
+
+- **Voice message playback** -- audio attachments show as `[voice ▶ name]`;
+  press `o` on the focused message to play inline through a detected CLI
+  player (`mpv`, `ffplay`, `afplay`, `cvlc`, `paplay`, or `aplay`). A new
+  `audio_player` config option overrides autodetection (e.g.
+  `audio_player = "mpv --no-config"`). Falls back to the OS default app when
+  no player is installed (closes #199, #619).
+- **Compose text formatting** -- WhatsApp-style markers convert to Signal
+  style ranges on send: `*bold*`, `_italic_`, `~strikethrough~`,
+  `` `monospace` ``, `||spoiler||`. Boundary rules keep `snake_case`,
+  `2 * 3`, and URLs with underscores untouched; works for edits too
+  (closes #609).
+- **Export formats** -- `/export [txt|md|json] [n]` exports the active
+  conversation as plain text (default), Markdown, or JSON for scripting.
+  Reactions are now included in all formats (closes #613).
+- **Spoiler reveal on focus** -- spoiler text stays masked behind block
+  characters until you focus the message with `J`/`K`; moving focus away
+  re-masks it (closes #616).
+- **Archive** -- `/archive` hides the current conversation from the sidebar;
+  any new message unarchives it, the sidebar filter (`/_`) lists archived
+  conversations, and a footer row shows the hidden count (closes #611).
+- **Mark as unread** -- `/unread` flips a read conversation back to unread
+  (badge + persisted read marker) and closes it (closes #611).
+
+### Bug fixes
+
+- **Sidebar click alignment** -- clicking a conversation below a hidden
+  (stale or archived) entry no longer selects the wrong chat; clicks now map
+  to the exact rendered list.
+
+### Docs
+
+- The docsite caught up with reality: seven missing changelog entries,
+  refreshed roadmap, keybinding command actions documented, database schema
+  through v15, and a rewritten module reference.
+
+---
+
 ## v1.10.0
 
 The automation-and-hardening release: a non-interactive CLI for scripting,
