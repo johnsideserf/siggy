@@ -8,6 +8,8 @@
 
 use std::path::PathBuf;
 
+use crate::signal::types::StyleType;
+
 /// A request from the UI to the main loop to send something.
 pub enum SendRequest {
     Message {
@@ -16,6 +18,8 @@ pub enum SendRequest {
         is_group: bool,
         local_ts_ms: i64,
         mentions: Vec<(usize, String)>,
+        /// UTF-16 (start, length, style) ranges for signal-cli's textStyle param.
+        text_styles: Vec<(usize, usize, StyleType)>,
         attachment: Option<PathBuf>,
         quote_timestamp: Option<i64>,
         quote_author: Option<String>,
@@ -36,6 +40,8 @@ pub enum SendRequest {
         edit_timestamp: i64,
         local_ts_ms: i64,
         mentions: Vec<(usize, String)>,
+        /// UTF-16 (start, length, style) ranges for signal-cli's textStyle param.
+        text_styles: Vec<(usize, usize, StyleType)>,
         quote_timestamp: Option<i64>,
         quote_author: Option<String>,
         quote_body: Option<String>,

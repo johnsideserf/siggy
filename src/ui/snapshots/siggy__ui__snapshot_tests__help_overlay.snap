@@ -29,6 +29,6 @@ expression: output
                      │││  Ctrl+l              Lock the session              │                      │
                      │╰│  Ctrl+c              Quit                          │──────────────────────╯
                      │╭│                                                    │──────────────────────╮
-                     │││  Keybindings [Default]                             │                      │
+                     │││  Formatting                                        │                      │
                      │╰╰────────────────────────────────────────────────────╯──────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats

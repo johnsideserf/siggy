@@ -1920,6 +1920,7 @@ pub fn handle_forward_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
                     is_group,
                     local_ts_ms,
                     mentions: Vec::new(),
+                    text_styles: Vec::new(),
                     attachment: None,
                     quote_timestamp: None,
                     quote_author: None,

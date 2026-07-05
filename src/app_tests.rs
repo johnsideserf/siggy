@@ -2445,6 +2445,84 @@ fn prepare_outgoing_no_pending_mentions(app: App) {
 }
 
 #[rstest]
+fn send_text_parses_style_markup(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.active_conversation = Some("+1".to_string());
+
+    app.input.buffer = "*bold* and _it_".to_string();
+    app.input.cursor = app.input.buffer.len();
+    let req = app.handle_input();
+
+    let Some(SendRequest::Message {
+        body, text_styles, ..
+    }) = req
+    else {
+        panic!("expected SendRequest::Message");
+    };
+    assert_eq!(body, "bold and it");
+    assert_eq!(
+        text_styles,
+        vec![(0, 4, StyleType::Bold), (9, 2, StyleType::Italic)]
+    );
+
+    // Local echo shows the stripped body with byte style ranges.
+    let msg = app.store.conversations["+1"].messages.last().unwrap();
+    assert_eq!(msg.body, "bold and it");
+    assert_eq!(
+        msg.style_ranges,
+        vec![(0, 4, StyleType::Bold), (9, 11, StyleType::Italic)]
+    );
+}
+
+#[rstest]
+fn send_text_styles_shift_mention_offsets(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.active_conversation = Some("+1".to_string());
+    app.autocomplete.pending_mentions = vec![("Alice".to_string(), Some("uuid-alice".to_string()))];
+
+    app.input.buffer = "*hey* @Alice".to_string();
+    app.input.cursor = app.input.buffer.len();
+    let req = app.handle_input();
+
+    let Some(SendRequest::Message {
+        body,
+        mentions,
+        text_styles,
+        ..
+    }) = req
+    else {
+        panic!("expected SendRequest::Message");
+    };
+    assert_eq!(body, "hey \u{FFFC}");
+    // "@Alice" replaced at UTF-16 offset 6 in "*hey* \u{FFFC}"; stripping the
+    // two markers before it shifts the mention to offset 4.
+    assert_eq!(mentions, vec![(4, "uuid-alice".to_string())]);
+    assert_eq!(text_styles, vec![(0, 3, StyleType::Bold)]);
+}
+
+#[rstest]
+fn send_text_without_markup_is_unchanged(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.active_conversation = Some("+1".to_string());
+
+    app.input.buffer = "snake_case and 2 * 3".to_string();
+    app.input.cursor = app.input.buffer.len();
+    let req = app.handle_input();
+
+    let Some(SendRequest::Message {
+        body, text_styles, ..
+    }) = req
+    else {
+        panic!("expected SendRequest::Message");
+    };
+    assert_eq!(body, "snake_case and 2 * 3");
+    assert!(text_styles.is_empty());
+}
+
+#[rstest]
 fn contact_list_builds_uuid_maps(mut app: App) {
     app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
         number: "+1".to_string(),

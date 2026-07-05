@@ -169,12 +169,29 @@ impl SignalClient {
         send_rpc_impl(&self.stdin_tx, &self.pending_requests, method, params).await
     }
 
+    /// Add a textStyle param with signal-cli's "start:length:STYLE" strings
+    /// (UTF-16 offsets). No-op when there are no style ranges.
+    fn set_text_styles(params: &mut serde_json::Value, text_styles: &[(usize, usize, StyleType)]) {
+        if text_styles.is_empty() {
+            return;
+        }
+        let arr: Vec<serde_json::Value> = text_styles
+            .iter()
+            .map(|(start, len, style)| {
+                serde_json::Value::String(format!("{start}:{len}:{}", style.wire_name()))
+            })
+            .collect();
+        params["textStyle"] = serde_json::Value::Array(arr);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message(
         &self,
         recipient: &str,
         body: &str,
         is_group: bool,
         mentions: &[(usize, String)],
+        text_styles: &[(usize, usize, StyleType)],
         attachments: &[&Path],
         quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
@@ -183,6 +200,7 @@ impl SignalClient {
             "account": self.account,
         });
         Self::set_target(&mut params, recipient, is_group);
+        Self::set_text_styles(&mut params, text_styles);
 
         if !mentions.is_empty() {
             // signal-cli expects mentions as colon-separated strings: "start:length:uuid"
@@ -211,6 +229,7 @@ impl SignalClient {
         Ok(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_edit_message(
         &self,
         recipient: &str,
@@ -218,6 +237,7 @@ impl SignalClient {
         is_group: bool,
         edit_timestamp: i64,
         mentions: &[(usize, String)],
+        text_styles: &[(usize, usize, StyleType)],
         quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
         let mut params = serde_json::json!({
@@ -226,6 +246,7 @@ impl SignalClient {
             "editTimestamp": edit_timestamp,
         });
         Self::set_target(&mut params, recipient, is_group);
+        Self::set_text_styles(&mut params, text_styles);
 
         if !mentions.is_empty() {
             let mention_arr: Vec<serde_json::Value> = mentions
