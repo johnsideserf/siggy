@@ -32,8 +32,8 @@ is declared in `[dev-dependencies]`.
 
 Two `#[fixture]` functions provide pre-built test objects:
 
-- **`app()`** in `app.rs` — returns an `App` with an in-memory DB and connected state.
-- **`db()`** in `db.rs` — returns an in-memory `Database`.
+- **`app()`** in `app_tests.rs` -- returns an `App` with an in-memory DB and connected state.
+- **`db()`** in `db.rs` -- returns an in-memory `Database`.
 
 To use a fixture, mark the test `#[rstest]` and add the fixture as a parameter:
 
@@ -160,10 +160,10 @@ Input parser tests cover:
 - Commands with and without arguments
 - Unknown command handling
 
-### `app.rs` tests
+### `app_tests.rs` tests
 
-Application state tests cover signal event handling, conversation management,
-and mode transitions.
+Application state tests (split out of `app.rs`) cover signal event handling,
+conversation management, and mode transitions.
 
 ### `signal/client.rs` tests
 
