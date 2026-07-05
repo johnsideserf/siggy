@@ -166,6 +166,7 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         is_group: false,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
 
     // --- Bob: code review (with styled text) ---
@@ -229,6 +230,7 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         is_group: false,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
 
     // --- Carol: single unread ---
@@ -245,6 +247,7 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         is_group: false,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
 
     // --- Dave: meetup conversation with disappearing messages ---
@@ -277,6 +280,7 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         is_group: false,
         expiration_timer: 86400,
         accepted: true,
+        archived: false,
     };
 
     // --- #Rust Devs: group discussion with @mentions, poll, pinned msg ---
@@ -386,6 +390,7 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         is_group: true,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
 
     // --- #Family: group with unread and quote reply ---
@@ -417,6 +422,7 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         is_group: true,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
 
     // --- Eve: message request (unknown sender) ---
@@ -433,6 +439,7 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         is_group: false,
         expiration_timer: 0,
         accepted: false,
+        archived: false,
     };
 
     // Insert conversations and set ordering

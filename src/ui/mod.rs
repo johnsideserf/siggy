@@ -715,6 +715,7 @@ mod snapshot_tests {
                 is_group: false,
                 expiration_timer: 0,
                 accepted: true,
+                archived: false,
             },
         );
         app.store.conversation_order.push(empty_id.clone());

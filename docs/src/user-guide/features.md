@@ -70,6 +70,22 @@ line marks where you left off. Read markers persist across restarts.
 Conversations automatically reorder to the top of the sidebar when messages
 are sent or received, so your most active chats are always visible.
 
+Use `/unread` to flip a read conversation back to unread: the newest incoming
+message counts as unread again, the conversation closes, and the sidebar shows
+a badge. The marker persists across restarts.
+
+## Archive
+
+Use `/archive` to hide the current conversation from the sidebar. Archived
+conversations behave like the official app:
+
+- Any new message (sent or received) automatically unarchives.
+- The sidebar footer shows `· N archived` when anything is hidden.
+- The sidebar filter (`/_`) lists every conversation including archived ones
+  (marked with a muted `a`); open one and run `/archive` again to unarchive.
+
+The archived flag persists in the local database.
+
 ## Notifications
 
 Terminal bell notifications fire when new messages arrive in background
