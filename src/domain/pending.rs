@@ -8,7 +8,8 @@
 
 use std::collections::HashMap;
 
-use crate::app::SendRequest;
+use super::send::SendRequest;
+use crate::signal::types::ReceiptKind;
 
 /// A receipt that arrived before the message it targets was matchable
 /// (typically before the `SendTimestamp` that rewrites the local timestamp
@@ -18,7 +19,7 @@ use crate::app::SendRequest;
 /// forever (#484).
 pub struct BufferedReceipt {
     pub sender: String,
-    pub receipt_type: String,
+    pub receipt_type: ReceiptKind,
     /// Only the timestamps that have not matched yet.
     pub timestamps: Vec<i64>,
     pub attempts: u8,

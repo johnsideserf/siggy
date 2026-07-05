@@ -48,6 +48,18 @@ pub(super) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
                 .fg(theme.accent_secondary)
                 .add_modifier(Modifier::ITALIC),
         )));
+    } else if let Some(ref preview) = app.media.pending_preview {
+        // A fetched /preview waiting to attach to the next message (#267).
+        let label = format!(
+            " preview: {} ",
+            truncate(preview.title.as_deref().unwrap_or(&preview.url), 30)
+        );
+        block = block.title(Line::from(Span::styled(
+            label,
+            Style::default()
+                .fg(theme.fg_muted)
+                .add_modifier(Modifier::ITALIC),
+        )));
     }
 
     // Build attachment badge if present
@@ -80,8 +92,12 @@ pub(super) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
     let text_width = inner_width.saturating_sub(prefix_len); // usable chars for buffer text
 
     if app.input.buffer.is_empty() && badge.is_none() {
+        // With no conversation open there is nowhere to send a message, so the
+        // hint points at slash commands (the only thing typing does here).
+        let no_conversation = app.active_conversation.is_none();
         let placeholder = match app.mode {
             InputMode::Normal => "  Press i to type, / for commands",
+            InputMode::Insert if no_conversation => "  Type / for commands...",
             InputMode::Insert => "  Type a message...",
         };
         let input = Paragraph::new(Span::styled(

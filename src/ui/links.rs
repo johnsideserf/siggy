@@ -20,20 +20,9 @@ use ratatui::{
     text::Span,
 };
 
+use crate::domain::LinkRegion;
 use crate::signal::types::StyleType;
 use crate::theme::Theme;
-
-/// A clickable link region detected in the rendered buffer.
-pub struct LinkRegion {
-    pub x: u16,
-    pub y: u16,
-    pub url: String,
-    pub text: String,
-    /// Display width in terminal columns (may differ from text.len() for Unicode).
-    pub width: u16,
-    /// Background color from the buffer cell, if non-default (e.g. highlight).
-    pub bg: Option<Color>,
-}
 
 /// Extract a URL from link-styled text.
 fn extract_url(text: &str) -> String {
@@ -177,6 +166,10 @@ pub(in crate::ui) fn split_spans_by_newline(spans: Vec<Span<'static>>) -> Vec<Ve
 /// Split a message body into spans, styling any URI (https://, http://, file:///) as
 /// underlined blue text. Non-URI text is rendered as plain spans.
 ///
+/// `reveal_spoilers` controls SPOILER ranges: masked behind block characters
+/// normally, shown as real text (in the muted spoiler color) when the message
+/// is focused (#616).
+///
 /// Returns `(spans, Option<hidden_url>)`. For attachment bodies like
 /// `[image: label](file:///path)`, the bracket text is the visible link and
 /// the URI inside parens is returned separately (not displayed).
@@ -185,6 +178,7 @@ pub(in crate::ui) fn styled_uri_spans(
     mention_ranges: &[(usize, usize)],
     style_ranges: &[(usize, usize, StyleType)],
     theme: &Theme,
+    reveal_spoilers: bool,
 ) -> (Vec<Span<'static>>, Option<String>) {
     let link_style = Style::default()
         .fg(theme.link)
@@ -193,9 +187,12 @@ pub(in crate::ui) fn styled_uri_spans(
         .fg(theme.mention)
         .add_modifier(Modifier::BOLD);
 
-    // Attachment/image patterns: extract bracket text as display, URI as hidden metadata
-    if body.starts_with("[image:") || body.starts_with("[attachment:") {
-        // Extract the bracket portion: [image: label] or [attachment: label]
+    // Attachment/image/voice patterns: extract bracket text as display, URI as hidden metadata
+    if body.starts_with("[image:")
+        || body.starts_with("[attachment:")
+        || body.starts_with("[voice ")
+    {
+        // Extract the bracket portion: [image: label], [attachment: label], or [voice ▶ label]
         if let Some(bracket_end) = body.find(']') {
             let display_text = &body[..=bracket_end]; // e.g. "[image: photo.jpg]"
 
@@ -330,11 +327,18 @@ pub(in crate::ui) fn styled_uri_spans(
         }
 
         let segment_text = &body[seg_start..seg_end];
-        if is_spoiler {
+        if is_spoiler && !reveal_spoilers {
             // Replace each character with a block character
             let block_text: String = segment_text.chars().map(|_| '\u{2588}').collect();
             let spoiler_style = style.fg(theme.fg_muted);
             spans.push(Span::styled(block_text, spoiler_style));
+        } else if is_spoiler {
+            // Revealed spoiler: real text in the same muted color as the mask,
+            // so it reads as "this was hidden" while the message is focused.
+            spans.push(Span::styled(
+                segment_text.to_string(),
+                style.fg(theme.fg_muted),
+            ));
         } else {
             // Apply text style modifiers
             for &(ss, se, st) in style_ranges {
@@ -375,5 +379,24 @@ mod tests {
     #[case("no-scheme.com", "no-scheme.com")]
     fn extract_url_cases(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(extract_url(input), expected);
+    }
+
+    #[test]
+    fn spoiler_masked_by_default_and_revealed_on_focus() {
+        let theme = crate::theme::default_theme();
+        let ranges = vec![(6, 12, StyleType::Spoiler)];
+
+        let (spans, _) = styled_uri_spans("it is secret", &[], &ranges, &theme, false);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(
+            text,
+            "it is \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+        );
+
+        let (spans, _) = styled_uri_spans("it is secret", &[], &ranges, &theme, true);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "it is secret");
+        // Revealed text keeps the muted spoiler color as a "was hidden" hint.
+        assert_eq!(spans.last().unwrap().style.fg, Some(theme.fg_muted));
     }
 }

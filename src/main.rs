@@ -6,12 +6,16 @@
 //! startup.
 
 mod app;
+mod audio;
 mod autocomplete;
+mod compose;
 mod config;
 mod conversation_store;
 mod db;
 mod debug_log;
+mod demo;
 mod domain;
+mod export;
 mod fs_migrate;
 mod handlers;
 mod image_render;
@@ -20,6 +24,7 @@ mod keybindings;
 mod link;
 mod list_overlay;
 mod mute;
+mod preview;
 mod settings_profile;
 mod setup;
 mod signal;
@@ -53,13 +58,169 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 
-use app::{App, InputMode, SendRequest};
+use app::{App, InputMode, OverlayKind, SendRequest};
 use config::Config;
 use setup::SetupResult;
 use signal::client::SignalClient;
 
 /// Keyboard polling interval for the main event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// How long to wait for the startup contact sync before giving up on the
+/// loading spinner. If the contact list never comes back (e.g. signal-cli is
+/// not properly linked), the app would otherwise spin on "Loading..." forever
+/// with no feedback. After this grace period we clear the loading state, show a
+/// diagnostic hint, and let the user reach the rest of the app. Generous enough
+/// not to fire on a slow-but-healthy first sync.
+const STARTUP_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How many times to retry spawning signal-cli after the child dies before
+/// giving up and leaving the disconnect error on screen (#497).
+const MAX_RECONNECT_ATTEMPTS: u32 = 6;
+
+/// Exponential backoff before the next signal-cli reconnect attempt, capped at
+/// 30s. `attempt` is 1-based (the delay applied *after* attempt N fails, before
+/// attempt N+1). The first attempt fires immediately on disconnect, so this is
+/// only consulted after a failure.
+fn reconnect_backoff(attempt: u32) -> Duration {
+    Duration::from_secs((1u64 << attempt.min(6)).min(30))
+}
+
+/// Translate signal-cli stderr into a clearer message for the non-interactive
+/// CLI commands when it indicates a well-known fatal condition. signal-cli
+/// allows only one process per account, so running `--send`/`--receive` while
+/// the siggy TUI is open makes signal-cli block on the account lock and the
+/// command times out with an otherwise opaque error. Returns `None` when
+/// nothing recognised, so the caller keeps its generic message.
+fn cli_stderr_hint(stderr: &str) -> Option<&'static str> {
+    let e = stderr.to_ascii_lowercase();
+    if e.contains("is in use by another instance") || e.contains("config file is in use") {
+        Some("another siggy or signal-cli instance is using this account - close it and try again")
+    } else if e.contains("is not registered") {
+        Some("this account is not registered - run `siggy --setup` to link a device")
+    } else {
+        None
+    }
+}
+
+/// Send a single message non-interactively, await confirmation, and return
+/// whether it was accepted (#257). Spawns signal-cli, sends, then waits up to
+/// 30s for the correlated `SendTimestamp` (ok) or `SendFailed`. A recipient that
+/// does not start with `+` is treated as a group id.
+async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Result<bool> {
+    let mut client = SignalClient::spawn(config).await?;
+    let is_group = !recipient.starts_with('+');
+    let rpc_id = client
+        .send_message(recipient, body, is_group, &[], &[], &[], None, None)
+        .await?;
+
+    let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match client.event_rx.recv().await {
+                Some(signal::types::SignalEvent::SendTimestamp { rpc_id: id, .. })
+                    if id == rpc_id =>
+                {
+                    return Some(true);
+                }
+                Some(signal::types::SignalEvent::SendFailed { rpc_id: id }) if id == rpc_id => {
+                    return Some(false);
+                }
+                Some(_) => continue,
+                None => return None, // channel closed: child exited
+            }
+        }
+    })
+    .await;
+
+    let _ = client.shutdown().await;
+    let stderr = client.stderr_output();
+    match outcome {
+        Ok(Some(ok)) => Ok(ok),
+        Ok(None) => Err(match cli_stderr_hint(&stderr) {
+            Some(hint) => anyhow::anyhow!("{hint}"),
+            None => anyhow::anyhow!("signal-cli disconnected before confirming the send"),
+        }),
+        Err(_) => Err(match cli_stderr_hint(&stderr) {
+            Some(hint) => anyhow::anyhow!("{hint}"),
+            None => anyhow::anyhow!("timed out waiting for send confirmation"),
+        }),
+    }
+}
+
+/// Resolve the message database path for `config` (#260): the custom `db_path`
+/// (absolute as-is, relative under the data dir) or the default `siggy.db`. Does
+/// not perform the legacy signal-tui.db rename (that is a startup-only concern).
+fn resolve_db_path(config: &Config) -> std::path::PathBuf {
+    let db_dir = dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("siggy");
+    match config.db_path.as_deref().filter(|p| !p.is_empty()) {
+        Some(custom) => {
+            let p = std::path::Path::new(custom);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                db_dir.join(p)
+            }
+        }
+        None => db_dir.join("siggy.db"),
+    }
+}
+
+/// Stream incoming messages to stdout, one tab-separated line each
+/// (`timestamp_ms`, sender, group-id-or-empty, body), until signal-cli
+/// disconnects or the user interrupts (Ctrl-C) (#257). Outgoing/sync and
+/// body-less (attachment-only) messages are skipped; the body has control
+/// characters stripped so each message stays a single clean line.
+async fn run_receive_stream(config: &Config) -> Result<()> {
+    use std::io::Write;
+    let mut client = SignalClient::spawn(config).await?;
+    loop {
+        match client.event_rx.recv().await {
+            Some(signal::types::SignalEvent::MessageReceived(msg)) => {
+                if msg.is_outgoing {
+                    continue;
+                }
+                if let Some(body) = msg.body.as_deref().filter(|b| !b.is_empty()) {
+                    let clean = debug_log::strip_control_chars(body, false);
+                    let group = msg.group_id.as_deref().unwrap_or("");
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        msg.timestamp.timestamp_millis(),
+                        msg.source,
+                        group,
+                        clean
+                    );
+                    let _ = std::io::stdout().flush();
+                }
+            }
+            Some(signal::types::SignalEvent::Disconnected) | None => break,
+            Some(_) => {}
+        }
+    }
+    let _ = client.shutdown().await;
+    // If signal-cli disconnected for a recognised reason (account lock held by
+    // another instance, not registered), report it instead of exiting cleanly.
+    match cli_stderr_hint(&client.stderr_output()) {
+        Some(hint) => Err(anyhow::anyhow!("{hint}")),
+        None => Ok(()),
+    }
+}
+
+/// Whether the session should auto-lock now (#438). `timeout_mins == 0` disables
+/// it; otherwise lock once keyboard `idle` reaches that many minutes and we are
+/// not already locked. Only keypresses reset idle (the caller excludes mouse
+/// motion), so a wireless mouse on a desk can't hold the lock open forever.
+fn should_auto_lock(timeout_mins: u64, idle: Duration, already_locked: bool) -> bool {
+    timeout_mins > 0 && !already_locked && idle >= Duration::from_secs(timeout_mins * 60)
+}
+
+/// Whether the startup contact sync has run past its grace period without
+/// completing (`loading` still true). Pure, like `should_auto_lock`, so the
+/// watchdog decision can be unit-tested without driving the event loop.
+fn startup_sync_timed_out(loading: bool, elapsed: Duration) -> bool {
+    loading && elapsed >= STARTUP_SYNC_TIMEOUT
+}
 
 /// Set restrictive permissions (0600) on a sensitive file (Unix only).
 #[cfg(unix)]
@@ -68,6 +229,13 @@ fn set_file_permissions(path: &std::path::Path) {
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
+// On Windows there is no portable chmod equivalent, so siggy relies on the
+// default per-user ACLs that Windows applies to the profile directories these
+// files live under (%APPDATA%, %USERPROFILE%, %LOCALAPPDATA%): other standard
+// users cannot read them, though local administrators still can. Setting an
+// owner-only DACL would mean linking the Win32 security APIs and could lock a
+// user out of their own files if SID resolution failed, so the reliance is
+// documented in docs/src/user-guide/security.md instead (#504).
 #[cfg(not(unix))]
 fn set_file_permissions(_path: &std::path::Path) {}
 
@@ -78,21 +246,12 @@ fn set_dir_permissions(path: &std::path::Path) {
     let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
 }
 
+// No-op on Windows for the same reason as `set_file_permissions` above.
 #[cfg(not(unix))]
 fn set_dir_permissions(_path: &std::path::Path) {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Disable the default Windows Ctrl+C handler — crossterm captures it as a
-    // key event in raw mode, so the OS handler just causes a noisy exit code.
-    #[cfg(windows)]
-    unsafe {
-        unsafe extern "system" {
-            fn SetConsoleCtrlHandler(handler: usize, add: i32) -> i32;
-        }
-        SetConsoleCtrlHandler(0, 1);
-    }
-
     // Parse CLI args
     let args: Vec<String> = std::env::args().collect();
     let mut config_path: Option<&str> = None;
@@ -103,6 +262,11 @@ async fn main() -> Result<()> {
     let mut debug = false;
     let mut debug_full = false;
     let mut reset_lock = false;
+    let mut reset_account = false;
+    let mut check = false;
+    let mut list = false;
+    let mut receive = false;
+    let mut send_args: Option<(String, String)> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -149,6 +313,31 @@ async fn main() -> Result<()> {
                 reset_lock = true;
                 i += 1;
             }
+            "--reset-account" => {
+                reset_account = true;
+                i += 1;
+            }
+            "--check" => {
+                check = true;
+                i += 1;
+            }
+            "--list" => {
+                list = true;
+                i += 1;
+            }
+            "--receive" => {
+                receive = true;
+                i += 1;
+            }
+            "--send" => {
+                if i + 2 < args.len() {
+                    send_args = Some((args[i + 1].clone(), args[i + 2].clone()));
+                    i += 3;
+                } else {
+                    eprintln!("--send requires <recipient> <message>");
+                    std::process::exit(2);
+                }
+            }
             "--help" => {
                 eprintln!("siggy - Terminal Signal client");
                 eprintln!();
@@ -165,7 +354,26 @@ async fn main() -> Result<()> {
                 eprintln!("      --debug             Write debug log (PII redacted)");
                 eprintln!("      --debug-full        Write debug log (full, unredacted)");
                 eprintln!("      --reset-lock        Delete the session-lock passphrase and exit");
+                eprintln!(
+                    "      --reset-account     Clear local signal-cli account data (for a clean relink) and exit"
+                );
+                eprintln!(
+                    "      --check             Print a setup health report and exit (0 = ready)"
+                );
+                eprintln!("      --send <TO> <MSG>   Send one message non-interactively and exit");
+                eprintln!(
+                    "      --list              List cached conversations (tab-separated) and exit"
+                );
+                eprintln!(
+                    "      --receive           Stream incoming messages (tab-separated) until interrupted"
+                );
+                eprintln!("  -V, --version           Print version and exit");
                 eprintln!("      --help              Show this help");
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                // Plain "siggy x.y.z" on stdout for scripts/CI (#257).
+                println!("siggy {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {
@@ -206,6 +414,130 @@ async fn main() -> Result<()> {
     let mut config = Config::load(config_path)?;
     if let Some(acct) = account {
         config.account = acct;
+    }
+
+    // Non-interactive counterpart to the relink guard (#603/#607): clear stale
+    // local signal-cli account data so a subsequent `--setup` can relink from a
+    // clean slate. Exits without launching the TUI. Note: this only removes
+    // local data; a server-side conflict also needs old devices removed on the
+    // phone.
+    if reset_account {
+        if config.account.is_empty() {
+            eprintln!("no account configured; nothing to reset");
+            std::process::exit(1);
+        }
+        if !setup::account_exists_locally(&config.account) {
+            println!("No local account data found for {}.", config.account);
+            std::process::exit(0);
+        }
+        match setup::delete_local_account_data(&config).await {
+            Ok(()) => {
+                println!(
+                    "Cleared local signal-cli account data for {}. Run `siggy --setup` to relink.",
+                    config.account
+                );
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("failed to clear account data: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Non-interactive setup health report for scripts/CI (#257). Plain stdout,
+    // no TUI; exit 0 only when signal-cli is detected and an account is set.
+    if check {
+        let (found, location, _resolved) = setup::check_signal_cli(&config.signal_cli_path).await;
+        let account_ok = !config.account.is_empty();
+        println!("siggy {}", env!("CARGO_PKG_VERSION"));
+        println!("config:       {}", resolved_config_path.display());
+        println!(
+            "account:      {}",
+            if account_ok {
+                config.account.as_str()
+            } else {
+                "(not set)"
+            }
+        );
+        println!(
+            "signal-cli:   {}",
+            if found {
+                location
+            } else {
+                format!("NOT FOUND (configured: {})", config.signal_cli_path)
+            }
+        );
+        println!("download dir: {}", config.download_dir.display());
+        let ready = found && account_ok;
+        println!(
+            "status:       {}",
+            if ready { "ready" } else { "not ready" }
+        );
+        std::process::exit(if ready { 0 } else { 1 });
+    }
+
+    // Non-interactive conversation list for scripts (#257). Reads the cached DB
+    // (no signal-cli spawn) and prints tab-separated rows: unread, type, name, id
+    // -- no header, so it pipes cleanly into grep/cut/awk.
+    if list {
+        let db_path = resolve_db_path(&config);
+        if !db_path.exists() {
+            eprintln!(
+                "no database at {} (run siggy once to create it)",
+                db_path.display()
+            );
+            std::process::exit(1);
+        }
+        let db = db::Database::open(&db_path)?;
+        for c in db.load_conversations(1)? {
+            let kind = if c.is_group { "group" } else { "dm" };
+            println!("{}\t{}\t{}\t{}", c.unread, kind, c.name, c.id);
+        }
+        std::process::exit(0);
+    }
+
+    // Non-interactive incoming-message stream for scripts (#257). Runs until
+    // signal-cli disconnects or Ctrl-C; no TUI.
+    if receive {
+        match run_receive_stream(&config).await {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("receive failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Non-interactive one-shot send for scripts/cron (#257). No TUI; exit 0 on
+    // confirmed send, 1 on rejection/timeout/error.
+    if let Some((recipient, body)) = send_args {
+        match run_send_oneshot(&config, &recipient, &body).await {
+            Ok(true) => {
+                println!("sent");
+                std::process::exit(0);
+            }
+            Ok(false) => {
+                eprintln!("send failed: signal-cli rejected the message");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("send failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Disable the default Windows Ctrl+C handler for the TUI only — crossterm
+    // captures it as a key event in raw mode, so the OS handler would just cause
+    // a noisy exit. Done here (not at startup) so non-interactive commands above
+    // (--receive etc.) stay interruptible with Ctrl-C.
+    #[cfg(windows)]
+    unsafe {
+        unsafe extern "system" {
+            fn SetConsoleCtrlHandler(handler: usize, add: i32) -> i32;
+        }
+        SetConsoleCtrlHandler(0, 1);
     }
 
     // Set up terminal BEFORE anything else so all errors render in the TUI
@@ -310,8 +642,21 @@ async fn run_main_flow(
 
         std::fs::create_dir_all(&db_dir)?;
         set_dir_permissions(&db_dir);
-        let db_path = db_dir.join("siggy.db");
-        fs_migrate::migrate_path(&db_dir.join("signal-tui.db"), &db_path);
+        let db_path = resolve_db_path(config);
+        if config
+            .db_path
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .is_some()
+        {
+            // Custom per-account db (#260) may live outside db_dir; ensure its
+            // parent exists. No legacy rename - that only applies to the default.
+            if let Some(parent) = db_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+        } else {
+            fs_migrate::migrate_path(&db_dir.join("signal-tui.db"), &db_path);
+        }
         set_file_permissions(&db_path);
         db::Database::open(&db_path)?
     };
@@ -781,7 +1126,9 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             is_group,
             local_ts_ms,
             mentions,
+            text_styles,
             attachment,
+            preview,
             quote_timestamp,
             quote_author,
             quote_body,
@@ -798,7 +1145,9 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                     &body,
                     is_group,
                     &mentions,
+                    &text_styles,
                     &att_refs,
+                    preview.as_ref(),
                     quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str())),
                 )
                 .await
@@ -868,6 +1217,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             edit_timestamp,
             local_ts_ms,
             mentions,
+            text_styles,
             quote_timestamp,
             quote_author,
             quote_body,
@@ -883,6 +1233,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                     is_group,
                     edit_timestamp,
                     &mentions,
+                    &text_styles,
                     quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str())),
                 )
                 .await
@@ -1233,6 +1584,26 @@ impl MessagingBackend<'_> {
         }
     }
 
+    /// Attempt to respawn signal-cli and swap it in behind the existing `&mut`
+    /// borrow. Returns true on success. The previous client's child is already
+    /// dead (that is why we are reconnecting), so dropping it here is safe (#497).
+    async fn try_reconnect(&mut self, config: &Config) -> bool {
+        if let MessagingBackend::Signal(sc) = self {
+            match SignalClient::spawn(config).await {
+                Ok(client) => {
+                    **sc = client;
+                    true
+                }
+                Err(e) => {
+                    debug_log::logf(format_args!("reconnect spawn failed: {e}"));
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     fn drain_events(&mut self, app: &mut App) -> bool {
         let MessagingBackend::Signal(sc) = self else {
             return false;
@@ -1287,13 +1658,14 @@ async fn run_app(
     config_path: &std::path::Path,
 ) -> Result<()> {
     let mut app = App::new(config.account.clone(), db, config_path);
-    app.notifications.notify_direct = config.notify_direct;
-    app.notifications.notify_group = config.notify_group;
-    app.notifications.desktop_notifications = config.desktop_notifications;
+    // Table-driven boolean toggles (notifications, display, messages,
+    // interface) load through the shared SETTINGS table, paired with the save
+    // loop in save_settings (#498).
+    app.apply_settings_from_config(config);
+    // Non-toggle scalar settings, copied directly.
     app.notifications.notification_preview = config.notification_preview;
     app.notifications.clipboard_clear_seconds = config.clipboard_clear_seconds;
     app.image.image_mode = config.image_mode.unwrap_or_default();
-    app.image.show_link_previews = config.show_link_previews;
     app.image.image_max_width = config.image_max_width.clamp(1, 240);
     app.image.preview_image_max_width = config.preview_image_max_width.clamp(1, 240);
     app.image.image_max_height = config.image_max_height.clamp(1, 120);
@@ -1302,17 +1674,8 @@ async fn run_app(
         diffusion: config.sixel_diffusion.clamp(0.0, 1.0),
     };
     app.incognito = incognito;
-    app.download_dir = config.download_dir.clone();
-    app.date_separators = config.date_separators;
-    app.show_receipts = config.show_receipts;
-    app.color_receipts = config.color_receipts;
-    app.nerd_fonts = config.nerd_fonts;
-    app.reactions.emoji_to_text = config.emoji_to_text;
-    app.reactions.show_reactions = config.show_reactions;
-    app.reactions.verbose = config.reaction_verbose;
-    app.send_read_receipts = config.send_read_receipts;
-    app.mouse.enabled = config.mouse_enabled;
-    app.sidebar_on_right = config.sidebar_on_right;
+    app.media.download_dir = config.download_dir.clone();
+    app.media.audio_player = config.audio_player.clone();
     app.sidebar_width = config.sidebar_width.clamp(14, 40);
     if config.cell_pixel_width > 0 && config.cell_pixel_height > 0 {
         app.image.cell_px = (config.cell_pixel_width, config.cell_pixel_height);
@@ -1368,6 +1731,16 @@ async fn run_app(
         .unwrap_or_else(Instant::now);
     let mut needs_redraw = true;
     let mut last_title: Option<String> = None;
+    // Supervised signal-cli reconnect state (#497). `next_reconnect_at` is the
+    // earliest time the next spawn attempt may run; None means "try now".
+    let mut reconnect_attempts: u32 = 0;
+    let mut next_reconnect_at: Option<Instant> = None;
+    // Auto-lock idle tracking (#438): reset on every keypress (not mouse).
+    let mut last_activity = Instant::now();
+    // Startup-sync watchdog: when the loop begins, `app.loading` is still true
+    // until the contact list arrives. If it never does, the timeout below clears
+    // the spinner so the app does not appear hung (see STARTUP_SYNC_TIMEOUT).
+    let loop_started = Instant::now();
     // Loop-rate diagnostics: only counted/logged when --debug is on. Helps
     // locate non-converging redraw triggers (see issue #408). Cheap when off.
     let mut diag_last = Instant::now();
@@ -1463,6 +1836,26 @@ async fn run_app(
         if app.ensure_active_images() {
             needs_redraw = true;
         }
+        // Background /preview fetch (#267): apply the result when it lands.
+        if app.poll_preview_fetch() {
+            needs_redraw = true;
+        }
+        // Voice playback progress (#618): reap the player / refresh the line.
+        if app.tick_voice_playback() {
+            needs_redraw = true;
+        }
+        // Keep the encode caches bounded (#492). Cheap O(1) length check per tick.
+        app.image.enforce_cache_caps();
+
+        // Debounced message search: keystrokes mark the query dirty; the DB
+        // scan runs here once typing pauses (#491).
+        if app.is_overlay(OverlayKind::Search)
+            && app
+                .search
+                .run_if_due(app.active_conversation.as_deref(), &app.db)
+        {
+            needs_redraw = true;
+        }
 
         // Animate the loading spinner on a wall-clock cadence so its speed
         // is decoupled from event-loop iteration rate. The drain loop above
@@ -1484,6 +1877,20 @@ async fn run_app(
             }
         }
 
+        // Startup-sync watchdog: if the contact list never came back, stop
+        // spinning on "Loading..." forever and surface a diagnostic hint so the
+        // user knows to check their link instead of staring at a frozen screen.
+        // Fires once (clearing `loading` makes the guard false); a late contact
+        // list still clears the state again harmlessly.
+        if startup_sync_timed_out(app.loading, loop_started.elapsed()) {
+            app.loading = false;
+            app.startup_status.clear();
+            app.status_message =
+                "Sync is taking longer than expected. Run siggy --check to verify your link."
+                    .to_string();
+            needs_redraw = true;
+        }
+
         // Extend the scrollback when scrolled to the top: widen the render
         // window over loaded messages, paging from the DB only when memory
         // is exhausted (#488).
@@ -1502,6 +1909,7 @@ async fn run_app(
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
+                    last_activity = Instant::now();
                     if app.keybindings_overlay.capturing {
                         app.handle_keybinding_capture(key.modifiers, key.code);
                     } else if !app.handle_global_key(key.modifiers, key.code) {
@@ -1544,6 +1952,16 @@ async fn run_app(
             had_terminal_event = event::poll(Duration::ZERO)?;
         }
 
+        // Auto-lock after configured keyboard inactivity (#438).
+        if should_auto_lock(
+            config.lock_timeout,
+            last_activity.elapsed(),
+            app.lock.is_locked(),
+        ) {
+            app.lock_now();
+            needs_redraw = true;
+        }
+
         // Drain signal events (non-blocking), detect disconnect
         if backend.drain_events(&mut app) {
             diag_signal_event = diag_signal_event.wrapping_add(1);
@@ -1555,6 +1973,47 @@ async fn run_app(
                 }
             } else {
                 needs_redraw = true;
+            }
+        }
+
+        // Supervised reconnect: only while disconnected, only for the Signal
+        // backend, and only up to the attempt cap. The first attempt fires
+        // immediately; subsequent ones wait for the backoff (#497).
+        if app.connection_error.is_some()
+            && matches!(backend, MessagingBackend::Signal(_))
+            && reconnect_attempts < MAX_RECONNECT_ATTEMPTS
+        {
+            let now = Instant::now();
+            let due = next_reconnect_at.map(|t| now >= t).unwrap_or(true);
+            if due {
+                reconnect_attempts += 1;
+                app.status_message = format!(
+                    "Reconnecting to signal-cli (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})..."
+                );
+                needs_redraw = true;
+                if backend.try_reconnect(config).await {
+                    reconnect_attempts = 0;
+                    next_reconnect_at = None;
+                    app.connection_error = None;
+                    app.set_connected();
+                    // Re-run the startup sync against the fresh child (best-effort).
+                    if let MessagingBackend::Signal(sc) = &mut backend {
+                        let _ = sc.send_sync_request().await;
+                        let _ = sc.list_contacts().await;
+                        let _ = sc.list_groups().await;
+                        let _ = sc.list_identities().await;
+                    }
+                } else if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
+                    app.status_message =
+                        "signal-cli disconnected; reconnect failed. Restart siggy.".to_string();
+                } else {
+                    let delay = reconnect_backoff(reconnect_attempts);
+                    next_reconnect_at = Some(now + delay);
+                    app.status_message = format!(
+                        "signal-cli reconnect failed; retrying in {}s",
+                        delay.as_secs()
+                    );
+                }
             }
         }
 
@@ -1666,8 +2125,81 @@ async fn run_app(
         }
     }
 
+    // Stop any voice playback so the player does not outlive the app (#618).
+    app.stop_voice_playback();
+
     // Restore terminal title on exit
     execute!(terminal.backend_mut(), crossterm::terminal::SetTitle("")).ok();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_auto_lock_respects_timeout_and_state() {
+        let min = Duration::from_secs(60);
+        // Disabled: never locks, however idle.
+        assert!(!should_auto_lock(0, Duration::from_secs(99999), false));
+        // Enabled, idle past the threshold, not yet locked -> lock.
+        assert!(should_auto_lock(1, min, false));
+        assert!(should_auto_lock(5, 5 * min, false));
+        // Idle below the threshold -> don't lock.
+        assert!(!should_auto_lock(
+            5,
+            5 * min - Duration::from_secs(1),
+            false
+        ));
+        // Already locked -> no-op (don't re-lock).
+        assert!(!should_auto_lock(1, 10 * min, true));
+    }
+
+    #[test]
+    fn cli_stderr_hint_recognises_known_fatal_conditions() {
+        // The lock-contention line signal-cli prints when the TUI is open.
+        assert_eq!(
+            cli_stderr_hint(
+                "INFO  SignalAccount - Config file is in use by another instance, waiting…"
+            ),
+            Some(
+                "another siggy or signal-cli instance is using this account - close it and try again"
+            )
+        );
+        // Unregistered account.
+        assert_eq!(
+            cli_stderr_hint("User +447588442858 is not registered."),
+            Some("this account is not registered - run `siggy --setup` to link a device")
+        );
+        // Unrecognised stderr -> no hint (caller keeps its generic message).
+        assert_eq!(cli_stderr_hint("some unrelated warning"), None);
+        assert_eq!(cli_stderr_hint(""), None);
+    }
+
+    #[test]
+    fn startup_sync_timed_out_only_fires_while_loading_past_grace() {
+        // Not loading -> never times out, however long it has been.
+        assert!(!startup_sync_timed_out(false, STARTUP_SYNC_TIMEOUT * 2));
+        // Loading but still within the grace period -> keep waiting.
+        assert!(!startup_sync_timed_out(
+            true,
+            STARTUP_SYNC_TIMEOUT - Duration::from_secs(1)
+        ));
+        // Loading past the grace period -> time out.
+        assert!(startup_sync_timed_out(true, STARTUP_SYNC_TIMEOUT));
+        assert!(startup_sync_timed_out(true, STARTUP_SYNC_TIMEOUT * 2));
+    }
+
+    #[test]
+    fn reconnect_backoff_is_exponential_and_capped() {
+        assert_eq!(reconnect_backoff(1), Duration::from_secs(2));
+        assert_eq!(reconnect_backoff(2), Duration::from_secs(4));
+        assert_eq!(reconnect_backoff(3), Duration::from_secs(8));
+        assert_eq!(reconnect_backoff(4), Duration::from_secs(16));
+        // Capped at 30s, and never overflows the shift for large attempts.
+        assert_eq!(reconnect_backoff(5), Duration::from_secs(30));
+        assert_eq!(reconnect_backoff(6), Duration::from_secs(30));
+        assert_eq!(reconnect_backoff(100), Duration::from_secs(30));
+    }
 }

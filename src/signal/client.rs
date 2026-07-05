@@ -75,73 +75,30 @@ impl SignalClient {
             let mut lines = reader.lines();
 
             while let Ok(Some(line)) = lines.next_line().await {
-                if line.trim().is_empty() {
+                let Some(event) = handle_stdout_line(&line, &pending_clone, &download_dir) else {
                     continue;
+                };
+
+                if crate::debug_log::redact() {
+                    crate::debug_log::logf(format_args!("event: {}", event.redacted_summary()));
+                } else {
+                    crate::debug_log::logf(format_args!("event: {event:?}"));
                 }
 
-                match serde_json::from_str::<JsonRpcResponse>(&line) {
-                    Ok(resp) => {
-                        // Check if this is a response to a pending request
-                        let rpc_id = resp.id.clone();
-                        let pending_method = rpc_id.as_ref().and_then(|id| {
-                            pending_clone.lock().ok().and_then(|mut map| {
-                                let method = map.remove(id).map(|(m, _)| m);
-                                // Sweep stale entries (signal-cli never responded)
-                                map.retain(|_, (_, ts)| ts.elapsed() < PENDING_REQUEST_TTL);
-                                method
-                            })
-                        });
-
-                        let event = if let Some(method) = pending_method {
-                            if let Some(ref err) = resp.error {
-                                crate::debug_log::logf(format_args!(
-                                    "rpc error: method={method} error={err:?}"
-                                ));
-                                // RPC error — emit SendFailed for every method that
-                                // registers in pending.sends (dispatch_send tracks
-                                // "send" and "sendPollCreate"), surface other errors
-                                // to the status bar. Routing a tracked method to the
-                                // generic Error arm leaks the pending entry and the
-                                // local message stays in Sending forever (#486).
-                                if method == "send" || method == "sendPollCreate" {
-                                    rpc_id.map(|id| SignalEvent::SendFailed { rpc_id: id })
-                                } else {
-                                    Some(SignalEvent::Error(format!("{method}: {}", err.message)))
-                                }
-                            } else {
-                                resp.result.as_ref().and_then(|result| {
-                                    parse_rpc_result(&method, result, rpc_id.as_deref())
-                                })
-                            }
-                        } else {
-                            parse_signal_event(&resp, &download_dir)
-                        };
-
-                        if let Some(ref event) = event {
-                            if crate::debug_log::redact() {
-                                crate::debug_log::logf(format_args!(
-                                    "event: {}",
-                                    event.redacted_summary()
-                                ));
-                            } else {
-                                crate::debug_log::logf(format_args!("event: {event:?}"));
-                            }
-                        }
-
-                        if let Some(event) = event
-                            && event_tx.send(event).await.is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        crate::debug_log::logf(format_args!("json parse error: {e}"));
-                        let _ = event_tx
-                            .send(SignalEvent::Error(format!("JSON parse error: {e}")))
-                            .await;
-                    }
+                if event_tx.send(event).await.is_err() {
+                    return;
                 }
             }
+
+            // stdout hit EOF: signal-cli exited. Fail any in-flight sends so their
+            // local messages leave the Sending state, then emit an explicit
+            // Disconnected before the channel closes (#497).
+            for event in drain_pending_as_failures(&pending_clone) {
+                if event_tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+            let _ = event_tx.send(SignalEvent::Disconnected).await;
         });
 
         // Stdin writer task — send JSON-RPC requests to signal-cli
@@ -212,13 +169,31 @@ impl SignalClient {
         send_rpc_impl(&self.stdin_tx, &self.pending_requests, method, params).await
     }
 
+    /// Add a textStyle param with signal-cli's "start:length:STYLE" strings
+    /// (UTF-16 offsets). No-op when there are no style ranges.
+    fn set_text_styles(params: &mut serde_json::Value, text_styles: &[(usize, usize, StyleType)]) {
+        if text_styles.is_empty() {
+            return;
+        }
+        let arr: Vec<serde_json::Value> = text_styles
+            .iter()
+            .map(|(start, len, style)| {
+                serde_json::Value::String(format!("{start}:{len}:{}", style.wire_name()))
+            })
+            .collect();
+        params["textStyle"] = serde_json::Value::Array(arr);
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message(
         &self,
         recipient: &str,
         body: &str,
         is_group: bool,
         mentions: &[(usize, String)],
+        text_styles: &[(usize, usize, StyleType)],
         attachments: &[&Path],
+        preview: Option<&LinkPreview>,
         quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
         let mut params = serde_json::json!({
@@ -226,6 +201,22 @@ impl SignalClient {
             "account": self.account,
         });
         Self::set_target(&mut params, recipient, is_group);
+        Self::set_text_styles(&mut params, text_styles);
+
+        // Sender-generated link preview (#267). The URL must also appear in
+        // the message body; the composer guarantees that.
+        if let Some(p) = preview {
+            params["previewUrl"] = serde_json::json!(p.url);
+            if let Some(ref title) = p.title {
+                params["previewTitle"] = serde_json::json!(title);
+            }
+            if let Some(ref description) = p.description {
+                params["previewDescription"] = serde_json::json!(description);
+            }
+            if let Some(ref image_path) = p.image_path {
+                params["previewImage"] = serde_json::json!(image_path);
+            }
+        }
 
         if !mentions.is_empty() {
             // signal-cli expects mentions as colon-separated strings: "start:length:uuid"
@@ -254,6 +245,7 @@ impl SignalClient {
         Ok(id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_edit_message(
         &self,
         recipient: &str,
@@ -261,6 +253,7 @@ impl SignalClient {
         is_group: bool,
         edit_timestamp: i64,
         mentions: &[(usize, String)],
+        text_styles: &[(usize, usize, StyleType)],
         quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
         let mut params = serde_json::json!({
@@ -269,6 +262,7 @@ impl SignalClient {
             "editTimestamp": edit_timestamp,
         });
         Self::set_target(&mut params, recipient, is_group);
+        Self::set_text_styles(&mut params, text_styles);
 
         if !mentions.is_empty() {
             let mention_arr: Vec<serde_json::Value> = mentions
@@ -743,6 +737,81 @@ fn build_block_params(account: &str, recipient: &str, is_group: bool) -> serde_j
     }
 }
 
+/// Drain `pending` and turn every tracked send method (`send` / `sendPollCreate`,
+/// the ones dispatch_send registers) into a `SendFailed` event. Called when the
+/// stdout reader exits so in-flight sends do not hang in the Sending state
+/// forever after the child dies (#497). Recovers from a poisoned lock (REL-002).
+fn drain_pending_as_failures(
+    pending: &Mutex<HashMap<String, (String, Instant)>>,
+) -> Vec<SignalEvent> {
+    let mut map = pending.lock().unwrap_or_else(|e| e.into_inner());
+    map.drain()
+        .filter(|(_, (method, _))| method == "send" || method == "sendPollCreate")
+        .map(|(id, _)| SignalEvent::SendFailed { rpc_id: id })
+        .collect()
+}
+
+/// Parse one JSON-RPC line from signal-cli's stdout into an optional event.
+///
+/// Pure given the shared `pending` correlation map and `download_dir`, so it can
+/// be unit-tested without spawning signal-cli. Returns:
+/// - `None` for blank lines and for notifications/results that produce no event;
+/// - `Some(SignalEvent::Error(..))` for malformed JSON (never panics);
+/// - the correlated or parsed event otherwise.
+///
+/// A correlated RPC error on a tracked send method (`send` / `sendPollCreate`)
+/// becomes `SendFailed` so the local message can leave the Sending state; other
+/// RPC errors surface to the status bar (#486). Correlation recovers from a
+/// poisoned `pending` lock instead of dropping the match, mirroring the
+/// send-side REL-002 fix so a panic elsewhere can't strand in-flight sends.
+fn handle_stdout_line(
+    line: &str,
+    pending: &Mutex<HashMap<String, (String, Instant)>>,
+    download_dir: &Path,
+) -> Option<SignalEvent> {
+    if line.trim().is_empty() {
+        return None;
+    }
+
+    let resp = match serde_json::from_str::<JsonRpcResponse>(line) {
+        Ok(resp) => resp,
+        Err(e) => {
+            crate::debug_log::logf(format_args!("json parse error: {e}"));
+            return Some(SignalEvent::Error(format!("JSON parse error: {e}")));
+        }
+    };
+
+    // Correlate against a pending request by id. Notifications carry no id and
+    // fall through to parse_signal_event.
+    let rpc_id = resp.id.clone();
+    let pending_method = rpc_id.as_ref().and_then(|id| {
+        let mut map = pending.lock().unwrap_or_else(|e| e.into_inner());
+        let method = map.remove(id).map(|(m, _)| m);
+        // Sweep stale entries (signal-cli never responded).
+        map.retain(|_, (_, ts)| ts.elapsed() < PENDING_REQUEST_TTL);
+        method
+    });
+
+    if let Some(method) = pending_method {
+        if let Some(ref err) = resp.error {
+            crate::debug_log::logf(format_args!("rpc error: method={method} error={err:?}"));
+            // Routing a tracked send method to the generic Error arm would leak
+            // the pending entry and leave the local message in Sending forever.
+            if method == "send" || method == "sendPollCreate" {
+                rpc_id.map(|id| SignalEvent::SendFailed { rpc_id: id })
+            } else {
+                Some(SignalEvent::Error(format!("{method}: {}", err.message)))
+            }
+        } else {
+            resp.result
+                .as_ref()
+                .and_then(|result| parse_rpc_result(&method, result, rpc_id.as_deref()))
+        }
+    } else {
+        parse_signal_event(&resp, download_dir)
+    }
+}
+
 /// Send a JSON-RPC envelope to signal-cli's stdin and register the rpc id
 /// with `method` for response correlation. Returns the rpc id.
 ///
@@ -865,6 +934,177 @@ mod tests {
         assert!(
             map.contains_key(&id),
             "pending_requests must contain the entry even after mutex was poisoned"
+        );
+    }
+
+    // --- handle_stdout_line (#503) ---
+
+    fn pending_map() -> Mutex<HashMap<String, (String, Instant)>> {
+        Mutex::new(HashMap::new())
+    }
+
+    #[test]
+    fn handle_stdout_line_blank_is_none() {
+        let pending = pending_map();
+        assert!(handle_stdout_line("   ", &pending, Path::new(".")).is_none());
+        assert!(handle_stdout_line("", &pending, Path::new(".")).is_none());
+    }
+
+    #[test]
+    fn handle_stdout_line_malformed_json_yields_error_without_panic() {
+        let pending = pending_map();
+        // Surfacing a parse error to the status bar is intentional; the key
+        // guarantee is that a malformed frame never panics the reader task.
+        let ev = handle_stdout_line("{ not json", &pending, Path::new("."));
+        assert!(matches!(ev, Some(SignalEvent::Error(_))));
+    }
+
+    #[test]
+    fn handle_stdout_line_correlated_response_removes_its_id() {
+        let pending = pending_map();
+        pending.lock().unwrap().insert(
+            "abc".to_string(),
+            ("listContacts".to_string(), Instant::now()),
+        );
+        let line = r#"{"jsonrpc":"2.0","id":"abc","result":[]}"#;
+        let _ = handle_stdout_line(line, &pending, Path::new("."));
+        assert!(
+            !pending.lock().unwrap().contains_key("abc"),
+            "the correlated id must be consumed from pending"
+        );
+    }
+
+    #[test]
+    fn handle_stdout_line_unknown_id_falls_through_to_notification() {
+        let pending = pending_map();
+        pending
+            .lock()
+            .unwrap()
+            .insert("other".to_string(), ("send".to_string(), Instant::now()));
+        // Id not in pending and no method field: correlation misses and
+        // parse_signal_event yields None (nothing to parse).
+        let line = r#"{"jsonrpc":"2.0","id":"unknown","result":[]}"#;
+        assert!(handle_stdout_line(line, &pending, Path::new(".")).is_none());
+        assert!(
+            pending.lock().unwrap().contains_key("other"),
+            "an unrelated pending entry must be left intact"
+        );
+    }
+
+    #[test]
+    fn handle_stdout_line_send_error_yields_send_failed() {
+        let pending = pending_map();
+        pending
+            .lock()
+            .unwrap()
+            .insert("send-1".to_string(), ("send".to_string(), Instant::now()));
+        let line = r#"{"jsonrpc":"2.0","id":"send-1","error":{"code":-1,"message":"boom"}}"#;
+        let ev = handle_stdout_line(line, &pending, Path::new("."));
+        assert!(
+            matches!(ev, Some(SignalEvent::SendFailed { rpc_id }) if rpc_id == "send-1"),
+            "a tracked send method error must route to SendFailed"
+        );
+        assert!(!pending.lock().unwrap().contains_key("send-1"));
+    }
+
+    #[test]
+    fn handle_stdout_line_other_error_yields_status_error() {
+        let pending = pending_map();
+        pending.lock().unwrap().insert(
+            "lc-1".to_string(),
+            ("listContacts".to_string(), Instant::now()),
+        );
+        let line = r#"{"jsonrpc":"2.0","id":"lc-1","error":{"code":-1,"message":"nope"}}"#;
+        match handle_stdout_line(line, &pending, Path::new(".")) {
+            Some(SignalEvent::Error(msg)) => {
+                assert!(msg.contains("listContacts"), "got: {msg}");
+                assert!(msg.contains("nope"), "got: {msg}");
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_stdout_line_sweeps_stale_pending_entries() {
+        let pending = pending_map();
+        {
+            let mut map = pending.lock().unwrap();
+            map.insert(
+                "stale".to_string(),
+                (
+                    "send".to_string(),
+                    Instant::now() - PENDING_REQUEST_TTL - Duration::from_secs(1),
+                ),
+            );
+            map.insert(
+                "fresh".to_string(),
+                ("listContacts".to_string(), Instant::now()),
+            );
+        }
+        // Any correlated line triggers the TTL sweep (an id is needed to enter
+        // the correlation closure).
+        let line = r#"{"jsonrpc":"2.0","id":"fresh","result":[]}"#;
+        let _ = handle_stdout_line(line, &pending, Path::new("."));
+        let map = pending.lock().unwrap();
+        assert!(!map.contains_key("stale"), "stale entry must be swept");
+        assert!(!map.contains_key("fresh"), "correlated id consumed");
+    }
+
+    #[test]
+    fn drain_pending_as_failures_fails_tracked_sends_only() {
+        let pending = pending_map();
+        {
+            let mut map = pending.lock().unwrap();
+            map.insert("s1".to_string(), ("send".to_string(), Instant::now()));
+            map.insert(
+                "p1".to_string(),
+                ("sendPollCreate".to_string(), Instant::now()),
+            );
+            map.insert(
+                "lc".to_string(),
+                ("listContacts".to_string(), Instant::now()),
+            );
+        }
+
+        let events = drain_pending_as_failures(&pending);
+
+        // Only the two tracked send methods become SendFailed.
+        let mut failed: Vec<String> = events
+            .into_iter()
+            .map(|e| match e {
+                SignalEvent::SendFailed { rpc_id } => rpc_id,
+                other => panic!("expected SendFailed, got {other:?}"),
+            })
+            .collect();
+        failed.sort();
+        assert_eq!(failed, vec!["p1".to_string(), "s1".to_string()]);
+
+        // The map is fully drained (the untracked entry is dropped too).
+        assert!(pending.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn handle_stdout_line_recovers_from_poisoned_pending() {
+        let pending: Arc<Mutex<HashMap<String, (String, Instant)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        pending
+            .lock()
+            .unwrap()
+            .insert("p-1".to_string(), ("send".to_string(), Instant::now()));
+
+        let clone = Arc::clone(&pending);
+        let _ = std::thread::spawn(move || {
+            let _g = clone.lock().unwrap();
+            panic!("intentional poison");
+        })
+        .join();
+        assert!(pending.is_poisoned(), "mutex should be poisoned");
+
+        let line = r#"{"jsonrpc":"2.0","id":"p-1","error":{"code":-1,"message":"x"}}"#;
+        let ev = handle_stdout_line(line, &pending, Path::new("."));
+        assert!(
+            matches!(ev, Some(SignalEvent::SendFailed { rpc_id }) if rpc_id == "p-1"),
+            "correlation must survive a poisoned pending lock (REL-002)"
         );
     }
 }

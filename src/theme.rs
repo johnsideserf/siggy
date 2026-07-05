@@ -706,4 +706,19 @@ bg = "#€abc"
         assert_eq!(parsed.sender_palette, theme.sender_palette);
         assert_eq!(parsed.receipt_viewed, theme.receipt_viewed);
     }
+
+    /// The shipped custom-theme template (#476) must stay a valid, complete
+    /// Theme so users who copy it get a working theme; this also fails if a new
+    /// Theme field is added without updating the template.
+    #[test]
+    fn custom_theme_template_parses() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/themes/custom-theme-template.toml"
+        );
+        let contents = std::fs::read_to_string(path).expect("template file present");
+        let theme: Theme = toml::from_str(&contents).expect("template parses as a Theme");
+        assert_eq!(theme.name, "My Theme");
+        assert_eq!(theme.sender_palette.len(), 8);
+    }
 }

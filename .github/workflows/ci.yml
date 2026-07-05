@@ -11,7 +11,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -34,7 +34,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -49,13 +49,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fuzz_command_parse, fuzz_input_edit, fuzz_json_rpc, fuzz_key_combo]
+        target: [fuzz_command_parse, fuzz_input_edit, fuzz_json_rpc, fuzz_key_combo, fuzz_theme_toml]
     env:
       # cargo-fuzz needs nightly. RUSTUP_TOOLCHAIN overrides
       # rust-toolchain.toml's stable pin for this job only.
       RUSTUP_TOOLCHAIN: nightly
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@nightly
 

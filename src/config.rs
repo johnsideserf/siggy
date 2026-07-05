@@ -112,6 +112,17 @@ pub struct Config {
     #[serde(default = "default_clipboard_clear_seconds")]
     pub clipboard_clear_seconds: u64,
 
+    /// Minutes of keyboard inactivity before the session auto-locks (0 = disabled)
+    #[serde(default)]
+    pub lock_timeout: u64,
+
+    /// Override the message database path (for running multiple accounts side by
+    /// side, each with its own config + db). Absolute paths are used as-is;
+    /// relative paths resolve under the data dir. `None` keeps the default
+    /// `siggy.db`, so existing single-account setups are unaffected (#260).
+    #[serde(default)]
+    pub db_path: Option<String>,
+
     /// Image display mode (native / halfblock / none). `None` here means the
     /// field was absent from the on-disk TOML and migration should fill it in
     /// from the legacy `inline_images` / `native_images` flags.
@@ -145,6 +156,12 @@ pub struct Config {
     /// Floyd-Steinberg diffusion strength for Sixel encoding (0.0-1.0)
     #[serde(default = "default_sixel_diffusion")]
     pub sixel_diffusion: f32,
+
+    /// Command used to play voice messages inline, e.g. "mpv --no-config".
+    /// Absent or empty autodetects a CLI player on PATH (mpv, ffplay,
+    /// afplay, cvlc, paplay, aplay, in that order).
+    #[serde(default)]
+    pub audio_player: Option<String>,
 
     /// Legacy: show inline halfblock image previews (migrated to image_mode)
     #[serde(default = "default_true", skip_serializing)]
@@ -284,6 +301,8 @@ impl Default for Config {
             desktop_notifications: false,
             notification_preview: NotificationPreview::Full,
             clipboard_clear_seconds: default_clipboard_clear_seconds(),
+            lock_timeout: 0,
+            db_path: None,
             image_mode: Some(ImageMode::Halfblock),
             cell_pixel_width: 0,
             cell_pixel_height: 0,
@@ -292,6 +311,7 @@ impl Default for Config {
             image_max_height: default_image_max_height(),
             sixel_max_colors: default_sixel_max_colors(),
             sixel_diffusion: default_sixel_diffusion(),
+            audio_player: None,
             inline_images: true,
             show_link_previews: true,
             native_images: false,

@@ -12,11 +12,40 @@
 
 use std::collections::HashMap;
 
-use crate::app::{GroupMenuState, PinPending, PollVotePending};
 use crate::keybindings::{KeyAction, KeyCombo};
 use crate::settings_profile::SettingsProfile;
-use crate::signal::types::{IdentityInfo, PollData};
+use crate::signal::types::{IdentityInfo, PollData, PollOption};
 use crate::theme::Theme;
+
+/// Which sub-overlay of the /group menu is currently active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupMenuState {
+    Menu,         // top-level flyout
+    Members,      // read-only member list
+    AddMember,    // contact picker (type-to-filter)
+    RemoveMember, // member picker (type-to-filter)
+    Rename,       // text input (pre-filled)
+    Create,       // text input (empty)
+    LeaveConfirm, // y/n confirmation
+}
+
+/// Context saved when the pin duration picker is open (remembers which message is being pinned).
+pub struct PinPending {
+    pub conv_id: String,
+    pub is_group: bool,
+    pub target_author: String,
+    pub target_timestamp: i64,
+}
+
+/// Context saved when the poll vote overlay is open.
+pub struct PollVotePending {
+    pub conv_id: String,
+    pub is_group: bool,
+    pub poll_author: String,
+    pub poll_timestamp: i64,
+    pub allow_multiple: bool,
+    pub options: Vec<PollOption>,
+}
 
 /// State for the message action menu overlay.
 #[derive(Default)]
@@ -37,6 +66,44 @@ pub struct SettingsOverlayState {
     /// `fire_deferred_settings_hooks` to decide whether to queue the
     /// mouse-capture toggle on close.
     pub mouse_snapshot: bool,
+}
+
+/// State for the sidebar type-to-filter overlay (`/_`).
+#[derive(Default)]
+pub struct SidebarFilterState {
+    /// Current filter text.
+    pub query: String,
+    /// Conversation IDs matching the filter.
+    pub filtered: Vec<String>,
+}
+
+/// One selectable row in the command palette (#614).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaletteItem {
+    /// A slash command; `args` is its usage hint (empty = runs immediately
+    /// on select, non-empty = prefills the composer).
+    Command {
+        name: &'static str,
+        args: &'static str,
+        description: &'static str,
+    },
+    /// Jump to a conversation.
+    Conversation {
+        id: String,
+        name: String,
+        is_group: bool,
+    },
+}
+
+/// State for the fuzzy command palette overlay (#614).
+#[derive(Default)]
+pub struct PaletteState {
+    /// Type-to-filter query.
+    pub query: String,
+    /// Cursor position in the filtered list.
+    pub index: usize,
+    /// Filtered items, best match first.
+    pub filtered: Vec<PaletteItem>,
 }
 
 /// State for the contacts list overlay.

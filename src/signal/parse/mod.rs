@@ -223,13 +223,14 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true, false, false, "DELIVERY", 2)]
-    #[case(false, true, false, "READ", 1)]
+    #[case(true, false, false, ReceiptKind::Delivery, 2)]
+    #[case(false, true, false, ReceiptKind::Read, 1)]
+    #[case(false, false, true, ReceiptKind::Viewed, 1)]
     fn parse_receipt_event(
         #[case] is_delivery: bool,
         #[case] is_read: bool,
         #[case] is_viewed: bool,
-        #[case] expected_type: &str,
+        #[case] expected_type: ReceiptKind,
         #[case] expected_count: usize,
     ) {
         let mut timestamps = vec![json!(1700000000001_i64)];

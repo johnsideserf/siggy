@@ -22,13 +22,14 @@ pub(super) fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let max_name_width = (area.width as usize).saturating_sub(5); // "• # " + margin
 
     // Use filtered list when sidebar filter is active.
-    // When filtering, show everything (so users can find hidden conversations).
-    // In normal view, hide stale conversations (empty groups, unresolvable contacts).
+    // When filtering, show everything (so users can find hidden conversations,
+    // including archived ones). In normal view, hide stale conversations
+    // (empty groups, unresolvable contacts) and archived conversations (#611).
     let display_order: Vec<String> = if app.is_overlay(OverlayKind::SidebarFilter) {
-        if app.sidebar_filter.is_empty() {
+        if app.sidebar_filter.query.is_empty() {
             app.store.conversation_order.clone()
         } else {
-            app.sidebar_filtered.clone()
+            app.sidebar_filter.filtered.clone()
         }
     } else {
         app.store
@@ -40,11 +41,13 @@ pub(super) fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                         .store
                         .conversations
                         .get(*id)
-                        .is_some_and(|c| !c.is_stale())
+                        .is_some_and(|c| !c.is_stale() && !c.archived)
             })
             .cloned()
             .collect()
     };
+    // Publish the rendered order so click handling maps rows to the same list.
+    app.mouse.sidebar_display_order = display_order.clone();
 
     let now = chrono::Utc::now();
     let items: Vec<ListItem> = display_order
@@ -114,10 +117,32 @@ pub(super) fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if app.blocked_conversations.contains(id) {
                 spans.push(Span::styled(" x", Style::default().fg(theme.error)));
             }
+            // Archived marker: only visible when an archived conversation is
+            // shown anyway (active, or via the sidebar filter view).
+            if conv.archived {
+                spans.push(Span::styled(" a", Style::default().fg(theme.fg_muted)));
+            }
 
             ListItem::new(Line::from(spans))
         })
         .collect();
+
+    // Footer hint: how many conversations are hidden in the archive.
+    let mut items = items;
+    if !app.is_overlay(OverlayKind::SidebarFilter) {
+        let archived_count = app
+            .store
+            .conversations
+            .values()
+            .filter(|c| c.archived)
+            .count();
+        if archived_count > 0 {
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("  · {archived_count} archived (/_ to view)"),
+                Style::default().fg(theme.fg_muted),
+            ))));
+        }
+    }
 
     let border_side = if app.sidebar_on_right {
         Borders::LEFT
@@ -125,10 +150,10 @@ pub(super) fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         Borders::RIGHT
     };
     let title = if app.is_overlay(OverlayKind::SidebarFilter) {
-        if app.sidebar_filter.is_empty() {
+        if app.sidebar_filter.query.is_empty() {
             " /_ ".to_string()
         } else {
-            format!(" /{} ", app.sidebar_filter)
+            format!(" /{} ", app.sidebar_filter.query)
         }
     } else {
         " Chats ".to_string()

@@ -62,7 +62,8 @@ pub(in crate::ui) fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                     String::new()
                 };
                 let label_part = format!("  {icon}{}", action.label);
-                let hint_width = action.key_hint.len();
+                let hint_char = action.key_hint.key_char();
+                let hint_width = 1; // single-letter shortcut
                 let pad = content_width.saturating_sub(label_part.chars().count() + hint_width + 2);
                 let padding = " ".repeat(pad);
                 let row_style = if is_selected {
@@ -80,7 +81,7 @@ pub(in crate::ui) fn draw_group_menu(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{label_part}{padding}"), row_style),
-                    Span::styled(format!("{} ", action.key_hint), hint_style),
+                    Span::styled(format!("{hint_char} "), hint_style),
                 ]));
             }
             lines.push(Line::from(""));

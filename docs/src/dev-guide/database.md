@@ -28,7 +28,9 @@ CREATE TABLE conversations (
     muted             INTEGER NOT NULL DEFAULT 0,  -- added in migration v2
     expiration_timer  INTEGER NOT NULL DEFAULT 0,  -- disappearing msg seconds (v7)
     accepted          INTEGER NOT NULL DEFAULT 1,  -- message request state (v8)
-    blocked           INTEGER NOT NULL DEFAULT 0   -- blocked state (v9)
+    blocked           INTEGER NOT NULL DEFAULT 0,  -- blocked state (v9)
+    mute_expires_at   TEXT,                        -- timed mute expiry, RFC 3339 (v14)
+    archived          INTEGER NOT NULL DEFAULT 0   -- hidden from sidebar (v15)
 );
 ```
 
@@ -56,7 +58,12 @@ CREATE TABLE messages (
     quote_ts_ms     INTEGER,                        -- quoted reply timestamp (v6)
     sender_id            TEXT NOT NULL DEFAULT '',       -- sender phone number (v6)
     expires_in_seconds   INTEGER NOT NULL DEFAULT 0,    -- disappearing timer (v7)
-    expiration_start_ms  INTEGER NOT NULL DEFAULT 0     -- timer start epoch ms (v7)
+    expiration_start_ms  INTEGER NOT NULL DEFAULT 0,    -- timer start epoch ms (v7)
+    pinned               INTEGER NOT NULL DEFAULT 0,    -- pinned flag (v10)
+    poll_data            TEXT,                           -- serialized poll JSON (v11)
+    link_preview         TEXT,                           -- serialized preview JSON (v12)
+    body_raw             TEXT,                           -- body with mention placeholders (v13)
+    mentions_json        TEXT                            -- serialized mention ranges (v13)
 );
 
 CREATE INDEX idx_messages_conv_ts ON messages(conversation_id, timestamp);
@@ -85,6 +92,22 @@ CREATE TABLE reactions (
 CREATE INDEX idx_reactions_target ON reactions(conversation_id, target_ts_ms);
 ```
 
+### `poll_votes`
+
+Votes on poll messages, one row per voter per poll (v11).
+
+```sql
+CREATE TABLE poll_votes (
+    conv_id        TEXT NOT NULL,
+    poll_timestamp INTEGER NOT NULL,
+    voter          TEXT NOT NULL,
+    voter_name     TEXT,
+    option_indexes TEXT NOT NULL,
+    vote_count     INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(conv_id, poll_timestamp, voter)
+);
+```
+
 ### `read_markers`
 
 Tracks the last-read message per conversation for unread counting.
@@ -96,7 +119,9 @@ CREATE TABLE read_markers (
 );
 ```
 
-Unread count = messages with `rowid > last_read_rowid` and `is_system = 0`.
+Unread count = incoming messages with `rowid > last_read_rowid`, excluding
+system messages and your own sent messages. `/unread` moves the marker back
+so the newest incoming message counts as unread again.
 
 ## Migrations
 
@@ -113,6 +138,12 @@ Migrations are version-based and run sequentially in `Database::migrate()`:
 | 7 | Add `expiration_timer` to `conversations` and `expires_in_seconds`, `expiration_start_ms` to `messages` |
 | 8 | Add `accepted` column to `conversations` (message request tracking) |
 | 9 | Add `blocked` column to `conversations` (block/unblock state) |
+| 10 | Add `pinned` column to `messages` (pinned messages) |
+| 11 | Add `poll_data` column to `messages` and create `poll_votes` table (polls) |
+| 12 | Add `link_preview` column to `messages` (link preview persistence) |
+| 13 | Add `body_raw` and `mentions_json` columns to `messages` (mention re-resolution) |
+| 14 | Add `mute_expires_at` column to `conversations` (timed mutes) |
+| 15 | Add `archived` column to `conversations` (archive) |
 
 Each migration is wrapped in a transaction. The `schema_version` table tracks
 the current version.

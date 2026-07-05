@@ -7,9 +7,8 @@
 //! the persistent map and ordered sidebar list.
 
 use chrono::{DateTime, Utc};
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -21,20 +20,27 @@ pub use crate::conversation_store::{Conversation, DisplayMessage, Quote};
 use crate::conversation_store::{ConversationStore, db_warn};
 use crate::db::Database;
 use crate::domain::{
-    ActionMenuState, ContactsOverlayState, EmojiPickerAction, EmojiPickerSource, EmojiPickerState,
-    FilePickerState, ForwardOverlayState, GroupMenuOverlayState, ImageState, InputState,
-    KeybindingsOverlayState, LockState, MouseState, NotificationState, PendingState,
+    ActionMenuState, ContactsOverlayState, EmojiPickerState, FilePickerState, ForwardOverlayState,
+    GroupMenuOverlayState, ImageState, InputState, KeybindingsOverlayState, LockState, MediaState,
+    MouseState, NotificationState, PaletteItem, PaletteState, PendingState,
     PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, ScrollState,
-    SearchAction, SearchState, SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState,
-    TypingState, VerifyOverlayState,
+    SearchAction, SearchState, SettingsOverlayState, SettingsProfileOverlayState,
+    SidebarFilterState, ThemePickerState, TypingState, VerifyOverlayState,
+};
+// These value types were relocated into `domain` so the domain layer is a leaf
+// (#495). Re-export them here so existing `crate::app::*` references across the
+// handlers, UI, and main loop keep resolving unchanged.
+pub use crate::domain::{
+    GroupMenuState, ImageRenderResult, PinPending, PollVotePending, SendRequest, VisibleImage,
 };
 use crate::image_render;
 use crate::image_render::ImageProtocol;
 use crate::input::COMMANDS;
+use crate::input::{next_char_pos, prev_char_pos};
 use crate::keybindings::{self, BindingMode, KeyAction, KeyBindings};
-use crate::list_overlay::{self, ListKeyAction, classify_list_key};
+use crate::list_overlay;
 use crate::mute::MuteState;
-use crate::signal::types::{MessageStatus, PollOption, Reaction, SignalEvent, TrustLevel};
+use crate::signal::types::{MessageStatus, Reaction, SignalEvent, TrustLevel};
 use crate::theme::{self, Theme};
 
 /// Sentinel lifetime for paste temp files awaiting send confirmation from signal-cli.
@@ -44,24 +50,8 @@ pub const PASTE_CLEANUP_SENTINEL_SECS: u64 = 3600;
 /// How long after send confirmation to wait before deleting a paste temp file.
 pub(crate) const PASTE_CLEANUP_DELAY_SECS: u64 = 10;
 
-/// Find the byte position one character forward from `pos` in `buf`.
-fn next_char_pos(buf: &str, pos: usize) -> usize {
-    if pos >= buf.len() {
-        return buf.len();
-    }
-    pos + buf[pos..].chars().next().map_or(1, |c| c.len_utf8())
-}
-
-/// Find the byte position one character backward from `pos` in `buf`.
-fn prev_char_pos(buf: &str, pos: usize) -> usize {
-    if pos == 0 {
-        return 0;
-    }
-    pos - buf[..pos].chars().next_back().map_or(1, |c| c.len_utf8())
-}
-
 /// Snap a byte position to the nearest valid char boundary at or before `pos`.
-fn floor_char_boundary(buf: &str, pos: usize) -> usize {
+pub(crate) fn floor_char_boundary(buf: &str, pos: usize) -> usize {
     let pos = pos.min(buf.len());
     if buf.is_char_boundary(pos) {
         return pos;
@@ -131,7 +121,7 @@ impl App {
         let expiration_start_ms = msg.expiration_start_ms;
 
         // Insert into the in-memory store.
-        let insert_idx = {
+        let (insert_idx, unarchived) = {
             let conv = self.store.conversations.get_mut(conv_id)?;
             let pos = if ordered_insert {
                 conv.messages
@@ -140,8 +130,14 @@ impl App {
                 conv.messages.len()
             };
             conv.messages.insert(pos, msg);
-            pos
+            // Any new message pulls the conversation out of the archive (#611).
+            let unarchived = conv.archived;
+            conv.archived = false;
+            (pos, unarchived)
         };
+        if unarchived {
+            db_warn(self.db.set_archived(conv_id, false), "set_archived");
+        }
 
         // Bump the read marker when an ordered insert lands before it.
         if ordered_insert
@@ -229,6 +225,11 @@ pub(crate) fn show_desktop_notification(
         NotificationPreview::Sender => (sender_title(), "New message".to_string()),
         NotificationPreview::Full => (sender_title(), body.chars().take(100).collect()),
     };
+    // Sender/group names and message bodies are remote-controlled; strip
+    // control chars before handing them to the OS notification daemon, some of
+    // which interpret embedded escapes or markup (#504).
+    let title = crate::debug_log::strip_control_chars(&title, false);
+    let preview = crate::debug_log::strip_control_chars(&preview, false);
 
     tokio::task::spawn_blocking(move || {
         let _ = notify_rust::Notification::new()
@@ -271,34 +272,11 @@ pub enum OverlayKind {
     Customize,
     Settings,
     Autocomplete,
+    Palette,
 }
 
-/// An image visible on screen, for native protocol overlay rendering.
-#[derive(PartialEq, Eq)]
-pub struct VisibleImage {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
-    /// Total image height in cells (before viewport clipping).
-    pub full_height: u16,
-    /// Cells cropped from the top when the image is partially scrolled out.
-    pub crop_top: u16,
-    pub path: String,
-}
-
-/// Result from a background image render task.
-pub struct ImageRenderResult {
-    pub conv_id: String,
-    pub timestamp_ms: i64,
-    pub is_preview: bool,
-    pub lines: Option<Vec<Line<'static>>>,
-    pub image_path: Option<String>,
-    /// Pre-encoded PNG for native_image_cache: (path, base64, pixel_w, pixel_h)
-    pub pre_native_png: Option<(String, String, u32, u32)>,
-    /// Pre-encoded full Sixel for sixel_cache: (path, sixel_string)
-    pub pre_sixel: Option<(String, String)>,
-}
+// VisibleImage and ImageRenderResult moved to `domain::image` (#495);
+// re-exported from `crate::domain` below.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -306,23 +284,56 @@ pub enum InputMode {
     Insert,
 }
 
-/// Which sub-overlay of the /group menu is currently active.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GroupMenuState {
-    Menu,         // top-level flyout
-    Members,      // read-only member list
-    AddMember,    // contact picker (type-to-filter)
-    RemoveMember, // member picker (type-to-filter)
-    Rename,       // text input (pre-filled)
-    Create,       // text input (empty)
-    LeaveConfirm, // y/n confirmation
-}
+// GroupMenuState moved to `domain::overlays` (#495); re-exported below.
 
 /// An item in the group-menu overlay (Manage members / Rename / Leave / ...).
 pub struct GroupMenuItem {
     pub label: &'static str,
-    pub key_hint: &'static str,
+    pub key_hint: GroupMenuHint,
     pub nerd_icon: &'static str,
+}
+
+/// Compile-time-checked discriminator for the group menu, mirroring
+/// [`ActionMenuHint`]. Replaces the previous stringly-typed `key_hint` whose
+/// `transition_group_menu` match had a silent `_ => {}` fallthrough: a typo in
+/// either the builder or the dispatcher compiled fine and produced a menu item
+/// that did nothing. Now adding an entry forces the exhaustive match to handle
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMenuHint {
+    Members,
+    AddMember,
+    RemoveMember,
+    Rename,
+    Leave,
+    Create,
+}
+
+impl GroupMenuHint {
+    /// Single-letter shortcut, used both as the display hint and the binding.
+    pub fn key_char(self) -> char {
+        match self {
+            Self::Members => 'm',
+            Self::AddMember => 'a',
+            Self::RemoveMember => 'r',
+            Self::Rename => 'n',
+            Self::Leave => 'l',
+            Self::Create => 'c',
+        }
+    }
+
+    /// Parse a keypress into a hint, or `None` if it maps to no menu item.
+    pub fn from_char(c: char) -> Option<Self> {
+        Some(match c {
+            'm' => Self::Members,
+            'a' => Self::AddMember,
+            'r' => Self::RemoveMember,
+            'n' => Self::Rename,
+            'l' => Self::Leave,
+            'c' => Self::Create,
+            _ => return None,
+        })
+    }
 }
 
 /// An item in the per-message action-menu overlay (Reply / Edit / React / ...).
@@ -394,23 +405,8 @@ impl ActionMenuHint {
     }
 }
 
-/// Context saved when the pin duration picker is open (remembers which message is being pinned).
-pub struct PinPending {
-    pub conv_id: String,
-    pub is_group: bool,
-    pub target_author: String,
-    pub target_timestamp: i64,
-}
-
-/// Context saved when the poll vote overlay is open.
-pub struct PollVotePending {
-    pub conv_id: String,
-    pub is_group: bool,
-    pub poll_author: String,
-    pub poll_timestamp: i64,
-    pub allow_multiple: bool,
-    pub options: Vec<PollOption>,
-}
+// PinPending and PollVotePending moved to `domain::overlays` (#495);
+// re-exported below.
 
 /// Tracks the initial sync burst when the app starts.
 /// During sync, notifications and viewport jumps are suppressed.
@@ -488,10 +484,10 @@ pub struct App {
     pub sidebar_width: u16,
     /// Display sidebar on the right side instead of left
     pub sidebar_on_right: bool,
-    /// Current filter text for sidebar
-    pub sidebar_filter: String,
-    /// Filtered conversation IDs matching the filter
-    pub sidebar_filtered: Vec<String>,
+    /// Sidebar type-to-filter overlay state (query + matching IDs).
+    pub sidebar_filter: SidebarFilterState,
+    /// Fuzzy command palette overlay state (#614).
+    pub palette: PaletteState,
     /// Typing indicator state (inbound indicators + outbound typing tracking).
     pub typing: TypingState,
     /// Whether we are connected to signal-cli
@@ -532,9 +528,8 @@ pub struct App {
     pub prev_active_conversation: Option<String>,
     /// Incognito mode — in-memory DB, no local persistence
     pub incognito: bool,
-    /// Directory attachments are downloaded to. "Open attachment" refuses any
-    /// path outside this directory (message bodies are remote-controlled text).
-    pub download_dir: PathBuf,
+    /// Media handling: attachment download dir and voice playback override.
+    pub media: MediaState,
     /// Show date separator lines between messages from different days
     pub date_separators: bool,
     /// Show delivery/read receipt status symbols on outgoing messages
@@ -630,142 +625,22 @@ pub const PIN_DURATIONS: &[(i64, &str)] = &[
     (2592000, "30 days"),
 ];
 
-/// A request from the UI to the main loop to send something.
-pub enum SendRequest {
-    Message {
-        recipient: String,
-        body: String,
-        is_group: bool,
-        local_ts_ms: i64,
-        mentions: Vec<(usize, String)>,
-        attachment: Option<PathBuf>,
-        quote_timestamp: Option<i64>,
-        quote_author: Option<String>,
-        quote_body: Option<String>,
-    },
-    Reaction {
-        conv_id: String,
-        emoji: String,
-        is_group: bool,
-        target_author: String,
-        target_timestamp: i64,
-        remove: bool,
-    },
-    Edit {
-        recipient: String,
-        body: String,
-        is_group: bool,
-        edit_timestamp: i64,
-        local_ts_ms: i64,
-        mentions: Vec<(usize, String)>,
-        quote_timestamp: Option<i64>,
-        quote_author: Option<String>,
-        quote_body: Option<String>,
-    },
-    RemoteDelete {
-        recipient: String,
-        is_group: bool,
-        target_timestamp: i64,
-    },
-    Typing {
-        recipient: String,
-        is_group: bool,
-        stop: bool,
-    },
-    ReadReceipt {
-        recipient: String,
-        timestamps: Vec<i64>,
-    },
-    UpdateExpiration {
-        conv_id: String,
-        is_group: bool,
-        seconds: i64,
-    },
-    CreateGroup {
-        name: String,
-    },
-    AddGroupMembers {
-        group_id: String,
-        members: Vec<String>,
-    },
-    RemoveGroupMembers {
-        group_id: String,
-        members: Vec<String>,
-    },
-    RenameGroup {
-        group_id: String,
-        name: String,
-    },
-    LeaveGroup {
-        group_id: String,
-    },
-    MessageRequestResponse {
-        recipient: String,
-        is_group: bool,
-        response_type: String,
-    },
-    Block {
-        recipient: String,
-        is_group: bool,
-    },
-    Unblock {
-        recipient: String,
-        is_group: bool,
-    },
-    Pin {
-        recipient: String,
-        is_group: bool,
-        target_author: String,
-        target_timestamp: i64,
-        pin_duration: i64,
-    },
-    Unpin {
-        recipient: String,
-        is_group: bool,
-        target_author: String,
-        target_timestamp: i64,
-    },
-    PollCreate {
-        recipient: String,
-        is_group: bool,
-        question: String,
-        options: Vec<String>,
-        allow_multiple: bool,
-        local_ts_ms: i64,
-    },
-    PollVote {
-        recipient: String,
-        is_group: bool,
-        poll_author: String,
-        poll_timestamp: i64,
-        option_indexes: Vec<i64>,
-        vote_count: i64,
-    },
-    PollTerminate {
-        recipient: String,
-        is_group: bool,
-        poll_timestamp: i64,
-    },
-    ListIdentities,
-    TrustIdentity {
-        recipient: String,
-        safety_number: String,
-    },
-    UpdateProfile {
-        given_name: String,
-        family_name: String,
-        about: String,
-        about_emoji: String,
-    },
-}
+// SendRequest moved to `domain::send` so domain stays a leaf layer (#495).
+// Re-exported below from `crate::domain` alongside the other moved value types.
 
-/// A single settings toggle entry: label, getter, setter, and optional config persistence.
+/// A single settings toggle entry: label, getter, setter, and optional config
+/// persistence. `save` (App -> Config) and `load` (Config -> App) are a pair:
+/// a persisted setting must be loadable and vice versa, or it silently works in
+/// only one direction (#498). The pairing is enforced by a test, and startup
+/// applies `load` through [`App::apply_settings_from_config`] rather than
+/// hand-copying each field.
 pub struct SettingDef {
     pub label: &'static str,
     pub hint: &'static str,
     get: fn(&App) -> bool,
     set: fn(&mut App, bool),
     save: Option<fn(&mut crate::config::Config, bool)>,
+    load: Option<fn(&crate::config::Config) -> bool>,
 }
 
 /// Section boundary indices within the SETTINGS array.
@@ -796,6 +671,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.notify_direct,
         set: |a, v| a.notifications.notify_direct = v,
         save: Some(|c, v| c.notify_direct = v),
+        load: Some(|c| c.notify_direct),
     },
     SettingDef {
         label: "Group message notifications",
@@ -803,6 +679,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.notify_group,
         set: |a, v| a.notifications.notify_group = v,
         save: Some(|c, v| c.notify_group = v),
+        load: Some(|c| c.notify_group),
     },
     SettingDef {
         label: "Desktop notifications",
@@ -810,6 +687,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.notifications.desktop_notifications,
         set: |a, v| a.notifications.desktop_notifications = v,
         save: Some(|c, v| c.desktop_notifications = v),
+        load: Some(|c| c.desktop_notifications),
     },
     // — Display (3–8) —
     SettingDef {
@@ -818,6 +696,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.image.show_link_previews,
         set: |a, v| a.image.show_link_previews = v,
         save: Some(|c, v| c.show_link_previews = v),
+        load: Some(|c| c.show_link_previews),
     },
     SettingDef {
         label: "Date separators",
@@ -825,6 +704,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.date_separators,
         set: |a, v| a.date_separators = v,
         save: Some(|c, v| c.date_separators = v),
+        load: Some(|c| c.date_separators),
     },
     SettingDef {
         label: "Read receipts",
@@ -832,6 +712,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.show_receipts,
         set: |a, v| a.show_receipts = v,
         save: Some(|c, v| c.show_receipts = v),
+        load: Some(|c| c.show_receipts),
     },
     SettingDef {
         label: "Receipt colors",
@@ -839,6 +720,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.color_receipts,
         set: |a, v| a.color_receipts = v,
         save: Some(|c, v| c.color_receipts = v),
+        load: Some(|c| c.color_receipts),
     },
     SettingDef {
         label: "Nerd Font icons",
@@ -846,6 +728,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.nerd_fonts,
         set: |a, v| a.nerd_fonts = v,
         save: Some(|c, v| c.nerd_fonts = v),
+        load: Some(|c| c.nerd_fonts),
     },
     SettingDef {
         label: "Emoji to text",
@@ -853,6 +736,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.emoji_to_text,
         set: |a, v| a.reactions.emoji_to_text = v,
         save: Some(|c, v| c.emoji_to_text = v),
+        load: Some(|c| c.emoji_to_text),
     },
     // — Messages (9–11) —
     SettingDef {
@@ -861,6 +745,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.show_reactions,
         set: |a, v| a.reactions.show_reactions = v,
         save: Some(|c, v| c.show_reactions = v),
+        load: Some(|c| c.show_reactions),
     },
     SettingDef {
         label: "Verbose reactions",
@@ -868,6 +753,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.reactions.verbose,
         set: |a, v| a.reactions.verbose = v,
         save: Some(|c, v| c.reaction_verbose = v),
+        load: Some(|c| c.reaction_verbose),
     },
     SettingDef {
         label: "Send read receipts",
@@ -875,6 +761,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.send_read_receipts,
         set: |a, v| a.send_read_receipts = v,
         save: Some(|c, v| c.send_read_receipts = v),
+        load: Some(|c| c.send_read_receipts),
     },
     // — Interface (12–14) —
     SettingDef {
@@ -883,6 +770,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.sidebar_visible,
         set: |a, v| a.sidebar_visible = v,
         save: None, // runtime-only, not persisted
+        load: None,
     },
     SettingDef {
         label: "Mouse support",
@@ -890,6 +778,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.mouse.enabled,
         set: |a, v| a.mouse.enabled = v,
         save: Some(|c, v| c.mouse_enabled = v),
+        load: Some(|c| c.mouse_enabled),
     },
     SettingDef {
         label: "Sidebar on right",
@@ -897,6 +786,7 @@ pub const SETTINGS: &[SettingDef] = &[
         get: |a| a.sidebar_on_right,
         set: |a, v| a.sidebar_on_right = v,
         save: Some(|c, v| c.sidebar_on_right = v),
+        load: Some(|c| c.sidebar_on_right),
     },
 ];
 
@@ -908,12 +798,24 @@ impl App {
         }
     }
 
+    /// Apply every table-driven toggle from `config` into this `App`. The
+    /// inverse of the `save` loop in `save_settings`; both go through the same
+    /// SETTINGS table so a new toggle cannot silently load or persist in only
+    /// one direction (#498).
+    pub fn apply_settings_from_config(&mut self, config: &crate::config::Config) {
+        for def in SETTINGS {
+            if let Some(load) = def.load {
+                (def.set)(self, load(config));
+            }
+        }
+    }
+
     pub fn setting_value(&self, index: usize) -> bool {
         SETTINGS.get(index).is_some_and(|def| (def.get)(self))
     }
 
     /// Persist current settings to the config file.
-    fn save_settings(&self) {
+    pub(crate) fn save_settings(&self) {
         if self.is_demo {
             return;
         }
@@ -1007,6 +909,27 @@ impl App {
             .preview_image_max_width
             .min(pane_width_cap)
             .max(1);
+
+        // Skip the viewport scan when nothing that affects it has changed since
+        // the last scan. ensure_active_images runs every 50ms tick; without this
+        // gate it rescans up to 60 messages and rebuilds probe keys on every idle
+        // frame (#492). The signature observes the scan's inputs directly (conv,
+        // scroll, message count, image settings) so it can't miss a trigger the
+        // way per-mutation dirty flags can. A completed background render
+        // (`drained`) frees an in-flight slot, so always rescan after one.
+        let signature = (
+            id.clone(),
+            self.scroll.offset,
+            len,
+            self.image.image_mode,
+            self.image.show_link_previews,
+            self.image.render_width_cap,
+        );
+        if !drained && self.image.scan_signature.as_ref() == Some(&signature) {
+            return drained;
+        }
+        self.image.scan_signature = Some(signature);
+
         let end = len
             .saturating_sub(self.scroll.offset.saturating_sub(5))
             .min(len);
@@ -1086,6 +1009,25 @@ impl App {
             }
         }
 
+        // Evict cached image_lines for messages before the render window so they
+        // don't accumulate across a long scrolling session (#492). Those messages
+        // are never drawn this frame (chat_pane records render_window_start), and
+        // they regenerate via the work path above if scrolled back into view.
+        let evict_before = self.scroll.render_window_start.min(start);
+        if evict_before > 0
+            && let Some(conv) = self.store.conversations.get_mut(&id)
+        {
+            let upto = evict_before.min(conv.messages.len());
+            for msg in &mut conv.messages[..upto] {
+                if msg.image_lines.is_some() {
+                    msg.image_lines = None;
+                }
+                if msg.preview_image_lines.is_some() {
+                    msg.preview_image_lines = None;
+                }
+            }
+        }
+
         // Spawn background render tasks
         let cell_px = self.image.cell_px;
         let sixel_encode = self.image.sixel_encode;
@@ -1153,91 +1095,17 @@ impl App {
     /// Navigation follows SETTINGS_VISUAL_ORDER so j/k matches the visual layout.
     /// After toggles: Preview at SETTINGS.len(), Image mode at +1, Customize at +2.
     pub fn handle_settings_key(&mut self, code: KeyCode) {
-        let preview_index = SETTINGS.len();
-        let image_mode_index = SETTINGS.len() + 1;
-        let customize_index = SETTINGS.len() + 2;
-
-        // Find current position in visual order
-        let visual_pos = SETTINGS_VISUAL_ORDER
-            .iter()
-            .position(|&i| i == self.settings_overlay.index)
-            .unwrap_or(0);
-
-        match code {
-            KeyCode::Char('j') | KeyCode::Down if visual_pos + 1 < SETTINGS_VISUAL_ORDER.len() => {
-                self.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos + 1];
-            }
-            KeyCode::Char('k') | KeyCode::Up if visual_pos > 0 => {
-                self.settings_overlay.index = SETTINGS_VISUAL_ORDER[visual_pos - 1];
-            }
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
-                if self.settings_overlay.index == preview_index {
-                    self.notifications.notification_preview =
-                        self.notifications.notification_preview.cycle();
-                } else if self.settings_overlay.index == image_mode_index {
-                    self.image.image_mode = self.image.image_mode.cycle();
-                } else if self.settings_overlay.index == customize_index {
-                    self.open_overlay(OverlayKind::Customize);
-                    self.settings_overlay.customize_index = 0;
-                } else {
-                    self.toggle_setting(self.settings_overlay.index);
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.close_overlay();
-                self.save_settings();
-                self.fire_deferred_settings_hooks();
-            }
-            _ => {}
-        }
+        crate::handlers::keys::handle_settings_key(self, code)
     }
 
     /// Handle a key press in the Customize sub-menu (Theme, Keybindings, Profile).
     pub fn handle_customize_key(&mut self, code: KeyCode) {
-        const ITEMS: usize = 3; // Theme, Keybindings, Profile
-        match code {
-            KeyCode::Char('j') | KeyCode::Down
-                if self.settings_overlay.customize_index + 1 < ITEMS =>
-            {
-                self.settings_overlay.customize_index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.settings_overlay.customize_index =
-                    self.settings_overlay.customize_index.saturating_sub(1);
-            }
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Tab => {
-                self.close_overlay();
-                self.save_settings();
-                match self.settings_overlay.customize_index {
-                    0 => {
-                        self.open_overlay(OverlayKind::ThemePicker);
-                        self.theme_picker.index = self
-                            .theme_picker
-                            .available_themes
-                            .iter()
-                            .position(|t| t.name == self.theme.name)
-                            .unwrap_or(0);
-                    }
-                    1 => {
-                        self.open_overlay(OverlayKind::Keybindings);
-                        self.keybindings_overlay.index = 0;
-                    }
-                    2 => {
-                        self.open_settings_profile_manager();
-                    }
-                    _ => {}
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.close_overlay();
-            }
-            _ => {}
-        }
+        crate::handlers::keys::handle_customize_key(self, code)
     }
 
     /// Apply a profile without firing expensive hooks (image re-rendering).
     /// Hooks fire when the overlay closes (settings or profile manager Esc handler).
-    fn apply_settings_profile_deferred(
+    pub(crate) fn apply_settings_profile_deferred(
         &mut self,
         profile: &crate::settings_profile::SettingsProfile,
     ) {
@@ -1249,14 +1117,14 @@ impl App {
     /// Currently just the mouse-capture toggle: applying it immediately on each
     /// keystroke would clobber input mid-edit, so we queue the new state and
     /// `main.rs` flips the terminal mode on the next tick.
-    fn fire_deferred_settings_hooks(&mut self) {
+    pub(crate) fn fire_deferred_settings_hooks(&mut self) {
         if self.mouse.enabled != self.settings_overlay.mouse_snapshot {
             self.mouse.pending_toggle = Some(self.mouse.enabled);
         }
     }
 
     /// Open the settings profile manager overlay.
-    fn open_settings_profile_manager(&mut self) {
+    pub(crate) fn open_settings_profile_manager(&mut self) {
         self.settings_profiles.available = crate::settings_profile::all_settings_profiles();
         self.settings_profiles.index = self
             .settings_profiles
@@ -1272,368 +1140,22 @@ impl App {
 
     /// Handle a key press while the settings profile manager is open.
     pub fn handle_settings_profile_manager_key(&mut self, code: KeyCode) {
-        // Save-as text input mode
-        if self.settings_profiles.save_as {
-            match code {
-                KeyCode::Enter => {
-                    let name = self.settings_profiles.save_as_input.trim().to_string();
-                    if name.is_empty() {
-                        self.status_message = "Profile name cannot be empty".to_string();
-                    } else if crate::settings_profile::is_builtin(&name) {
-                        self.status_message = "Cannot overwrite built-in profile".to_string();
-                    } else {
-                        let profile =
-                            crate::settings_profile::SettingsProfile::from_app(self, name.clone());
-                        match crate::settings_profile::save_custom_profile(&profile) {
-                            Ok(()) => {
-                                self.settings_profiles.name = name;
-                                self.settings_profiles.available =
-                                    crate::settings_profile::all_settings_profiles();
-                                self.settings_profiles.index = self
-                                    .settings_profiles
-                                    .available
-                                    .iter()
-                                    .position(|p| p.name == self.settings_profiles.name)
-                                    .unwrap_or(0);
-                                self.save_settings();
-                                self.status_message = "Profile saved".to_string();
-                            }
-                            Err(e) => {
-                                self.status_message = format!("Save failed: {e}");
-                            }
-                        }
-                        self.settings_profiles.save_as = false;
-                    }
-                }
-                KeyCode::Esc => {
-                    self.settings_profiles.save_as = false;
-                }
-                KeyCode::Backspace => {
-                    self.settings_profiles.save_as_input.pop();
-                }
-                KeyCode::Char(c) if self.settings_profiles.save_as_input.len() < 30 => {
-                    self.settings_profiles.save_as_input.push(c);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // List navigation mode
-        match code {
-            KeyCode::Char('j') | KeyCode::Down
-                if self.settings_profiles.index
-                    < self.settings_profiles.available.len().saturating_sub(1) =>
-            {
-                self.settings_profiles.index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.settings_profiles.index = self.settings_profiles.index.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                // Load the selected profile (stay open for preview)
-                if let Some(profile) = self
-                    .settings_profiles
-                    .available
-                    .get(self.settings_profiles.index)
-                    .cloned()
-                {
-                    self.apply_settings_profile_deferred(&profile);
-                    self.save_settings();
-                    self.status_message = format!("Loaded profile: {}", profile.name);
-                }
-            }
-            KeyCode::Char('s') => {
-                // Save over current custom profile (only if custom and settings differ)
-                if let Some(profile) = self
-                    .settings_profiles
-                    .available
-                    .get(self.settings_profiles.index)
-                {
-                    if crate::settings_profile::is_builtin(&profile.name) {
-                        return;
-                    }
-                    if profile.matches_app(self) {
-                        return;
-                    }
-                    let updated = crate::settings_profile::SettingsProfile::from_app(
-                        self,
-                        profile.name.clone(),
-                    );
-                    match crate::settings_profile::save_custom_profile(&updated) {
-                        Ok(()) => {
-                            self.settings_profiles.name = updated.name.clone();
-                            self.settings_profiles.available =
-                                crate::settings_profile::all_settings_profiles();
-                            self.settings_profiles.index = self
-                                .settings_profiles
-                                .available
-                                .iter()
-                                .position(|p| p.name == self.settings_profiles.name)
-                                .unwrap_or(0);
-                            self.save_settings();
-                            self.status_message = "Profile saved".to_string();
-                        }
-                        Err(e) => {
-                            self.status_message = format!("Save failed: {e}");
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('S') => {
-                // Save-as: open name input
-                let has_changes = !self
-                    .settings_profiles
-                    .available
-                    .iter()
-                    .any(|p| p.name == self.settings_profiles.name && p.matches_app(self));
-                if has_changes {
-                    self.settings_profiles.save_as = true;
-                    self.settings_profiles.save_as_input.clear();
-                }
-            }
-            KeyCode::Char('d') => {
-                // Delete custom profile
-                if let Some(profile) = self
-                    .settings_profiles
-                    .available
-                    .get(self.settings_profiles.index)
-                {
-                    if crate::settings_profile::is_builtin(&profile.name) {
-                        return;
-                    }
-                    let name = profile.name.clone();
-                    match crate::settings_profile::delete_custom_profile(&name) {
-                        Ok(()) => {
-                            if self.settings_profiles.name == name {
-                                self.settings_profiles.name = "Default".to_string();
-                            }
-                            self.settings_profiles.available =
-                                crate::settings_profile::all_settings_profiles();
-                            if self.settings_profiles.index
-                                >= self.settings_profiles.available.len()
-                            {
-                                self.settings_profiles.index =
-                                    self.settings_profiles.available.len().saturating_sub(1);
-                            }
-                            self.save_settings();
-                            self.status_message = format!("Deleted profile: {name}");
-                        }
-                        Err(e) => {
-                            self.status_message = format!("Delete failed: {e}");
-                        }
-                    }
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.close_overlay();
-                self.fire_deferred_settings_hooks();
-            }
-            _ => {}
-        }
+        crate::handlers::keys::handle_settings_profile_manager_key(self, code)
     }
 
     /// Handle a key press while the theme picker overlay is open.
     pub fn handle_theme_key(&mut self, code: KeyCode) {
-        // Theme-specific: space selects, q closes
-        let code = match code {
-            KeyCode::Char(' ') => KeyCode::Enter,
-            KeyCode::Char('q') => KeyCode::Esc,
-            other => other,
-        };
-        let action = classify_list_key(code, false);
-        if list_overlay::apply_nav(
-            &action,
-            &mut self.theme_picker.index,
-            self.theme_picker.available_themes.len(),
-        ) {
-            return;
-        }
-        match action {
-            ListKeyAction::Select => {
-                if let Some(selected) = self
-                    .theme_picker
-                    .available_themes
-                    .get(self.theme_picker.index)
-                {
-                    self.theme = selected.clone();
-                    self.save_settings();
-                }
-                self.close_overlay();
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-            }
-            _ => {}
-        }
+        crate::handlers::keys::handle_theme_key(self, code)
     }
 
     /// Handle a key press while the keybindings overlay is open.
     pub fn handle_keybindings_key(&mut self, code: KeyCode) {
-        if self.keybindings_overlay.profile_picker {
-            match code {
-                KeyCode::Char('j') | KeyCode::Down
-                    if self.keybindings_overlay.profile_index
-                        < self
-                            .keybindings_overlay
-                            .available_profiles
-                            .len()
-                            .saturating_sub(1) =>
-                {
-                    self.keybindings_overlay.profile_index += 1;
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.keybindings_overlay.profile_index =
-                        self.keybindings_overlay.profile_index.saturating_sub(1);
-                }
-                KeyCode::Char(' ') | KeyCode::Enter => {
-                    if let Some(name) = self
-                        .keybindings_overlay
-                        .available_profiles
-                        .get(self.keybindings_overlay.profile_index)
-                    {
-                        let mut kb = keybindings::find_profile(name);
-                        let overrides = keybindings::load_overrides();
-                        kb.apply_overrides(&overrides);
-                        self.keybindings = kb;
-                        self.save_settings();
-                    }
-                    self.keybindings_overlay.profile_picker = false;
-                }
-                KeyCode::Esc => {
-                    self.keybindings_overlay.profile_picker = false;
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if let Some((displaced_action, _combo)) = self.keybindings_overlay.conflict.take() {
-            match code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    // Accept: the displaced action loses its binding
-                    self.status_message = format!(
-                        "{} is now unbound",
-                        keybindings::action_label(displaced_action)
-                    );
-                }
-                _ => {
-                    // Undo the rebind — restore both
-                    let (mode, action) =
-                        self.keybindings_overlay_item(self.keybindings_overlay.index);
-                    if let Some(action) = action {
-                        self.keybindings.reset_action(mode, action);
-                        self.keybindings.reset_action(mode, displaced_action);
-                    }
-                    self.status_message.clear();
-                }
-            }
-            return;
-        }
-
-        let total = self.keybindings_overlay_total();
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.keybindings_overlay.index < total.saturating_sub(1) {
-                    self.keybindings_overlay.index += 1;
-                }
-                // Skip section headers
-                while self.keybindings_overlay.index < total
-                    && self
-                        .keybindings_overlay_item(self.keybindings_overlay.index)
-                        .1
-                        .is_none()
-                {
-                    self.keybindings_overlay.index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.keybindings_overlay.index = self.keybindings_overlay.index.saturating_sub(1);
-                // Skip section headers (index 0 is the profile row — always selectable)
-                while self.keybindings_overlay.index > 0
-                    && self
-                        .keybindings_overlay_item(self.keybindings_overlay.index)
-                        .1
-                        .is_none()
-                {
-                    self.keybindings_overlay.index =
-                        self.keybindings_overlay.index.saturating_sub(1);
-                }
-            }
-            KeyCode::Enter => {
-                if self.keybindings_overlay.index == 0 {
-                    // Profile row → open profile picker
-                    self.keybindings_overlay.profile_picker = true;
-                    self.keybindings_overlay.profile_index = self
-                        .keybindings_overlay
-                        .available_profiles
-                        .iter()
-                        .position(|n| *n == self.keybindings.profile_name)
-                        .unwrap_or(0);
-                } else {
-                    let (_, action) = self.keybindings_overlay_item(self.keybindings_overlay.index);
-                    if action.is_some() {
-                        self.keybindings_overlay.capturing = true;
-                        self.status_message = "Press a key combo...".to_string();
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                // Reset to profile default
-                let (mode, action) = self.keybindings_overlay_item(self.keybindings_overlay.index);
-                if let Some(action) = action {
-                    self.keybindings.reset_action(mode, action);
-                    self.status_message = format!("Reset {}", keybindings::action_label(action));
-                }
-            }
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.close_overlay();
-                self.save_settings();
-            }
-            _ => {}
-        }
+        crate::handlers::keys::handle_keybindings_key(self, code)
     }
 
     /// Handle keybinding capture: intercepts ALL keys when capturing a new binding.
     pub fn handle_keybinding_capture(&mut self, modifiers: KeyModifiers, code: KeyCode) {
-        if code == KeyCode::Esc && modifiers == KeyModifiers::NONE {
-            self.keybindings_overlay.capturing = false;
-            self.status_message.clear();
-            return;
-        }
-
-        let (mode, action) = self.keybindings_overlay_item(self.keybindings_overlay.index);
-        let Some(action) = action else {
-            self.keybindings_overlay.capturing = false;
-            return;
-        };
-
-        // Strip SHIFT for Char keys — case is encoded in the character itself
-        let modifiers = if matches!(code, KeyCode::Char(_)) {
-            modifiers - KeyModifiers::SHIFT
-        } else {
-            modifiers
-        };
-        let combo = keybindings::KeyCombo { modifiers, code };
-        let displaced = self.keybindings.rebind(mode, action, combo.clone());
-        self.keybindings_overlay.capturing = false;
-
-        if let Some(displaced_action) = displaced
-            && displaced_action != action
-        {
-            self.status_message = format!(
-                "'{}' was bound to {}. Accept? (y/n)",
-                keybindings::format_key_combo(&combo),
-                keybindings::action_label(displaced_action)
-            );
-            self.keybindings_overlay.conflict = Some((displaced_action, combo));
-            return;
-        }
-        self.status_message = format!(
-            "{} → {}",
-            keybindings::action_label(action),
-            keybindings::format_key_combo(&combo)
-        );
+        crate::handlers::keys::handle_keybinding_capture(self, modifiers, code)
     }
 
     /// Total number of rows in the keybindings overlay (profile + sections + actions).
@@ -1694,27 +1216,150 @@ impl App {
 
     /// Build the filtered contacts list from contact_names using the current filter.
     pub fn refresh_contacts_filter(&mut self) {
-        let filter_lower = self.contacts_overlay.filter.to_lowercase();
-        let mut contacts: Vec<(String, String)> = self
+        let pairs: Vec<(String, String)> = self
             .store
             .contact_names
             .iter()
             .filter(|(_, name)| !name.is_empty())
-            .filter(|(number, name)| {
-                if filter_lower.is_empty() {
-                    return true;
-                }
-                name.to_lowercase().contains(&filter_lower)
-                    || number.to_lowercase().contains(&filter_lower)
-            })
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
-        contacts.sort_by_key(|a| a.1.to_lowercase());
-        self.contacts_overlay.filtered = contacts;
+        self.contacts_overlay.filtered =
+            list_overlay::filter_name_number_pairs(pairs, &self.contacts_overlay.filter);
         list_overlay::clamp_index(
             &mut self.contacts_overlay.index,
             self.contacts_overlay.filtered.len(),
         );
+    }
+
+    /// Drain the background `/preview` fetch, if one is running (#267).
+    /// Returns true when a result was applied (so the caller can redraw).
+    pub fn poll_preview_fetch(&mut self) -> bool {
+        let Some(rx) = &self.media.preview_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(Ok(preview)) => {
+                self.status_message = format!(
+                    "preview ready: {} (sends with your next message; /preview to discard)",
+                    preview.title.as_deref().unwrap_or(&preview.url)
+                );
+                self.media.pending_preview = Some(preview);
+                self.media.preview_rx = None;
+                true
+            }
+            Ok(Err(e)) => {
+                self.status_message = format!("preview failed: {e}");
+                self.media.preview_rx = None;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status_message = "preview failed: fetch thread died".to_string();
+                self.media.preview_rx = None;
+                true
+            }
+        }
+    }
+
+    /// Kill and reap the voice player child, if one is playing (#618).
+    /// Returns true when something was actually stopped.
+    pub(crate) fn stop_voice_playback(&mut self) -> bool {
+        if let Some(mut playing) = self.media.playing.take() {
+            let _ = playing.child.kill();
+            let _ = playing.child.wait();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Advance voice-playback bookkeeping each tick (#618): reap the player
+    /// when it exits and keep the status-bar progress line fresh. Returns
+    /// true when the status line changed (so the caller redraws).
+    pub fn tick_voice_playback(&mut self) -> bool {
+        let Some(playing) = &mut self.media.playing else {
+            return false;
+        };
+        if matches!(playing.child.try_wait(), Ok(Some(_))) {
+            self.media.playing = None;
+            self.update_status();
+            return true;
+        }
+        let elapsed = playing.started.elapsed();
+        let line = match playing.duration {
+            Some(total) => format!(
+                "playing {} {} / {} (o to stop)",
+                playing.label,
+                crate::audio::format_mmss(elapsed.min(total)),
+                crate::audio::format_mmss(total)
+            ),
+            None => format!(
+                "playing {} {} (o to stop)",
+                playing.label,
+                crate::audio::format_mmss(elapsed)
+            ),
+        };
+        if self.status_message != line {
+            self.status_message = line;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Open the fuzzy command palette (#614).
+    pub(crate) fn open_palette(&mut self) {
+        self.palette.query.clear();
+        self.palette.index = 0;
+        self.refresh_palette_filter();
+        self.open_overlay(OverlayKind::Palette);
+    }
+
+    /// Rebuild the palette's filtered list: conversations and commands scored
+    /// against the query, best match first. With an empty query every item
+    /// scores 0 and the stable sort keeps conversations (in sidebar order)
+    /// ahead of the command list.
+    pub(crate) fn refresh_palette_filter(&mut self) {
+        let query = self.palette.query.clone();
+        // (score, kind_rank, item); kind_rank breaks score ties in favor of
+        // conversations, since jump-to-chat is the common palette use.
+        let mut scored: Vec<(i64, i64, PaletteItem)> = Vec::new();
+        for id in &self.store.conversation_order {
+            let Some(conv) = self.store.conversations.get(id) else {
+                continue;
+            };
+            if conv.is_stale() {
+                continue;
+            }
+            if let Some(score) = list_overlay::fuzzy_score(&query, &conv.name) {
+                scored.push((
+                    score,
+                    1,
+                    PaletteItem::Conversation {
+                        id: id.clone(),
+                        name: conv.name.clone(),
+                        is_group: conv.is_group,
+                    },
+                ));
+            }
+        }
+        for cmd in crate::input::COMMANDS {
+            let haystack = format!("{} {}", cmd.name, cmd.description);
+            if let Some(score) = list_overlay::fuzzy_score(&query, &haystack) {
+                scored.push((
+                    score,
+                    0,
+                    PaletteItem::Command {
+                        name: cmd.name,
+                        args: cmd.args,
+                        description: cmd.description,
+                    },
+                ));
+            }
+        }
+        scored.sort_by_key(|item| (std::cmp::Reverse(item.0), std::cmp::Reverse(item.1)));
+        self.palette.filtered = scored.into_iter().map(|(_, _, item)| item).collect();
+        list_overlay::clamp_index(&mut self.palette.index, self.palette.filtered.len());
     }
 
     /// Build the list of available group menu actions (context-dependent).
@@ -1728,34 +1373,34 @@ impl App {
             vec![
                 GroupMenuItem {
                     label: "Members",
-                    key_hint: "m",
+                    key_hint: GroupMenuHint::Members,
                     nerd_icon: "\u{f0849}",
                 },
                 GroupMenuItem {
                     label: "Add member",
-                    key_hint: "a",
+                    key_hint: GroupMenuHint::AddMember,
                     nerd_icon: "\u{f0234}",
                 },
                 GroupMenuItem {
                     label: "Remove member",
-                    key_hint: "r",
+                    key_hint: GroupMenuHint::RemoveMember,
                     nerd_icon: "\u{f0235}",
                 },
                 GroupMenuItem {
                     label: "Rename",
-                    key_hint: "n",
+                    key_hint: GroupMenuHint::Rename,
                     nerd_icon: "\u{f03eb}",
                 },
                 GroupMenuItem {
                     label: "Leave",
-                    key_hint: "l",
+                    key_hint: GroupMenuHint::Leave,
                     nerd_icon: "\u{f0a79}",
                 },
             ]
         } else {
             vec![GroupMenuItem {
                 label: "Create group",
-                key_hint: "c",
+                key_hint: GroupMenuHint::Create,
                 nerd_icon: "\u{f0234}",
             }]
         }
@@ -1763,47 +1408,34 @@ impl App {
 
     /// Build filtered contacts list for the "Add member" picker (excludes existing group members).
     pub fn refresh_group_add_filter(&mut self) {
-        let filter_lower = self.group_menu.filter.to_lowercase();
         let existing_members: HashSet<&str> = self
             .active_conversation
             .as_ref()
             .and_then(|id| self.store.groups.get(id))
             .map(|g| g.members.iter().map(|s| s.as_str()).collect())
             .unwrap_or_default();
-        let mut contacts: Vec<(String, String)> = self
+        let pairs: Vec<(String, String)> = self
             .store
             .contact_names
             .iter()
             .filter(|(_, name)| !name.is_empty())
             .filter(|(number, _)| !existing_members.contains(number.as_str()))
-            .filter(|(number, name)| {
-                if filter_lower.is_empty() {
-                    return true;
-                }
-                name.to_lowercase().contains(&filter_lower)
-                    || number.to_lowercase().contains(&filter_lower)
-            })
             .map(|(number, name)| (number.clone(), name.clone()))
             .collect();
-        contacts.sort_by_key(|a| a.1.to_lowercase());
-        self.group_menu.filtered = contacts;
-        if self.group_menu.filtered.is_empty() {
-            self.group_menu.index = 0;
-        } else if self.group_menu.index >= self.group_menu.filtered.len() {
-            self.group_menu.index = self.group_menu.filtered.len() - 1;
-        }
+        self.group_menu.filtered =
+            list_overlay::filter_name_number_pairs(pairs, &self.group_menu.filter);
+        list_overlay::clamp_index(&mut self.group_menu.index, self.group_menu.filtered.len());
     }
 
     /// Build filtered member list for the "Remove member" picker (excludes self).
     pub fn refresh_group_remove_filter(&mut self) {
-        let filter_lower = self.group_menu.filter.to_lowercase();
         let members: Vec<String> = self
             .active_conversation
             .as_ref()
             .and_then(|id| self.store.groups.get(id))
             .map(|g| g.members.clone())
             .unwrap_or_default();
-        let mut result: Vec<(String, String)> = members
+        let pairs: Vec<(String, String)> = members
             .into_iter()
             .filter(|phone| *phone != self.account)
             .map(|phone| {
@@ -1815,259 +1447,24 @@ impl App {
                     .unwrap_or_else(|| phone.clone());
                 (phone, name)
             })
-            .filter(|(phone, name)| {
-                if filter_lower.is_empty() {
-                    return true;
-                }
-                name.to_lowercase().contains(&filter_lower)
-                    || phone.to_lowercase().contains(&filter_lower)
-            })
             .collect();
-        result.sort_by_key(|a| a.1.to_lowercase());
-        self.group_menu.filtered = result;
-        if self.group_menu.filtered.is_empty() {
-            self.group_menu.index = 0;
-        } else if self.group_menu.index >= self.group_menu.filtered.len() {
-            self.group_menu.index = self.group_menu.filtered.len() - 1;
-        }
+        self.group_menu.filtered =
+            list_overlay::filter_name_number_pairs(pairs, &self.group_menu.filter);
+        list_overlay::clamp_index(&mut self.group_menu.index, self.group_menu.filtered.len());
     }
 
     /// Handle a key press while the group management menu is open.
     pub fn handle_group_menu_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let state = self.group_menu.state.clone()?;
-        match state {
-            GroupMenuState::Menu => {
-                let items = self.group_menu_items();
-                let item_count = items.len();
-                match code {
-                    KeyCode::Char('j') | KeyCode::Down
-                        if self.group_menu.index < item_count.saturating_sub(1) =>
-                    {
-                        self.group_menu.index += 1;
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
-                    }
-                    KeyCode::Enter => {
-                        if let Some(action) = items.get(self.group_menu.index) {
-                            self.transition_group_menu(action.key_hint);
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        let hint = match c {
-                            'm' => "m",
-                            'a' => "a",
-                            'r' => "r",
-                            'n' => "n",
-                            'l' => "l",
-                            'c' => "c",
-                            _ => "",
-                        };
-                        if !hint.is_empty() && items.iter().any(|a| a.key_hint == hint) {
-                            self.transition_group_menu(hint);
-                        }
-                    }
-                    KeyCode::Esc => {
-                        self.group_menu.state = None;
-                        self.close_overlay();
-                    }
-                    _ => {}
-                }
-                None
-            }
-            GroupMenuState::Members => {
-                let member_count = self.group_menu.filtered.len();
-                match code {
-                    KeyCode::Char('j') | KeyCode::Down
-                        if self.group_menu.index < member_count.saturating_sub(1) =>
-                    {
-                        self.group_menu.index += 1;
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
-                    }
-                    KeyCode::Esc => {
-                        self.open_overlay(OverlayKind::GroupMenu);
-                        self.group_menu.state = Some(GroupMenuState::Menu);
-                        self.group_menu.index = 0;
-                    }
-                    _ => {}
-                }
-                None
-            }
-            GroupMenuState::AddMember => {
-                match code {
-                    KeyCode::Char('j') | KeyCode::Down
-                        if !self.group_menu.filtered.is_empty()
-                            && self.group_menu.index < self.group_menu.filtered.len() - 1 =>
-                    {
-                        self.group_menu.index += 1;
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
-                    }
-                    KeyCode::Enter => {
-                        if let Some((phone, _)) =
-                            self.group_menu.filtered.get(self.group_menu.index)
-                        {
-                            let phone = phone.clone();
-                            let group_id = self.active_conversation.clone()?;
-                            self.group_menu.state = None;
-                            self.close_overlay();
-                            self.group_menu.filter.clear();
-                            return Some(SendRequest::AddGroupMembers {
-                                group_id,
-                                members: vec![phone],
-                            });
-                        }
-                    }
-                    KeyCode::Esc => {
-                        self.open_overlay(OverlayKind::GroupMenu);
-                        self.group_menu.state = Some(GroupMenuState::Menu);
-                        self.group_menu.index = 0;
-                        self.group_menu.filter.clear();
-                    }
-                    KeyCode::Backspace => {
-                        self.group_menu.filter.pop();
-                        self.group_menu.index = 0;
-                        self.refresh_group_add_filter();
-                    }
-                    KeyCode::Char(c) if c != 'j' && c != 'k' => {
-                        self.group_menu.filter.push(c);
-                        self.group_menu.index = 0;
-                        self.refresh_group_add_filter();
-                    }
-                    _ => {}
-                }
-                None
-            }
-            GroupMenuState::RemoveMember => {
-                match code {
-                    KeyCode::Char('j') | KeyCode::Down
-                        if !self.group_menu.filtered.is_empty()
-                            && self.group_menu.index < self.group_menu.filtered.len() - 1 =>
-                    {
-                        self.group_menu.index += 1;
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        self.group_menu.index = self.group_menu.index.saturating_sub(1);
-                    }
-                    KeyCode::Enter => {
-                        if let Some((phone, _)) =
-                            self.group_menu.filtered.get(self.group_menu.index)
-                        {
-                            let phone = phone.clone();
-                            let group_id = self.active_conversation.clone()?;
-                            self.group_menu.state = None;
-                            self.close_overlay();
-                            self.group_menu.filter.clear();
-                            return Some(SendRequest::RemoveGroupMembers {
-                                group_id,
-                                members: vec![phone],
-                            });
-                        }
-                    }
-                    KeyCode::Esc => {
-                        self.open_overlay(OverlayKind::GroupMenu);
-                        self.group_menu.state = Some(GroupMenuState::Menu);
-                        self.group_menu.index = 0;
-                        self.group_menu.filter.clear();
-                    }
-                    KeyCode::Backspace => {
-                        self.group_menu.filter.pop();
-                        self.group_menu.index = 0;
-                        self.refresh_group_remove_filter();
-                    }
-                    KeyCode::Char(c) if c != 'j' && c != 'k' => {
-                        self.group_menu.filter.push(c);
-                        self.group_menu.index = 0;
-                        self.refresh_group_remove_filter();
-                    }
-                    _ => {}
-                }
-                None
-            }
-            GroupMenuState::Rename => {
-                match code {
-                    KeyCode::Enter => {
-                        let name = self.group_menu.input.trim().to_string();
-                        if !name.is_empty() {
-                            let group_id = self.active_conversation.clone()?;
-                            self.group_menu.state = None;
-                            self.close_overlay();
-                            self.group_menu.input.clear();
-                            return Some(SendRequest::RenameGroup { group_id, name });
-                        }
-                    }
-                    KeyCode::Esc => {
-                        self.open_overlay(OverlayKind::GroupMenu);
-                        self.group_menu.state = Some(GroupMenuState::Menu);
-                        self.group_menu.index = 0;
-                        self.group_menu.input.clear();
-                    }
-                    KeyCode::Backspace => {
-                        self.group_menu.input.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        self.group_menu.input.push(c);
-                    }
-                    _ => {}
-                }
-                None
-            }
-            GroupMenuState::Create => {
-                match code {
-                    KeyCode::Enter => {
-                        let name = self.group_menu.input.trim().to_string();
-                        if !name.is_empty() {
-                            self.group_menu.state = None;
-                            self.close_overlay();
-                            self.group_menu.input.clear();
-                            return Some(SendRequest::CreateGroup { name });
-                        }
-                    }
-                    KeyCode::Esc => {
-                        self.group_menu.state = None;
-                        self.close_overlay();
-                        self.group_menu.input.clear();
-                    }
-                    KeyCode::Backspace => {
-                        self.group_menu.input.pop();
-                    }
-                    KeyCode::Char(c) => {
-                        self.group_menu.input.push(c);
-                    }
-                    _ => {}
-                }
-                None
-            }
-            GroupMenuState::LeaveConfirm => {
-                match code {
-                    KeyCode::Char('y') => {
-                        let group_id = self.active_conversation.clone()?;
-                        self.group_menu.state = None;
-                        self.close_overlay();
-                        return Some(SendRequest::LeaveGroup { group_id });
-                    }
-                    KeyCode::Char('n') | KeyCode::Esc => {
-                        self.open_overlay(OverlayKind::GroupMenu);
-                        self.group_menu.state = Some(GroupMenuState::Menu);
-                        self.group_menu.index = 0;
-                    }
-                    _ => {}
-                }
-                None
-            }
-        }
+        crate::handlers::keys::handle_group_menu_key(self, code)
     }
 
     /// Transition from the top-level group menu to a sub-state.
-    fn transition_group_menu(&mut self, hint: &str) {
+    pub(crate) fn transition_group_menu(&mut self, hint: GroupMenuHint) {
         self.group_menu.index = 0;
         self.group_menu.filter.clear();
         self.group_menu.input.clear();
         match hint {
-            "m" => {
+            GroupMenuHint::Members => {
                 // Populate member list for display
                 let members: Vec<(String, String)> = self
                     .active_conversation
@@ -2092,17 +1489,17 @@ impl App {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::Members);
             }
-            "a" => {
+            GroupMenuHint::AddMember => {
                 self.refresh_group_add_filter();
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::AddMember);
             }
-            "r" => {
+            GroupMenuHint::RemoveMember => {
                 self.refresh_group_remove_filter();
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::RemoveMember);
             }
-            "n" => {
+            GroupMenuHint::Rename => {
                 // Pre-fill with current group name
                 let name = self
                     .active_conversation
@@ -2114,102 +1511,29 @@ impl App {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::Rename);
             }
-            "l" => {
+            GroupMenuHint::Leave => {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::LeaveConfirm);
             }
-            "c" => {
+            GroupMenuHint::Create => {
                 self.open_overlay(OverlayKind::GroupMenu);
                 self.group_menu.state = Some(GroupMenuState::Create);
             }
-            _ => {}
         }
     }
 
-    /// Handle a key press while the reaction picker overlay is open.
-    fn handle_message_request_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let conv_id = match self.active_conversation.clone() {
-            Some(id) => id,
-            None => {
-                self.close_overlay();
-                return None;
-            }
-        };
-        match code {
-            KeyCode::Char('a') => {
-                let is_group = self
-                    .store
-                    .conversations
-                    .get(&conv_id)
-                    .map(|c| c.is_group)
-                    .unwrap_or(false);
-                if let Some(conv) = self.store.conversations.get_mut(&conv_id) {
-                    conv.accepted = true;
-                }
-                self.db_warn_visible(self.db.update_accepted(&conv_id, true), "update_accepted");
-                self.close_overlay();
-                Some(SendRequest::MessageRequestResponse {
-                    recipient: conv_id,
-                    is_group,
-                    response_type: "accept".to_string(),
-                })
-            }
-            KeyCode::Char('d') => {
-                self.close_overlay();
-                self.delete_active_conversation()
-            }
-            KeyCode::Esc => {
-                self.close_overlay();
-                self.active_conversation = None;
-                None
-            }
-            _ => None,
-        }
+    /// Handle a key press while the message-request overlay is open.
+    pub(crate) fn handle_message_request_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+        crate::handlers::keys::handle_message_request_key(self, code)
     }
 
-    fn handle_reaction_picker_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.reactions.picker_index = self.reactions.picker_index.saturating_sub(1);
-                None
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                if self.reactions.picker_index < QUICK_REACTIONS.len() - 1 {
-                    self.reactions.picker_index += 1;
-                }
-                None
-            }
-            KeyCode::Char(c @ '1'..='8') => {
-                let idx = (c as u8 - b'1') as usize;
-                if idx < QUICK_REACTIONS.len() {
-                    self.reactions.picker_index = idx;
-                    self.close_overlay();
-                    self.prepare_reaction_send()
-                } else {
-                    None
-                }
-            }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                self.close_overlay();
-                self.prepare_reaction_send()
-            }
-            KeyCode::Char('e') | KeyCode::Char('/') => {
-                // Open full emoji picker from reaction context
-                self.emoji_picker.open(EmojiPickerSource::Reaction, None);
-                self.open_overlay(OverlayKind::EmojiPicker);
-                None
-            }
-            KeyCode::Esc => {
-                self.close_overlay();
-                None
-            }
-            _ => None,
-        }
+    pub(crate) fn handle_reaction_picker_key(&mut self, code: KeyCode) -> Option<SendRequest> {
+        crate::handlers::keys::handle_reaction_picker_key(self, code)
     }
 
     /// Build a SendRequest::Reaction from the current picker selection and focused message.
     /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
-    fn prepare_reaction_send(&mut self) -> Option<SendRequest> {
+    pub(crate) fn prepare_reaction_send(&mut self) -> Option<SendRequest> {
         let emoji = QUICK_REACTIONS
             .get(self.reactions.picker_index)?
             .to_string();
@@ -2218,7 +1542,7 @@ impl App {
 
     /// Build a SendRequest::Reaction for an arbitrary emoji string.
     /// If the user already reacted with the same emoji, removes it instead (toggle behavior).
-    fn prepare_reaction_send_emoji(&mut self, emoji: &str) -> Option<SendRequest> {
+    pub(crate) fn prepare_reaction_send_emoji(&mut self, emoji: &str) -> Option<SendRequest> {
         let conv_id = self.active_conversation.clone()?;
         let conv = self.store.conversations.get(&conv_id)?;
         let is_group = conv.is_group;
@@ -2384,53 +1708,13 @@ impl App {
 
     /// Handle a key press while the action menu overlay is open.
     pub fn handle_action_menu_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let item_count = self.action_menu_items().len();
-        if item_count == 0 {
-            self.close_overlay();
-            return None;
-        }
-        let action = classify_list_key(code, false);
-        if list_overlay::apply_nav(&action, &mut self.action_menu.index, item_count) {
-            return None;
-        }
-        match action {
-            ListKeyAction::Select => {
-                let items = self.action_menu_items();
-                if let Some(action) = items.get(self.action_menu.index) {
-                    let hint = action.key_hint;
-                    self.close_overlay();
-                    self.execute_action_by_hint(hint)
-                } else {
-                    self.close_overlay();
-                    None
-                }
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-                None
-            }
-            ListKeyAction::None => {
-                // Action menu shortcut keys: parse the keypress into a hint,
-                // then check that the hint corresponds to an action currently
-                // present in the menu (the menu items vary by message state).
-                let KeyCode::Char(c) = code else { return None };
-                let hint = ActionMenuHint::from_char(c)?;
-                let items = self.action_menu_items();
-                if items.iter().any(|a| a.key_hint == hint) {
-                    self.close_overlay();
-                    self.execute_action_by_hint(hint)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_action_menu_key(self, code)
     }
 
     /// Execute an action by its hint. Reuses the same logic as the direct
     /// Normal-mode keybinds. Exhaustive match: adding a variant to
     /// [`ActionMenuHint`] is a compiler error here until handled.
-    fn execute_action_by_hint(&mut self, hint: ActionMenuHint) -> Option<SendRequest> {
+    pub(crate) fn execute_action_by_hint(&mut self, hint: ActionMenuHint) -> Option<SendRequest> {
         use crate::handlers::keys;
         match hint {
             ActionMenuHint::Reply => keys::execute_reply(self),
@@ -2529,56 +1813,9 @@ impl App {
         }
     }
 
-    /// Handle a key press while the contacts overlay is open.
+    /// Handle a key press while the safety-number verify overlay is open.
     pub fn handle_verify_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.verify.confirming = false;
-                if !self.verify.identities.is_empty()
-                    && self.verify.index < self.verify.identities.len() - 1
-                {
-                    self.verify.index += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.verify.confirming = false;
-                if self.verify.index > 0 {
-                    self.verify.index -= 1;
-                }
-            }
-            KeyCode::Char('v') | KeyCode::Enter => {
-                if let Some(id) = self.verify.identities.get(self.verify.index) {
-                    if id.safety_number.is_empty() {
-                        self.status_message =
-                            "Safety number not available — cannot verify".to_string();
-                        return None;
-                    }
-                    if self.verify.confirming {
-                        // Second press: actually trust with the specific safety number
-                        if let Some(ref number) = id.number {
-                            let recipient = number.clone();
-                            let safety_number = id.safety_number.clone();
-                            self.verify.confirming = false;
-                            return Some(SendRequest::TrustIdentity {
-                                recipient,
-                                safety_number,
-                            });
-                        }
-                    } else {
-                        // First press: ask for confirmation
-                        self.verify.confirming = true;
-                    }
-                }
-            }
-            KeyCode::Esc => {
-                self.verify.confirming = false;
-                self.close_overlay();
-            }
-            _ => {
-                self.verify.confirming = false;
-            }
-        }
-        None
+        crate::handlers::keys::handle_verify_key(self, code)
     }
 
     pub(crate) fn open_forward_picker(&mut self) {
@@ -2588,7 +1825,7 @@ impl App {
         self.update_forward_filter();
     }
 
-    fn update_forward_filter(&mut self) {
+    pub(crate) fn update_forward_filter(&mut self) {
         let filter = self.forward.filter.to_lowercase();
         self.forward.filtered = self
             .store
@@ -2615,104 +1852,16 @@ impl App {
     }
 
     pub fn handle_forward_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let action = classify_list_key(code, true);
-        if list_overlay::apply_nav(
-            &action,
-            &mut self.forward.index,
-            self.forward.filtered.len(),
-        ) {
-            return None;
-        }
-        match action {
-            ListKeyAction::Select => {
-                if let Some((conv_id, name)) =
-                    self.forward.filtered.get(self.forward.index).cloned()
-                {
-                    let is_group = self
-                        .store
-                        .conversations
-                        .get(&conv_id)
-                        .map(|c| c.is_group)
-                        .unwrap_or(false);
-                    let body = format!("[Forwarded]\n{}", self.forward.body);
-                    let local_ts_ms = chrono::Utc::now().timestamp_millis();
-                    self.close_overlay();
-                    self.status_message = format!("Forwarded to {name}");
-                    self.store.move_conversation_to_top(&conv_id);
-                    return Some(SendRequest::Message {
-                        recipient: conv_id,
-                        body,
-                        is_group,
-                        local_ts_ms,
-                        mentions: Vec::new(),
-                        attachment: None,
-                        quote_timestamp: None,
-                        quote_author: None,
-                        quote_body: None,
-                    });
-                }
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-            }
-            ListKeyAction::FilterPush(c) => {
-                if !c.is_control() {
-                    self.forward.filter.push(c);
-                    self.update_forward_filter();
-                }
-            }
-            ListKeyAction::FilterPop => {
-                self.forward.filter.pop();
-                self.update_forward_filter();
-            }
-            ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
-        }
-        None
+        crate::handlers::keys::handle_forward_key(self, code)
     }
 
     pub fn handle_contacts_key(&mut self, code: KeyCode) {
-        let action = classify_list_key(code, true);
-        if list_overlay::apply_nav(
-            &action,
-            &mut self.contacts_overlay.index,
-            self.contacts_overlay.filtered.len(),
-        ) {
-            return;
-        }
-        match action {
-            ListKeyAction::Select => {
-                if let Some((number, _)) = self
-                    .contacts_overlay
-                    .filtered
-                    .get(self.contacts_overlay.index)
-                {
-                    let number = number.clone();
-                    self.close_overlay();
-                    self.contacts_overlay.filter.clear();
-                    self.join_conversation(&number);
-                }
-            }
-            ListKeyAction::Close => {
-                self.close_overlay();
-                self.contacts_overlay.filter.clear();
-            }
-            ListKeyAction::FilterPush(c) => {
-                self.contacts_overlay.filter.push(c);
-                self.refresh_contacts_filter();
-            }
-            ListKeyAction::FilterPop => {
-                self.contacts_overlay.filter.pop();
-                self.refresh_contacts_filter();
-            }
-            ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
-        }
+        crate::handlers::keys::handle_contacts_key(self, code)
     }
 
     /// Handle a key press while the search overlay is open.
     pub fn handle_search_key(&mut self, code: KeyCode) {
-        let active = self.active_conversation.as_deref().map(str::to_owned);
-        let action = self.search.handle_key(code, active.as_deref(), &self.db);
-        self.dispatch_search_action(action);
+        crate::handlers::keys::handle_search_key(self, code)
     }
 
     /// Jump to a message by its timestamp_ms in the active conversation.
@@ -2743,7 +1892,7 @@ impl App {
     }
 
     /// Jump to the original message quoted by the currently focused message.
-    fn jump_to_quote(&mut self) {
+    pub(crate) fn jump_to_quote(&mut self) {
         let msg = match self.selected_message() {
             Some(m) => m,
             None => return,
@@ -2783,7 +1932,7 @@ impl App {
     }
 
     /// Jump back to the position before the last quote jump.
-    fn jump_back(&mut self) {
+    pub(crate) fn jump_back(&mut self) {
         if let Some((offset, index)) = self.scroll.jump_stack.pop() {
             self.scroll.offset = offset;
             self.scroll.focused_index = index;
@@ -2798,7 +1947,7 @@ impl App {
     }
 
     /// Dispatch a `SearchAction` returned by `SearchState` methods.
-    fn dispatch_search_action(&mut self, action: SearchAction) {
+    pub(crate) fn dispatch_search_action(&mut self, action: SearchAction) {
         match action {
             SearchAction::Select {
                 conv_id,
@@ -2834,63 +1983,14 @@ impl App {
 
     /// Handle a key press while the file browser overlay is open.
     pub fn handle_file_browser_key(&mut self, code: KeyCode) {
-        match self.file_picker.handle_key(code) {
-            crate::domain::FilePickerOutcome::Continue => {}
-            crate::domain::FilePickerOutcome::Selected(path) => {
-                self.pending_attachment = Some(path);
-                self.close_overlay();
-            }
-            crate::domain::FilePickerOutcome::Cancelled => {
-                self.close_overlay();
-            }
-        }
+        crate::handlers::keys::handle_file_browser_key(self, code)
     }
 
     /// Handle a key press while the autocomplete popup is visible.
     /// Returns `Some(SendRequest)` when the user submits a command
     /// that requires sending a message. Returns `None` otherwise.
     pub fn handle_autocomplete_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        let list_len = self.autocomplete.len();
-        match code {
-            KeyCode::Up => {
-                if list_len > 0 {
-                    self.autocomplete.index = if self.autocomplete.index == 0 {
-                        list_len - 1
-                    } else {
-                        self.autocomplete.index - 1
-                    };
-                }
-            }
-            KeyCode::Down => {
-                if list_len > 0 {
-                    self.autocomplete.index = (self.autocomplete.index + 1) % list_len;
-                }
-            }
-            KeyCode::Tab => {
-                self.apply_autocomplete();
-            }
-            KeyCode::Esc => {
-                self.autocomplete.clear();
-                if self.is_overlay(OverlayKind::Autocomplete) {
-                    self.close_overlay();
-                }
-            }
-            KeyCode::Enter => {
-                if self.autocomplete.mode == AutocompleteMode::Mention {
-                    self.apply_autocomplete();
-                    // Don't submit on Enter for mentions — just complete
-                } else {
-                    // Command and Join: apply + submit
-                    self.apply_autocomplete();
-                    return self.handle_input();
-                }
-            }
-            _ => {
-                self.apply_input_edit(code);
-                self.update_autocomplete();
-            }
-        }
-        None
+        crate::handlers::keys::handle_autocomplete_key(self, code)
     }
 
     pub fn new(account: String, db: Database, config_path: &std::path::Path) -> Self {
@@ -2907,8 +2007,8 @@ impl App {
             account,
             sidebar_width: 22,
             sidebar_on_right: false,
-            sidebar_filter: String::new(),
-            sidebar_filtered: Vec::new(),
+            sidebar_filter: SidebarFilterState::default(),
+            palette: PaletteState::default(),
             typing: TypingState::default(),
             connected: false,
             loading: true,
@@ -2931,7 +2031,7 @@ impl App {
             image: ImageState::new(image_render_tx, image_render_rx),
             prev_active_conversation: None,
             incognito: false,
-            download_dir: PathBuf::new(),
+            media: MediaState::default(),
             date_separators: true,
             show_receipts: true,
             color_receipts: true,
@@ -3207,8 +2307,8 @@ impl App {
 
     /// Refresh the filtered sidebar list based on the current filter text.
     pub(crate) fn refresh_sidebar_filter(&mut self) {
-        let query = self.sidebar_filter.to_lowercase();
-        self.sidebar_filtered = self
+        let query = self.sidebar_filter.query.to_lowercase();
+        self.sidebar_filter.filtered = self
             .store
             .conversation_order
             .iter()
@@ -3223,26 +2323,26 @@ impl App {
     }
 
     /// Clear sidebar filter state and restore the full list.
-    fn clear_sidebar_filter(&mut self) {
+    pub(crate) fn clear_sidebar_filter(&mut self) {
         if self.is_overlay(OverlayKind::SidebarFilter) {
             self.close_overlay();
         }
-        self.sidebar_filter.clear();
-        self.sidebar_filtered.clear();
+        self.sidebar_filter.query.clear();
+        self.sidebar_filter.filtered.clear();
     }
 
     /// Handle a key press while sidebar filter is active.
-    fn handle_sidebar_filter_key(&mut self, code: KeyCode) {
+    pub(crate) fn handle_sidebar_filter_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
                 self.clear_sidebar_filter();
             }
             KeyCode::Enter => {
                 // Select the first matching conversation
-                let target = if self.sidebar_filtered.is_empty() {
+                let target = if self.sidebar_filter.filtered.is_empty() {
                     None
                 } else {
-                    Some(self.sidebar_filtered[0].clone())
+                    Some(self.sidebar_filter.filtered[0].clone())
                 };
                 self.clear_sidebar_filter();
                 if let Some(conv_id) = target {
@@ -3250,12 +2350,12 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                self.sidebar_filter.push(c);
+                self.sidebar_filter.query.push(c);
                 self.refresh_sidebar_filter();
             }
             KeyCode::Backspace => {
-                self.sidebar_filter.pop();
-                if self.sidebar_filter.is_empty() {
+                self.sidebar_filter.query.pop();
+                if self.sidebar_filter.query.is_empty() {
                     self.clear_sidebar_filter();
                 } else {
                     self.refresh_sidebar_filter();
@@ -3401,7 +2501,7 @@ impl App {
     }
 
     /// Build a Typing SendRequest for the active conversation, or None if no conversation is active.
-    fn build_typing_request(&self, stop: bool) -> Option<SendRequest> {
+    pub(crate) fn build_typing_request(&self, stop: bool) -> Option<SendRequest> {
         let conv_id = self.active_conversation.as_ref()?;
         let is_group = self
             .store
@@ -3481,32 +2581,7 @@ impl App {
     /// Backspace deletes, Esc clears the buffer (but does NOT unlock).
     /// Returns true if the key was consumed (always true when locked).
     pub fn handle_lock_key(&mut self, code: crossterm::event::KeyCode) -> bool {
-        use crossterm::event::KeyCode;
-        // Any char/Backspace clears the transient error so the user can retry.
-        // Leave error visible on Enter so a submit failure stays on screen.
-        if matches!(code, KeyCode::Char(_) | KeyCode::Backspace) {
-            self.lock.error = None;
-        }
-        match code {
-            KeyCode::Char(c) => {
-                self.lock.input_buffer.push(c);
-                true
-            }
-            KeyCode::Backspace => {
-                self.lock.input_buffer.pop();
-                true
-            }
-            KeyCode::Esc => {
-                // Esc clears the current input but does not unlock or change phase.
-                self.lock.input_buffer.clear();
-                true
-            }
-            KeyCode::Enter => {
-                self.submit_lock_input();
-                true
-            }
-            _ => true, // swallow all other keys; lock screen owns input fully
-        }
+        crate::handlers::keys::handle_lock_key(self, code)
     }
 
     /// Resolve an Enter press on the lock screen by advancing the phase
@@ -3520,7 +2595,7 @@ impl App {
     ///   stay and set the error.
     /// - ChangePassphraseNew: hash + save the new passphrase, transition
     ///   to Unlocked, clear old_passphrase_verified.
-    fn submit_lock_input(&mut self) {
+    pub(crate) fn submit_lock_input(&mut self) {
         use crate::domain::{LockPhase, hash_passphrase, load_hash, save_hash, verify_passphrase};
         let entered = std::mem::take(&mut self.lock.input_buffer);
         match self.lock.phase {
@@ -3596,66 +2671,7 @@ impl App {
     /// Handle global keys that work in both Normal and Insert mode.
     /// Returns true if the key was consumed.
     pub fn handle_global_key(&mut self, modifiers: KeyModifiers, code: KeyCode) -> bool {
-        if self.lock.is_locked() {
-            return self.handle_lock_key(code);
-        }
-        let action = self
-            .keybindings
-            .resolve(modifiers, code, BindingMode::Global);
-        if self.quit_confirm && !matches!(action, Some(KeyAction::Quit)) {
-            self.quit_confirm = false;
-            self.update_status();
-        }
-        match action {
-            Some(KeyAction::Quit) => {
-                if self.input.buffer.is_empty() || self.quit_confirm {
-                    self.should_quit = true;
-                } else {
-                    self.quit_confirm = true;
-                }
-                true
-            }
-            Some(KeyAction::NextConversation) if !self.is_overlay(OverlayKind::Autocomplete) => {
-                self.next_conversation();
-                true
-            }
-            Some(KeyAction::PrevConversation) => {
-                self.prev_conversation();
-                true
-            }
-            Some(KeyAction::ResizeSidebarLeft) => {
-                self.resize_sidebar(-2);
-                true
-            }
-            Some(KeyAction::ResizeSidebarRight) => {
-                self.resize_sidebar(2);
-                true
-            }
-            Some(KeyAction::PageScrollUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(5);
-                self.scroll.focused_index = None;
-                true
-            }
-            Some(KeyAction::PageScrollDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(5);
-                self.scroll.focused_index = None;
-                true
-            }
-            Some(KeyAction::SidebarSearch) => {
-                self.sidebar_visible = true;
-                self.open_overlay(OverlayKind::SidebarFilter);
-                self.sidebar_filter.clear();
-                self.sidebar_filtered.clear();
-                true
-            }
-            Some(KeyAction::Lock) => {
-                self.lock_now();
-                true
-            }
-            _ => false,
-        }
+        crate::handlers::keys::handle_global_key(self, modifiers, code)
     }
 
     /// Handle overlay keys (help, contacts, settings, autocomplete).
@@ -3702,129 +2718,7 @@ impl App {
     }
 
     pub fn handle_overlay_key(&mut self, code: KeyCode) -> (bool, Option<SendRequest>) {
-        let Some(kind) = self.active_overlay() else {
-            return (false, None);
-        };
-        match kind {
-            OverlayKind::SidebarFilter => {
-                self.handle_sidebar_filter_key(code);
-                (true, None)
-            }
-            OverlayKind::PollVote => {
-                let send = self.handle_poll_vote_key(code);
-                (true, send)
-            }
-            OverlayKind::PinDuration => {
-                let send = self.handle_pin_duration_key(code);
-                (true, send)
-            }
-            OverlayKind::ActionMenu => {
-                let send = self.handle_action_menu_key(code);
-                (true, send)
-            }
-            OverlayKind::DeleteConfirm => {
-                let send = self.handle_delete_confirm_key(code);
-                (true, send)
-            }
-            OverlayKind::DeleteConversationConfirm => {
-                let send = self.handle_delete_conversation_confirm_key(code);
-                (true, send)
-            }
-            OverlayKind::FilePicker => {
-                self.handle_file_browser_key(code);
-                (true, None)
-            }
-            OverlayKind::EmojiPicker => match self.emoji_picker.handle_key(code) {
-                EmojiPickerAction::Select(emoji) => {
-                    let source = self.emoji_picker.source;
-                    self.emoji_picker.close();
-                    match source {
-                        EmojiPickerSource::Input => {
-                            self.input.buffer.insert_str(self.input.cursor, &emoji);
-                            self.input.cursor += emoji.len();
-                            (true, None)
-                        }
-                        EmojiPickerSource::Reaction => {
-                            let send = self.prepare_reaction_send_emoji(&emoji);
-                            (true, send)
-                        }
-                    }
-                }
-                EmojiPickerAction::Close => {
-                    let was_reaction = self.emoji_picker.source == EmojiPickerSource::Reaction;
-                    self.emoji_picker.close();
-                    if was_reaction {
-                        self.open_overlay(OverlayKind::ReactionPicker);
-                    }
-                    (true, None)
-                }
-                EmojiPickerAction::None => (true, None),
-            },
-            OverlayKind::ReactionPicker => {
-                let send = self.handle_reaction_picker_key(code);
-                (true, send)
-            }
-            OverlayKind::MessageRequest => {
-                let send = self.handle_message_request_key(code);
-                (true, send)
-            }
-            OverlayKind::GroupMenu => {
-                let send = self.handle_group_menu_key(code);
-                (true, send)
-            }
-            OverlayKind::About => {
-                self.close_overlay();
-                (true, None)
-            }
-            OverlayKind::Profile => {
-                let send = self.handle_profile_key(code);
-                (true, send)
-            }
-            OverlayKind::Help => {
-                self.close_overlay();
-                (true, None)
-            }
-            OverlayKind::Verify => {
-                let send = self.handle_verify_key(code);
-                (true, send)
-            }
-            OverlayKind::Forward => {
-                let send = self.handle_forward_key(code);
-                (true, send)
-            }
-            OverlayKind::Contacts => {
-                self.handle_contacts_key(code);
-                (true, None)
-            }
-            OverlayKind::Search => {
-                self.handle_search_key(code);
-                (true, None)
-            }
-            OverlayKind::SettingsProfiles => {
-                self.handle_settings_profile_manager_key(code);
-                (true, None)
-            }
-            OverlayKind::ThemePicker => {
-                self.handle_theme_key(code);
-                (true, None)
-            }
-            OverlayKind::Keybindings => {
-                self.handle_keybindings_key(code);
-                (true, None)
-            }
-            OverlayKind::Customize => {
-                self.handle_customize_key(code);
-                (true, None)
-            }
-            OverlayKind::Settings => {
-                self.handle_settings_key(code);
-                (true, None)
-            }
-            OverlayKind::Autocomplete => {
-                let send = self.handle_autocomplete_key(code);
-                (true, send)
-            }
-        }
+        crate::handlers::keys::handle_overlay_key(self, code)
     }
 
     /// Handle Normal mode key. Dispatches to scroll, edit, or action sub-handlers.
@@ -3833,240 +2727,7 @@ impl App {
         modifiers: KeyModifiers,
         code: KeyCode,
     ) -> Option<SendRequest> {
-        // Handle pending prefix key (gg, dd sequences)
-        if let Some(prev) = self.pending_normal_key.take() {
-            match (prev, code) {
-                ('g', KeyCode::Char('g')) => {
-                    // gg = scroll to top
-                    if let Some(ref id) = self.active_conversation
-                        && let Some(conv) = self.store.conversations.get(id)
-                    {
-                        self.scroll.offset = conv.messages.len();
-                    }
-                    self.scroll.focused_index = None;
-                    return None;
-                }
-                ('d', KeyCode::Char('d')) => {
-                    // dd = delete message
-                    return crate::handlers::keys::execute_delete_confirm(self);
-                }
-                (_, KeyCode::Esc) => {
-                    // Esc cancels pending prefix
-                    return None;
-                }
-                _ => {
-                    // Not a valid sequence -- fall through to process this key normally
-                }
-            }
-        }
-
-        match self
-            .keybindings
-            .resolve(modifiers, code, BindingMode::Normal)
-        {
-            // Scroll
-            Some(KeyAction::ScrollDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::ScrollUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::FocusNextMessage) => {
-                self.sync.user_scrolled = true;
-                self.jump_to_adjacent_message(false);
-                None
-            }
-            Some(KeyAction::FocusPrevMessage) => {
-                self.sync.user_scrolled = true;
-                self.jump_to_adjacent_message(true);
-                None
-            }
-            Some(KeyAction::HalfPageDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(10);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::HalfPageUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(10);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::ScrollToBottom) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = 0;
-                self.scroll.focused_index = None;
-                None
-            }
-            // Edit/mode-switch
-            Some(KeyAction::InsertAtCursor) => {
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::InsertAfterCursor) => {
-                self.input.cursor = next_char_pos(&self.input.buffer, self.input.cursor);
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::InsertLineStart) => {
-                self.input.cursor = self.current_line_start();
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::InsertLineEnd) => {
-                self.input.cursor = self.current_line_end();
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::OpenLineBelow) => {
-                let line_end = self.current_line_end();
-                self.input.cursor = line_end;
-                self.input.buffer.insert(self.input.cursor, '\n');
-                self.input.cursor += 1;
-                self.mode = InputMode::Insert;
-                None
-            }
-            Some(KeyAction::CursorLeft) => {
-                self.input.cursor = prev_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::CursorRight) => {
-                self.input.cursor = next_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::LineStart) => {
-                self.input.cursor = self.current_line_start();
-                None
-            }
-            Some(KeyAction::LineEnd) => {
-                self.input.cursor = self.current_line_end();
-                None
-            }
-            Some(KeyAction::WordForward) => {
-                let buf = &self.input.buffer;
-                let mut pos = self.input.cursor;
-                while pos < buf.len() {
-                    let c = buf[pos..].chars().next().unwrap();
-                    if c.is_whitespace() {
-                        break;
-                    }
-                    pos += c.len_utf8();
-                }
-                while pos < buf.len() {
-                    let c = buf[pos..].chars().next().unwrap();
-                    if !c.is_whitespace() {
-                        break;
-                    }
-                    pos += c.len_utf8();
-                }
-                self.input.cursor = pos;
-                None
-            }
-            Some(KeyAction::WordBack) => {
-                let buf = &self.input.buffer;
-                let mut pos = self.input.cursor;
-                while pos > 0 {
-                    let prev = buf[..pos].chars().next_back().unwrap();
-                    if !prev.is_whitespace() {
-                        break;
-                    }
-                    pos -= prev.len_utf8();
-                }
-                while pos > 0 {
-                    let prev = buf[..pos].chars().next_back().unwrap();
-                    if prev.is_whitespace() {
-                        break;
-                    }
-                    pos -= prev.len_utf8();
-                }
-                self.input.cursor = pos;
-                None
-            }
-            Some(KeyAction::DeleteChar) => {
-                if self.input.cursor < self.input.buffer.len() {
-                    self.input.buffer.remove(self.input.cursor);
-                    if self.input.cursor > 0 && self.input.cursor >= self.input.buffer.len() {
-                        self.input.cursor =
-                            prev_char_pos(&self.input.buffer, self.input.buffer.len());
-                    }
-                }
-                None
-            }
-            Some(KeyAction::DeleteToEnd) => {
-                let line_end = self.current_line_end();
-                self.input.buffer.drain(self.input.cursor..line_end);
-                None
-            }
-            Some(KeyAction::StartSearch) => {
-                self.input.buffer = "/".to_string();
-                self.input.cursor = 1;
-                self.mode = InputMode::Insert;
-                self.update_autocomplete();
-                None
-            }
-            Some(KeyAction::SidebarSearch) => {
-                self.sidebar_visible = true;
-                self.open_overlay(OverlayKind::SidebarFilter);
-                self.sidebar_filter.clear();
-                self.sidebar_filtered.clear();
-                None
-            }
-            Some(KeyAction::ClearInput) => {
-                if !self.input.buffer.is_empty() {
-                    self.input.buffer.clear();
-                    self.input.cursor = 0;
-                    self.autocomplete.pending_mentions.clear();
-                }
-                None
-            }
-            // Actions
-            Some(KeyAction::CopyMessage) => {
-                self.copy_selected_message(false);
-                None
-            }
-            Some(KeyAction::CopyAllMessages) => {
-                self.copy_selected_message(true);
-                None
-            }
-            Some(KeyAction::React) => crate::handlers::keys::execute_react(self),
-            Some(KeyAction::Quote) => crate::handlers::keys::execute_reply(self),
-            Some(KeyAction::EditMessage) => crate::handlers::keys::execute_edit(self),
-            Some(KeyAction::ForwardMessage) => crate::handlers::keys::execute_forward(self),
-            Some(KeyAction::NextSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, true)
-            }
-            Some(KeyAction::PrevSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, false)
-            }
-            Some(KeyAction::OpenActionMenu) => {
-                crate::handlers::keys::execute_open_action_menu(self)
-            }
-            Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
-            Some(KeyAction::JumpToQuote) => {
-                self.jump_to_quote();
-                None
-            }
-            Some(KeyAction::JumpBack) => {
-                self.jump_back();
-                None
-            }
-            _ => {
-                // Handle prefix keys that aren't in the binding map
-                if let KeyCode::Char(c @ ('g' | 'd')) = code
-                    && modifiers.is_empty()
-                {
-                    self.pending_normal_key = Some(c);
-                }
-                None
-            }
-        }
+        crate::handlers::keys::handle_normal_key(self, modifiers, code)
     }
 
     /// Handle Insert mode key.
@@ -4076,158 +2737,7 @@ impl App {
         modifiers: KeyModifiers,
         code: KeyCode,
     ) -> Option<SendRequest> {
-        match self
-            .keybindings
-            .resolve(modifiers, code, BindingMode::Insert)
-        {
-            Some(KeyAction::ExitInsert) => {
-                self.mode = InputMode::Normal;
-                self.pending_normal_key = None; // defensive reset
-                self.close_overlay();
-                self.reply_target = None;
-                self.editing_message = None;
-                if self.typing.reset() {
-                    return self.build_typing_request(true);
-                }
-                None
-            }
-            Some(KeyAction::InsertNewline) => {
-                self.input.buffer.insert(self.input.cursor, '\n');
-                self.input.cursor += 1;
-                self.close_overlay();
-                self.typing.last_keypress = Some(Instant::now());
-                if !self.typing.sent
-                    && !self.input.buffer.starts_with('/')
-                    && self
-                        .active_conversation
-                        .as_ref()
-                        .is_some_and(|id| !self.blocked_conversations.contains(id))
-                {
-                    self.typing.sent = true;
-                    return self.build_typing_request(false);
-                }
-                None
-            }
-            Some(KeyAction::SendMessage) => {
-                let was_typing = self.typing.reset();
-                let result = self.handle_input();
-                if result.is_some() {
-                    result
-                } else if was_typing {
-                    self.build_typing_request(true)
-                } else {
-                    None
-                }
-            }
-            Some(KeyAction::DeleteWordBack) => {
-                self.delete_word_back();
-                None
-            }
-            // Actions that alternative profiles (Emacs/Minimal) may bind in Insert mode
-            Some(KeyAction::ScrollDown) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::ScrollUp) => {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(1);
-                self.scroll.focused_index = None;
-                None
-            }
-            Some(KeyAction::CursorLeft) => {
-                self.input.cursor = prev_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::CursorRight) => {
-                self.input.cursor = next_char_pos(&self.input.buffer, self.input.cursor);
-                None
-            }
-            Some(KeyAction::LineStart) => {
-                self.input.cursor = self.current_line_start();
-                None
-            }
-            Some(KeyAction::LineEnd) => {
-                self.input.cursor = self.current_line_end();
-                None
-            }
-            Some(KeyAction::DeleteChar) => {
-                if self.input.cursor < self.input.buffer.len() {
-                    self.input.buffer.remove(self.input.cursor);
-                }
-                None
-            }
-            Some(KeyAction::DeleteToEnd) => {
-                let line_end = self.current_line_end();
-                self.input.buffer.drain(self.input.cursor..line_end);
-                None
-            }
-            Some(KeyAction::CopyMessage) => {
-                self.copy_selected_message(false);
-                None
-            }
-            Some(KeyAction::CopyAllMessages) => {
-                self.copy_selected_message(true);
-                None
-            }
-            Some(KeyAction::React) => crate::handlers::keys::execute_react(self),
-            Some(KeyAction::Quote) => crate::handlers::keys::execute_reply(self),
-            Some(KeyAction::EditMessage) => crate::handlers::keys::execute_edit(self),
-            Some(KeyAction::ForwardMessage) => crate::handlers::keys::execute_forward(self),
-            Some(KeyAction::DeleteMessage) => crate::handlers::keys::execute_delete_confirm(self),
-            Some(KeyAction::NextSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, true)
-            }
-            Some(KeyAction::PrevSearchResult) => {
-                crate::handlers::keys::execute_search_jump(self, false)
-            }
-            Some(KeyAction::OpenActionMenu) => {
-                crate::handlers::keys::execute_open_action_menu(self)
-            }
-            Some(KeyAction::PinMessage) => crate::handlers::keys::execute_pin_toggle(self),
-            Some(KeyAction::JumpToQuote) => {
-                self.jump_to_quote();
-                None
-            }
-            Some(KeyAction::JumpBack) => {
-                self.jump_back();
-                None
-            }
-            _ => {
-                let needs_ac_update = matches!(
-                    code,
-                    KeyCode::Backspace | KeyCode::Delete | KeyCode::Char(_)
-                );
-                self.apply_input_edit(code);
-                if needs_ac_update {
-                    self.update_autocomplete();
-                }
-                if matches!(
-                    code,
-                    KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete
-                ) {
-                    self.typing.last_keypress = Some(Instant::now());
-                    if self.input.buffer.is_empty() && self.typing.sent {
-                        self.typing.sent = false;
-                        self.typing.last_keypress = None;
-                        return self.build_typing_request(true);
-                    }
-                    if !self.typing.sent
-                        && !self.input.buffer.is_empty()
-                        && !self.input.buffer.starts_with('/')
-                        && self
-                            .active_conversation
-                            .as_ref()
-                            .is_some_and(|id| !self.blocked_conversations.contains(id))
-                    {
-                        self.typing.sent = true;
-                        return self.build_typing_request(false);
-                    }
-                }
-                None
-            }
-        }
+        crate::handlers::keys::handle_insert_key(self, modifiers, code)
     }
 
     /// Handle an event from signal-cli
@@ -4379,85 +2889,12 @@ impl App {
     /// Handle a key press in the delete confirmation overlay.
     /// Returns Some(SendRequest::RemoteDelete) if remote delete is requested.
     pub fn handle_delete_confirm_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('y') => {
-                self.close_overlay();
-                let conv_id = self.active_conversation.clone()?;
-                let conv = self.store.conversations.get(&conv_id)?;
-                let is_group = conv.is_group;
-                let index = self
-                    .scroll
-                    .focused_index
-                    .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
-                let msg = conv.messages.get(index)?;
-                let is_outgoing = msg.is_outgoing();
-                let target_timestamp = msg.timestamp_ms;
-
-                // Apply local delete
-                let conv = self.store.conversations.get_mut(&conv_id)?;
-                let msg = conv.messages.get_mut(index)?;
-                msg.is_deleted = true;
-                msg.body = "[deleted]".to_string();
-                msg.reactions.clear();
-                self.db_warn_visible(
-                    self.db.mark_message_deleted(&conv_id, target_timestamp),
-                    "mark_message_deleted",
-                );
-
-                // Send remote delete only for outgoing messages
-                if is_outgoing {
-                    return Some(SendRequest::RemoteDelete {
-                        recipient: conv_id,
-                        is_group,
-                        target_timestamp,
-                    });
-                }
-                None
-            }
-            KeyCode::Char('l') => {
-                // Local-only delete (for outgoing messages)
-                self.close_overlay();
-                let conv_id = self.active_conversation.clone()?;
-                let conv = self.store.conversations.get(&conv_id)?;
-                let index = self
-                    .scroll
-                    .focused_index
-                    .unwrap_or_else(|| conv.messages.len().saturating_sub(1));
-                let msg = conv.messages.get(index)?;
-                let target_timestamp = msg.timestamp_ms;
-
-                let conv = self.store.conversations.get_mut(&conv_id)?;
-                let msg = conv.messages.get_mut(index)?;
-                msg.is_deleted = true;
-                msg.body = "[deleted]".to_string();
-                msg.reactions.clear();
-                self.db_warn_visible(
-                    self.db.mark_message_deleted(&conv_id, target_timestamp),
-                    "mark_message_deleted",
-                );
-                None
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                self.close_overlay();
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_delete_confirm_key(self, code)
     }
 
     /// Handle a key press in the delete-conversation confirmation overlay.
     pub fn handle_delete_conversation_confirm_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        match code {
-            KeyCode::Char('y') => {
-                self.close_overlay();
-                self.delete_active_conversation()
-            }
-            KeyCode::Char('n') | KeyCode::Esc => {
-                self.close_overlay();
-                None
-            }
-            _ => None,
-        }
+        crate::handlers::keys::handle_delete_conversation_confirm_key(self, code)
     }
 
     /// Remove the active conversation from local state, the database, and any
@@ -4527,67 +2964,7 @@ impl App {
 
     /// Handle keys in the profile editor overlay.
     pub fn handle_profile_key(&mut self, code: KeyCode) -> Option<SendRequest> {
-        const FIELD_COUNT: usize = 4;
-        const SAVE_INDEX: usize = FIELD_COUNT;
-
-        if self.profile.editing {
-            // Editing a field
-            match code {
-                KeyCode::Esc => {
-                    // Cancel edit, discard buffer
-                    self.profile.editing = false;
-                }
-                KeyCode::Enter => {
-                    // Confirm edit, write buffer back to field
-                    self.profile.fields[self.profile.index] = self.profile.edit_buffer.clone();
-                    self.profile.editing = false;
-                }
-                KeyCode::Backspace => {
-                    self.profile.edit_buffer.pop();
-                }
-                KeyCode::Char(c) => {
-                    self.profile.edit_buffer.push(c);
-                }
-                _ => {}
-            }
-            return None;
-        }
-
-        // Navigation mode
-        match code {
-            KeyCode::Char('j') | KeyCode::Down if self.profile.index < SAVE_INDEX => {
-                self.profile.index += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up if self.profile.index > 0 => {
-                self.profile.index -= 1;
-            }
-            KeyCode::Enter => {
-                if self.profile.index < FIELD_COUNT {
-                    // Start editing the selected field
-                    self.profile.editing = true;
-                    self.profile.edit_buffer = self.profile.fields[self.profile.index].clone();
-                } else {
-                    // Save button
-                    let [given_name, family_name, about, about_emoji] = self.profile.fields.clone();
-                    if given_name.trim().is_empty() {
-                        self.status_message = "Given name is required".to_string();
-                        return None;
-                    }
-                    self.close_overlay();
-                    return Some(SendRequest::UpdateProfile {
-                        given_name,
-                        family_name,
-                        about,
-                        about_emoji,
-                    });
-                }
-            }
-            KeyCode::Esc => {
-                self.close_overlay();
-            }
-            _ => {}
-        }
-        None
+        crate::handlers::keys::handle_profile_key(self, code)
     }
 
     /// Handle a key press while the poll vote overlay is open.
@@ -4954,7 +3331,7 @@ impl App {
     }
 
     /// Returns the byte offset of the start of the current line.
-    fn current_line_start(&self) -> usize {
+    pub(crate) fn current_line_start(&self) -> usize {
         self.input.buffer[..self.input.cursor]
             .rfind('\n')
             .map(|p| p + 1)
@@ -4962,7 +3339,7 @@ impl App {
     }
 
     /// Returns the byte offset of the end of the current line (before the newline or buffer end).
-    fn current_line_end(&self) -> usize {
+    pub(crate) fn current_line_end(&self) -> usize {
         self.input.buffer[self.input.cursor..]
             .find('\n')
             .map(|p| self.input.cursor + p)
@@ -4970,7 +3347,7 @@ impl App {
     }
 
     /// Delete the word before the cursor (Ctrl+W behavior).
-    fn delete_word_back(&mut self) {
+    pub(crate) fn delete_word_back(&mut self) {
         if self.input.cursor == 0 {
             return;
         }
@@ -5207,6 +3584,9 @@ impl App {
 
     pub(crate) fn join_conversation(&mut self, target: &str) {
         self.leave_active_conversation();
+        // Stale from the previous conversation; the next render sets it. Prevents
+        // evicting the new conversation's image_lines before it has drawn (#492).
+        self.scroll.render_window_start = 0;
 
         // Try exact match first
         if self.store.conversations.contains_key(target) {
@@ -5411,7 +3791,7 @@ impl App {
 
     /// Jump to the next or previous non-system message.
     /// `older` = true means go toward older messages (K), false means newer (J).
-    fn jump_to_adjacent_message(&mut self, older: bool) {
+    pub(crate) fn jump_to_adjacent_message(&mut self, older: bool) {
         let conv_id = match self.active_conversation.as_ref() {
             Some(id) => id.clone(),
             None => return,
@@ -5533,102 +3913,10 @@ impl App {
 
     /// Handle a mouse event. Returns an optional SendRequest (currently unused but future-proof).
     pub fn handle_mouse_event(&mut self, event: MouseEvent) -> Option<SendRequest> {
-        if !self.mouse.enabled {
-            return None;
-        }
-
-        // When overlays are open, translate scroll to j/k navigation and Esc on outside click
-        if self.has_overlay() {
-            match event.kind {
-                MouseEventKind::ScrollUp => self.handle_overlay_key(KeyCode::Char('k')),
-                MouseEventKind::ScrollDown => self.handle_overlay_key(KeyCode::Char('j')),
-                _ => (false, None),
-            };
-            return None;
-        }
-
-        match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_left_click(event.column, event.row);
-            }
-            MouseEventKind::ScrollUp
-                if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
-            {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_add(3);
-                self.scroll.focused_index = None;
-            }
-            MouseEventKind::ScrollDown
-                if is_in_rect(event.column, event.row, self.mouse.messages_area) =>
-            {
-                self.sync.user_scrolled = true;
-                self.scroll.offset = self.scroll.offset.saturating_sub(3);
-                self.scroll.focused_index = None;
-            }
-            _ => {}
-        }
-        None
+        crate::handlers::keys::handle_mouse_event(self, event)
     }
 
-    fn handle_left_click(&mut self, col: u16, row: u16) {
-        // 1. Check link regions first (highest priority — links overlay everything)
-        for link in &self.image.link_regions {
-            if row == link.y && col >= link.x && col < link.x + link.width {
-                let url = link.url.clone();
-                self.open_url(&url);
-                return;
-            }
-        }
-
-        // 2. Sidebar click — switch conversation
-        if let Some(inner) = self.mouse.sidebar_inner
-            && is_in_rect(col, row, inner)
-        {
-            let index = (row - inner.y) as usize;
-            let sidebar_list = if self.is_overlay(OverlayKind::SidebarFilter)
-                && !self.sidebar_filtered.is_empty()
-            {
-                &self.sidebar_filtered
-            } else {
-                &self.store.conversation_order
-            };
-            if index < sidebar_list.len() {
-                let conv_id = sidebar_list[index].clone();
-                self.clear_sidebar_filter();
-                self.join_conversation(&conv_id);
-            }
-            return;
-        }
-
-        // 3. Input area click — position cursor and enter Insert mode
-        if is_in_rect(col, row, self.mouse.input_area) {
-            self.mode = InputMode::Insert;
-            // Content starts after left border (1) + prefix
-            let content_start_col = self.mouse.input_area.x + 1 + self.mouse.input_prefix_len;
-            if col >= content_start_col {
-                let text_width = (self.mouse.input_area.width.saturating_sub(2)) as usize
-                    - self.mouse.input_prefix_len as usize;
-                let input_scroll = floor_char_boundary(
-                    &self.input.buffer,
-                    self.input.cursor.saturating_sub(text_width),
-                );
-                let target_col = (col - content_start_col) as usize;
-                // Walk characters to find the byte offset for the target column
-                let mut byte_pos = input_scroll;
-                for (col_pos, ch) in self.input.buffer[input_scroll..].chars().enumerate() {
-                    if col_pos >= target_col {
-                        break;
-                    }
-                    byte_pos += ch.len_utf8();
-                }
-                self.input.cursor = byte_pos.min(self.input.buffer.len());
-            } else {
-                self.input.cursor = 0;
-            }
-        }
-    }
-
-    fn open_url(&mut self, url: &str) {
+    pub(crate) fn open_url(&mut self, url: &str) {
         // Only allow http/https URLs to prevent local file access via file:// etc.
         if !url.starts_with("http://") && !url.starts_with("https://") {
             self.status_message = "Only http/https URLs can be opened".to_string();
@@ -5641,7 +3929,7 @@ impl App {
 
     fn open_file(&mut self, uri: &str) {
         let path = file_uri_to_path(uri);
-        match classify_file_open(&path, &self.download_dir) {
+        match classify_file_open(&path, &self.media.download_dir) {
             OpenFileDecision::NotFound => {
                 self.status_message = format!("File not found: {path}");
             }
@@ -5659,16 +3947,53 @@ impl App {
                     .and_then(|n| n.to_str())
                     .map(str::to_string)
                     .unwrap_or_else(|| path.clone());
-                match open::that(&canon) {
-                    Ok(()) => self.status_message = format!("Opened {filename}"),
-                    Err(e) => self.status_message = format!("Failed to open: {e}"),
+                // Voice/audio: play inline via a detected CLI player (#199)
+                // instead of handing off to the OS default app. Falls back to
+                // open::that when no player is installed. Pressing `o` on the
+                // message that is already playing stops it instead (#618).
+                if crate::audio::is_audio_path(&canon)
+                    && self.media.playing.as_ref().is_some_and(|p| p.path == canon)
+                {
+                    self.stop_voice_playback();
+                    self.status_message = format!("Stopped {filename}");
+                } else if crate::audio::is_audio_path(&canon)
+                    && let Some(player) =
+                        crate::audio::detect_player(self.media.audio_player.as_deref())
+                {
+                    // Only one voice plays at a time.
+                    self.stop_voice_playback();
+                    match crate::audio::play(&canon, &player) {
+                        Ok(child) => {
+                            let duration = crate::audio::ogg_opus_duration(&canon);
+                            self.media.playing = Some(crate::domain::PlayingVoice {
+                                child,
+                                started: Instant::now(),
+                                duration,
+                                label: filename.clone(),
+                                path: canon.clone(),
+                            });
+                            self.status_message = format!("Playing {filename}");
+                        }
+                        Err(e) => self.status_message = format!("Failed to play {filename}: {e}"),
+                    }
+                } else {
+                    match open::that(&canon) {
+                        Ok(()) => self.status_message = format!("Opened {filename}"),
+                        Err(e) => self.status_message = format!("Failed to open: {e}"),
+                    }
                 }
             }
         }
     }
 
-    /// Export the active conversation's messages to a plain text file.
-    pub(crate) fn export_chat_history(&mut self, limit: Option<usize>) {
+    /// Export the active conversation's messages to a file in the given
+    /// format (plain text, Markdown, or JSON). Rendering lives in
+    /// `crate::export`; this owns file naming, sanitizing, and the write.
+    pub(crate) fn export_chat_history(
+        &mut self,
+        format: crate::export::ExportFormat,
+        limit: Option<usize>,
+    ) {
         let conv_id = match self.active_conversation.as_ref() {
             Some(id) => id.clone(),
             None => {
@@ -5692,8 +4017,6 @@ impl App {
             return;
         }
 
-        // Build plain text output
-        let mut output = String::new();
         let safe_name: String = conv
             .name
             .chars()
@@ -5705,33 +4028,25 @@ impl App {
                 }
             })
             .collect();
-        let date = chrono::Local::now().format("%Y-%m-%d");
-        let filename = format!("siggy-export-{safe_name}-{date}.txt");
+        let now = chrono::Local::now();
+        let filename = format!(
+            "siggy-export-{safe_name}-{}.{}",
+            now.format("%Y-%m-%d"),
+            format.extension()
+        );
 
-        output.push_str(&format!("Chat export: {}\n", conv.name));
-        output.push_str(&format!(
-            "Exported: {}\n",
-            chrono::Local::now().format("%Y-%m-%d %H:%M")
-        ));
-        output.push_str(&format!("Messages: {}\n", export_msgs.len()));
-        output.push_str(&"-".repeat(60));
-        output.push('\n');
+        let output = crate::export::render(format, &conv.name, export_msgs, now);
 
-        for msg in export_msgs {
-            let time = msg
-                .timestamp
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M");
-            if msg.is_system {
-                output.push_str(&format!("[{time}] * {}\n", msg.body));
-            } else {
-                let prefix = if msg.is_edited { "(edited) " } else { "" };
-                output.push_str(&format!("[{time}] <{}> {prefix}{}\n", msg.sender, msg.body));
-                if let Some(ref q) = msg.quote {
-                    output.push_str(&format!("  > <{}> {}\n", q.author, q.body));
-                }
-            }
-        }
+        // Strip control characters from text/Markdown exports (message bodies
+        // and names are remote-controlled) so the saved file cannot inject
+        // terminal escapes when viewed with cat/less (#504). Structural
+        // newlines and tabs are preserved. JSON needs no stripping: serde
+        // escapes control characters inside strings.
+        let output = if format == crate::export::ExportFormat::Json {
+            output
+        } else {
+            crate::debug_log::strip_control_chars(&output, true)
+        };
 
         // Write to download dir or home
         let dir = dirs::download_dir()
@@ -5755,7 +4070,7 @@ impl App {
 }
 
 /// Simple point-in-rect hit test for mouse coordinates.
-fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
+pub(crate) fn is_in_rect(col: u16, row: u16, rect: Rect) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
@@ -5861,5852 +4176,10 @@ impl App {
     /// Populate the app with demo conversations for `--demo` mode and snapshot tests.
     /// `base_date` is used for deterministic timestamps instead of `Utc::now()`.
     pub(crate) fn populate_demo_data(&mut self, base_date: chrono::NaiveDate) {
-        use crate::signal::types::{
-            Group, LinkPreview, MessageStatus, PollData, PollOption, PollVote, Reaction, StyleType,
-        };
-        use chrono::{Local, TimeZone};
-
-        let today = base_date;
-        // Build timestamps via the local timezone so that format_time() (which
-        // converts to Local) always displays the intended hour:minute values,
-        // regardless of which timezone the machine is in.
-        let ts = |hour: u32, min: u32| -> chrono::DateTime<chrono::Utc> {
-            let naive = today
-                .and_hms_opt(hour, min, 0)
-                .unwrap_or_else(|| today.and_hms_opt(12, 0, 0).unwrap());
-            Local
-                .from_local_datetime(&naive)
-                .single()
-                .expect("ambiguous or invalid local time in demo data")
-                .with_timezone(&chrono::Utc)
-        };
-
-        let dm = |sender: &str, time: chrono::DateTime<Utc>, body: &str| -> DisplayMessage {
-            let is_outgoing = sender == "you";
-            DisplayMessage {
-                sender: sender.to_string(),
-                timestamp: time,
-                body: body.to_string(),
-                is_system: false,
-                image_lines: None,
-                image_path: None,
-                status: if is_outgoing {
-                    Some(MessageStatus::Sent)
-                } else {
-                    None
-                },
-                timestamp_ms: time.timestamp_millis(),
-                reactions: Vec::new(),
-                mention_ranges: Vec::new(),
-                style_ranges: Vec::new(),
-                body_raw: None,
-                mentions: Vec::new(),
-                quote: None,
-                is_edited: false,
-                is_deleted: false,
-                is_pinned: false,
-                sender_id: String::new(),
-                expires_in_seconds: 0,
-                expiration_start_ms: 0,
-                poll_data: None,
-                poll_votes: Vec::new(),
-                preview: None,
-                preview_image_lines: None,
-                preview_image_path: None,
-            }
-        };
-
-        // --- Alice: weekend plans (with quotes, edited msg, link preview, delivery statuses) ---
-        let alice_id = "+15550001111".to_string();
-
-        let mut alice_msgs = vec![
-            dm("Alice", ts(8, 0), "Good morning! How's your day going?"),
-            dm("you", ts(8, 5), "Just getting started, coffee in hand"),
-            dm(
-                "Alice",
-                ts(8, 10),
-                "Nice! I've been up since 6, went for a run",
-            ),
-            dm(
-                "you",
-                ts(8, 15),
-                "Impressive. I can barely get out of bed before 7",
-            ),
-            dm(
-                "Alice",
-                ts(8, 20),
-                "Ha! It gets easier once you build the habit",
-            ),
-            dm("you", ts(8, 25), "That's what everyone says..."),
-            dm(
-                "Alice",
-                ts(8, 30),
-                "Trust me, after a week it becomes automatic",
-            ),
-        ];
-
-        // Quote reply: Alice replies to "coffee in hand"
-        let mut alice_reply = dm(
-            "Alice",
-            ts(8, 35),
-            "Honestly same, I need my coffee first too",
-        );
-        alice_reply.quote = Some(Quote {
-            author: "you".to_string(),
-            body: "Just getting started, coffee in hand".to_string(),
-            timestamp_ms: ts(8, 5).timestamp_millis(),
-            author_id: String::new(),
-        });
-        alice_msgs.push(alice_reply);
-
-        alice_msgs.push(dm("you", ts(8, 40), "Are you free this weekend?"));
-        alice_msgs.push(dm("Alice", ts(8, 42), "Yeah! What did you have in mind?"));
-
-        // Link preview
-        let mut link_msg = dm(
-            "Alice",
-            ts(8, 45),
-            "There's this farmers market: https://localmarket.example.com",
-        );
-        link_msg.preview = Some(LinkPreview {
-            url: "https://localmarket.example.com".to_string(),
-            title: Some("Downtown Farmers Market".to_string()),
-            description: Some(
-                "Fresh produce, artisan goods, and live music every Saturday 8am-1pm".to_string(),
-            ),
-            image_path: None,
-        });
-        alice_msgs.push(link_msg);
-
-        alice_msgs.push(dm("you", ts(8, 47), "Oh nice, what time should we go?"));
-        alice_msgs.push(dm(
-            "Alice",
-            ts(8, 48),
-            "Opens at 8, but 9 is fine. Less crowded.",
-        ));
-        alice_msgs.push(dm("you", ts(8, 50), "Perfect, let's do 9"));
-        alice_msgs.push(dm("Alice", ts(8, 52), "I'll pick you up at 8:45"));
-
-        // Edited message
-        let mut edited_msg = dm(
-            "you",
-            ts(8, 55),
-            "Actually make it 8:30, I want to browse early",
-        );
-        edited_msg.is_edited = true;
-        alice_msgs.push(edited_msg);
-
-        alice_msgs.push(dm("Alice", ts(8, 57), "Even better! See you Saturday"));
-
-        // Varied delivery statuses on outgoing messages
-        alice_msgs[1].status = Some(MessageStatus::Read); // "coffee in hand"
-        alice_msgs[3].status = Some(MessageStatus::Read); // "barely get out of bed"
-        alice_msgs[5].status = Some(MessageStatus::Read); // "what everyone says"
-        alice_msgs[8].status = Some(MessageStatus::Delivered); // "are you free"
-        alice_msgs[12].status = Some(MessageStatus::Delivered); // "let's do 9"
-        alice_msgs[14].status = Some(MessageStatus::Sent); // edited msg
-
-        let alice = Conversation {
-            name: "Alice".to_string(),
-            id: alice_id.clone(),
-            messages: alice_msgs,
-            unread: 0,
-            is_group: false,
-            expiration_timer: 0,
-            accepted: true,
-        };
-
-        // --- Bob: code review (with styled text) ---
-        let bob_id = "+15550002222".to_string();
-        let mut bob_styled = dm(
-            "Bob",
-            ts(10, 5),
-            "Can you review my PR? It's the auth refactor",
-        );
-        // "auth refactor" is bold (bytes 33..47)
-        bob_styled.style_ranges = vec![(33, 47, StyleType::Bold)];
-
-        let mut bob_code = dm(
-            "Bob",
-            ts(10, 8),
-            "The key change is in verify_token() — switched from HMAC to Ed25519",
-        );
-        // "verify_token()" is monospace (bytes 22..36)
-        bob_code.style_ranges = vec![(22, 36, StyleType::Monospace)];
-
-        let mut bob_reply = dm(
-            "you",
-            ts(10, 12),
-            "Looks good! Left a few comments on the error handling",
-        );
-        bob_reply.status = Some(MessageStatus::Read);
-
-        let bob_thanks = dm(
-            "Bob",
-            ts(10, 15),
-            "Thanks! I'll address those. Also the migration is backwards-compatible so no rush on deploy",
-        );
-
-        // Quote reply: Bob quotes the review comment
-        let mut bob_followup = dm("Bob", ts(10, 20), "Fixed those error handling bits, PTAL");
-        bob_followup.quote = Some(Quote {
-            author: "you".to_string(),
-            body: "Looks good! Left a few comments on the error handling".to_string(),
-            timestamp_ms: ts(10, 12).timestamp_millis(),
-            author_id: String::new(),
-        });
-
-        let mut bob_lgtm = dm("you", ts(10, 25), "LGTM, approved!");
-        bob_lgtm.status = Some(MessageStatus::Delivered);
-
-        // Italicize LGTM
-        bob_lgtm.style_ranges = vec![(0, 4, StyleType::Bold)];
-
-        let bob = Conversation {
-            name: "Bob".to_string(),
-            id: bob_id.clone(),
-            messages: vec![
-                bob_styled,
-                bob_code,
-                bob_reply,
-                bob_thanks,
-                bob_followup,
-                bob_lgtm,
-            ],
-            unread: 0,
-            is_group: false,
-            expiration_timer: 0,
-            accepted: true,
-        };
-
-        // --- Carol: single unread ---
-        let carol_id = "+15550003333".to_string();
-        let carol = Conversation {
-            name: "Carol".to_string(),
-            id: carol_id.clone(),
-            messages: vec![dm(
-                "Carol",
-                ts(11, 45),
-                "Did you see the announcement about the office move?",
-            )],
-            unread: 1,
-            is_group: false,
-            expiration_timer: 0,
-            accepted: true,
-        };
-
-        // --- Dave: meetup conversation with disappearing messages ---
-        let dave_id = "+15550004444".to_string();
-        let mut dave_sys = dm("system", ts(7, 55), "Disappearing messages set to 1 day");
-        dave_sys.is_system = true;
-
-        let mut dave_msg1 = dm("Dave", ts(8, 0), "Meetup is at the usual place, 7pm");
-        dave_msg1.expires_in_seconds = 86400;
-        dave_msg1.expiration_start_ms = ts(8, 0).timestamp_millis();
-
-        let mut dave_msg2 = dm("you", ts(8, 5), "Got it, I'll be there");
-        dave_msg2.status = Some(MessageStatus::Read);
-        dave_msg2.expires_in_seconds = 86400;
-        dave_msg2.expiration_start_ms = ts(8, 5).timestamp_millis();
-
-        let mut dave_msg3 = dm(
-            "Dave",
-            ts(8, 6),
-            "Bring your laptop if you want to hack on stuff",
-        );
-        dave_msg3.expires_in_seconds = 86400;
-        dave_msg3.expiration_start_ms = ts(8, 6).timestamp_millis();
-
-        let dave = Conversation {
-            name: "Dave".to_string(),
-            id: dave_id.clone(),
-            messages: vec![dave_sys, dave_msg1, dave_msg2, dave_msg3],
-            unread: 0,
-            is_group: false,
-            expiration_timer: 86400,
-            accepted: true,
-        };
-
-        // --- #Rust Devs: group discussion with @mentions, poll, pinned msg ---
-        let rust_id = "group_rustdevs".to_string();
-
-        let mut pinned_msg = dm(
-            "Alice",
-            ts(10, 30),
-            "Has anyone tried the new async trait syntax?",
-        );
-        pinned_msg.is_pinned = true;
-
-        let mut bob_group = dm(
-            "Bob",
-            ts(10, 32),
-            "Yeah, it's so much cleaner than the pin-based approach",
-        );
-        // "so much cleaner" in italic (bytes 9..24)
-        bob_group.style_ranges = vec![(9, 24, StyleType::Italic)];
-
-        let dave_group = dm("Dave", ts(10, 35), "I'm still wrapping my head around it");
-
-        let mut you_group = dm("you", ts(10, 40), "The desugaring docs helped me a lot");
-        you_group.status = Some(MessageStatus::Read);
-
-        let mut alice_mention = dm(
-            "Alice",
-            ts(10, 42),
-            "Can you share the link? @Bob might want it too",
-        );
-        alice_mention.mention_ranges = vec![(24, 28)];
-
-        let mut you_link = dm(
-            "you",
-            ts(10, 43),
-            "Here you go: https://blog.rust-lang.org/async-traits",
-        );
-        you_link.status = Some(MessageStatus::Delivered);
-        you_link.preview = Some(LinkPreview {
-            url: "https://blog.rust-lang.org/async-traits".to_string(),
-            title: Some("Async Trait Methods in Stable Rust".to_string()),
-            description: Some(
-                "A deep dive into the stabilization of async fn in traits".to_string(),
-            ),
-            image_path: None,
-        });
-
-        // Poll: "Which async runtime do you prefer?"
-        let mut poll_msg = dm("Dave", ts(10, 50), "");
-        poll_msg.poll_data = Some(PollData {
-            question: "Which async runtime do you prefer?".to_string(),
-            options: vec![
-                PollOption {
-                    id: 0,
-                    text: "Tokio".to_string(),
-                },
-                PollOption {
-                    id: 1,
-                    text: "async-std".to_string(),
-                },
-                PollOption {
-                    id: 2,
-                    text: "smol".to_string(),
-                },
-            ],
-            allow_multiple: false,
-            closed: false,
-        });
-        poll_msg.poll_votes = vec![
-            PollVote {
-                voter: "+15550001111".to_string(),
-                voter_name: Some("Alice".to_string()),
-                option_indexes: vec![0],
-                vote_count: 1,
-            },
-            PollVote {
-                voter: "+15550002222".to_string(),
-                voter_name: Some("Bob".to_string()),
-                option_indexes: vec![0],
-                vote_count: 1,
-            },
-            PollVote {
-                voter: "+15550004444".to_string(),
-                voter_name: Some("Dave".to_string()),
-                option_indexes: vec![2],
-                vote_count: 1,
-            },
-            PollVote {
-                voter: "you".to_string(),
-                voter_name: Some("you".to_string()),
-                option_indexes: vec![0],
-                vote_count: 1,
-            },
-        ];
-
-        let rust_group = Conversation {
-            name: "#Rust Devs".to_string(),
-            id: rust_id.clone(),
-            messages: vec![
-                pinned_msg,
-                bob_group,
-                dave_group,
-                you_group,
-                alice_mention,
-                you_link,
-                poll_msg,
-            ],
-            unread: 0,
-            is_group: true,
-            expiration_timer: 0,
-            accepted: true,
-        };
-
-        // --- #Family: group with unread and quote reply ---
-        let family_id = "group_family".to_string();
-        let mom_id = "+15550005555".to_string();
-        let dad_id = "+15550006666".to_string();
-
-        let mom_dinner = dm("Mom", ts(12, 0), "Dinner at our place Sunday?");
-        let dad_grill = dm("Dad", ts(12, 5), "I'll fire up the grill");
-
-        let mut you_family = dm("you", ts(12, 10), "Count me in!");
-        you_family.status = Some(MessageStatus::Read);
-
-        let mom_dessert = dm("Mom", ts(13, 30), "Great! Bring dessert if you can");
-        // Quote reply to "I'll fire up the grill"
-        let mut dad_reply = dm("Dad", ts(13, 35), "Got the burgers and corn ready");
-        dad_reply.quote = Some(Quote {
-            author: "Dad".to_string(),
-            body: "I'll fire up the grill".to_string(),
-            timestamp_ms: ts(12, 5).timestamp_millis(),
-            author_id: dad_id.clone(),
-        });
-
-        let family_group = Conversation {
-            name: "#Family".to_string(),
-            id: family_id.clone(),
-            messages: vec![mom_dinner, dad_grill, you_family, mom_dessert, dad_reply],
-            unread: 2,
-            is_group: true,
-            expiration_timer: 0,
-            accepted: true,
-        };
-
-        // --- Eve: message request (unknown sender) ---
-        let eve_id = "+15550007777".to_string();
-        let eve = Conversation {
-            name: "+15550007777".to_string(),
-            id: eve_id.clone(),
-            messages: vec![dm(
-                "+15550007777",
-                ts(14, 0),
-                "Hey, I got your number from the meetup. Is this the right person?",
-            )],
-            unread: 1,
-            is_group: false,
-            expiration_timer: 0,
-            accepted: false,
-        };
-
-        // Insert conversations and set ordering
-        let order = vec![
-            eve_id.clone(),
-            family_id.clone(),
-            carol_id.clone(),
-            rust_id.clone(),
-            bob_id.clone(),
-            alice_id.clone(),
-            dave_id.clone(),
-        ];
-
-        for conv in [alice, bob, carol, dave, rust_group, family_group, eve] {
-            let id = conv.id.clone();
-            let msg_count = conv.messages.len();
-            let unread = conv.unread;
-            self.store.conversations.insert(id.clone(), conv);
-            if msg_count > 0 {
-                self.store
-                    .last_read_index
-                    .insert(id, msg_count.saturating_sub(unread));
-            }
-        }
-
-        self.store.conversation_order = order;
-        self.active_conversation = Some(alice_id.clone());
-        self.status_message = "connected | demo mode".to_string();
-
-        // Populate contact names and UUID maps for @mention autocomplete
-        let demo_contacts: Vec<(&str, &str, &str)> = vec![
-            (&alice_id, "Alice", "aaaa-alice-uuid"),
-            (&bob_id, "Bob", "bbbb-bob-uuid"),
-            (&carol_id, "Carol", "cccc-carol-uuid"),
-            (&dave_id, "Dave", "dddd-dave-uuid"),
-            (&mom_id, "Mom", "eeee-mom-uuid"),
-            (&dad_id, "Dad", "ffff-dad-uuid"),
-        ];
-        for (phone, name, uuid) in &demo_contacts {
-            self.store
-                .contact_names
-                .insert(phone.to_string(), name.to_string());
-            self.store
-                .uuid_to_name
-                .insert(uuid.to_string(), name.to_string());
-            self.store
-                .number_to_uuid
-                .insert(phone.to_string(), uuid.to_string());
-        }
-
-        // Populate groups with correct members
-        self.store.groups.insert(
-            rust_id.clone(),
-            Group {
-                id: rust_id,
-                name: "#Rust Devs".to_string(),
-                members: vec![alice_id.clone(), bob_id.clone(), dave_id.clone()],
-                member_uuids: vec![],
-            },
-        );
-        self.store.groups.insert(
-            family_id.clone(),
-            Group {
-                id: family_id,
-                name: "#Family".to_string(),
-                members: vec![mom_id, dad_id],
-                member_uuids: vec![],
-            },
-        );
-
-        // Add sample reactions
-        if let Some(conv) = self.store.conversations.get_mut(&alice_id) {
-            // Alice's first message gets a thumbs up from "you"
-            if let Some(msg) = conv.messages.get_mut(0) {
-                msg.reactions.push(Reaction {
-                    emoji: "\u{1f44d}".to_string(),
-                    sender: "you".to_string(),
-                });
-            }
-            // "coffee in hand" gets a heart from Alice
-            if let Some(msg) = conv.messages.get_mut(1) {
-                msg.reactions.push(Reaction {
-                    emoji: "\u{2764}\u{fe0f}".to_string(),
-                    sender: "Alice".to_string(),
-                });
-            }
-            // "See you Saturday" gets multiple reactions
-            if let Some(msg) = conv.messages.last_mut() {
-                msg.reactions.push(Reaction {
-                    emoji: "\u{1f389}".to_string(),
-                    sender: "you".to_string(),
-                });
-            }
-        }
-        if let Some(conv) = self.store.conversations.get_mut("group_rustdevs") {
-            // "desugaring docs" message gets multiple reactions
-            if let Some(msg) = conv.messages.get_mut(3) {
-                msg.reactions.push(Reaction {
-                    emoji: "\u{1f44d}".to_string(),
-                    sender: "Alice".to_string(),
-                });
-                msg.reactions.push(Reaction {
-                    emoji: "\u{1f44d}".to_string(),
-                    sender: "Bob".to_string(),
-                });
-                msg.reactions.push(Reaction {
-                    emoji: "\u{2764}\u{fe0f}".to_string(),
-                    sender: "Dave".to_string(),
-                });
-            }
-            // Pinned msg gets a pushpin reaction
-            if let Some(msg) = conv.messages.get_mut(0) {
-                msg.reactions.push(Reaction {
-                    emoji: "\u{1f4cc}".to_string(),
-                    sender: "Dave".to_string(),
-                });
-            }
-        }
-        if let Some(conv) = self.store.conversations.get_mut("group_family") {
-            // "Count me in!" gets hearts from both parents
-            if let Some(msg) = conv.messages.get_mut(2) {
-                msg.reactions.push(Reaction {
-                    emoji: "\u{2764}\u{fe0f}".to_string(),
-                    sender: "Mom".to_string(),
-                });
-                msg.reactions.push(Reaction {
-                    emoji: "\u{2764}\u{fe0f}".to_string(),
-                    sender: "Dad".to_string(),
-                });
-            }
-        }
+        crate::demo::populate_demo_data(self, base_date)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::Database;
-    use crate::signal::types::{
-        Attachment, Contact, Group, IdentityInfo, Mention, PollData, PollOption, SignalEvent,
-        SignalMessage, StyleType, TextStyle, TrustLevel,
-    };
-    use crossterm::event::{KeyCode, KeyModifiers};
-    use rstest::{fixture, rstest};
-
-    #[fixture]
-    fn app() -> App {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("config.toml");
-        // Leak the tempdir so it lives as long as the test process. Tests are
-        // short-lived and the OS reclaims temp dirs on exit anyway.
-        std::mem::forget(dir);
-        let db = Database::open_in_memory().unwrap();
-        let mut app = App::new("+10000000000".to_string(), db, &config_path);
-        app.set_connected();
-        app
-    }
-
-    // --- Contacts/groups only populate the name lookup, not the sidebar ---
-
-    #[rstest]
-    fn contact_list_does_not_create_conversations(mut app: App) {
-        assert!(app.store.conversations.is_empty());
-
-        app.handle_signal_event(SignalEvent::ContactList(vec![
-            Contact {
-                number: "+1".to_string(),
-                name: Some("Alice".to_string()),
-                uuid: None,
-            },
-            Contact {
-                number: "+2".to_string(),
-                name: Some("Bob".to_string()),
-                uuid: None,
-            },
-        ]));
-
-        // No conversations created — only name lookup populated
-        assert!(app.store.conversations.is_empty());
-        assert!(app.store.conversation_order.is_empty());
-        assert_eq!(app.store.contact_names["+1"], "Alice");
-        assert_eq!(app.store.contact_names["+2"], "Bob");
-    }
-
-    #[rstest]
-    fn group_list_creates_conversations(mut app: App) {
-        app.handle_signal_event(SignalEvent::GroupList(vec![
-            Group {
-                id: "g1".to_string(),
-                name: "Family".to_string(),
-                members: vec![],
-                member_uuids: vec![],
-            },
-            Group {
-                id: "g2".to_string(),
-                name: "Work".to_string(),
-                members: vec![],
-                member_uuids: vec![],
-            },
-        ]));
-
-        // Groups always create conversations (you're a member)
-        assert_eq!(app.store.conversations.len(), 2);
-        assert_eq!(app.store.conversations["g1"].name, "Family");
-        assert_eq!(app.store.conversations["g2"].name, "Work");
-        assert!(app.store.conversations["g1"].is_group);
-        assert_eq!(app.store.contact_names["g1"], "Family");
-    }
-
-    // --- Contact names enrich existing conversations ---
-
-    #[rstest]
-    fn contact_name_updates_existing_conversation(mut app: App) {
-        // A message arrives first with just a phone number
-        let msg = SignalMessage {
-            source: "+15551234567".to_string(),
-            timestamp: chrono::Utc::now(),
-            body: Some("hey".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.store.conversations["+15551234567"].name, "+15551234567");
-
-        // Contact list arrives with a proper name — updates existing conv
-        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
-            number: "+15551234567".to_string(),
-            name: Some("Alice".to_string()),
-            uuid: None,
-        }]));
-
-        assert_eq!(app.store.conversations["+15551234567"].name, "Alice");
-    }
-
-    #[rstest]
-    fn contact_without_name_does_not_overwrite_existing_name(mut app: App) {
-        // Create conversation with a name already
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("hi".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.store.conversations["+1"].name, "Alice");
-
-        // Contact arrives with no name — should NOT overwrite
-        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
-            number: "+1".to_string(),
-            name: None,
-            uuid: None,
-        }]));
-
-        assert_eq!(app.store.conversations["+1"].name, "Alice");
-    }
-
-    // --- Name lookup used when creating conversations from messages ---
-
-    #[rstest]
-    fn message_uses_contact_name_lookup(mut app: App) {
-        // Contacts loaded first (no conversations created)
-        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
-            number: "+1".to_string(),
-            name: Some("Alice".to_string()),
-            uuid: None,
-        }]));
-        assert!(app.store.conversations.is_empty());
-
-        // Message arrives with no source_name — should use lookup
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            timestamp: chrono::Utc::now(),
-            body: Some("hello!".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        assert_eq!(app.store.conversations.len(), 1);
-        assert_eq!(app.store.conversations["+1"].name, "Alice");
-        assert_eq!(app.store.conversations["+1"].messages[0].sender, "Alice");
-    }
-
-    #[rstest]
-    fn message_in_known_group_uses_name_lookup(mut app: App) {
-        // Groups loaded — conversation created
-        app.handle_signal_event(SignalEvent::GroupList(vec![Group {
-            id: "g1".to_string(),
-            name: "Family".to_string(),
-            members: vec![],
-            member_uuids: vec![],
-        }]));
-        assert_eq!(app.store.conversations.len(), 1);
-
-        // Message arrives in that group (no group_name in metadata)
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("hey family".to_string()),
-            group_id: Some("g1".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        // Still 1 conversation, name preserved from group list
-        assert_eq!(app.store.conversations.len(), 1);
-        assert_eq!(app.store.conversations["g1"].name, "Family");
-        assert_eq!(app.store.conversations["g1"].messages.len(), 1);
-    }
-
-    // --- No duplicate conversations ---
-
-    #[rstest]
-    fn no_duplicate_on_repeated_messages(mut app: App) {
-        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
-            number: "+1".to_string(),
-            name: Some("Alice".to_string()),
-            uuid: None,
-        }]));
-
-        for _ in 0..3 {
-            let msg = SignalMessage {
-                source: "+1".to_string(),
-                source_name: Some("Alice".to_string()),
-                timestamp: chrono::Utc::now(),
-                body: Some("msg".to_string()),
-                ..Default::default()
-            };
-            app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        }
-
-        assert_eq!(app.store.conversations.len(), 1);
-        assert_eq!(app.store.conversation_order.len(), 1);
-        assert_eq!(app.store.conversations["+1"].messages.len(), 3);
-    }
-
-    // --- Autocomplete tests ---
-
-    #[rstest]
-    #[case("/", true, None)]
-    #[case("/jo", true, Some(1))]
-    #[case("hello", false, Some(0))]
-    #[case("/join ", false, None)]
-    #[case("/zzz", false, Some(0))]
-    fn autocomplete_visibility(
-        mut app: App,
-        #[case] input: &str,
-        #[case] expected_visible: bool,
-        #[case] expected_count: Option<usize>,
-    ) {
-        app.input.buffer = input.to_string();
-        app.update_autocomplete();
-        assert_eq!(
-            app.is_overlay(OverlayKind::Autocomplete),
-            expected_visible,
-            "visibility for {input:?}"
-        );
-        if let Some(count) = expected_count {
-            assert_eq!(
-                app.autocomplete.command_candidates.len(),
-                count,
-                "count for {input:?}"
-            );
-        }
-    }
-
-    #[rstest]
-    fn apply_autocomplete_trailing_space_for_arg_command(mut app: App) {
-        app.input.buffer = "/jo".to_string();
-        app.update_autocomplete();
-        app.apply_autocomplete();
-        // /join takes args, so buffer should end with a space
-        assert_eq!(app.input.buffer, "/join ");
-        assert_eq!(app.input.cursor, 6);
-    }
-
-    #[rstest]
-    fn apply_autocomplete_no_space_for_no_arg_command(mut app: App) {
-        app.input.buffer = "/pa".to_string();
-        app.update_autocomplete();
-        app.apply_autocomplete();
-        // /part takes no args, no trailing space
-        assert_eq!(app.input.buffer, "/part");
-        assert_eq!(app.input.cursor, 5);
-    }
-
-    #[rstest]
-    fn apply_autocomplete_index_clamped(mut app: App) {
-        app.input.buffer = "/".to_string();
-        app.update_autocomplete();
-        let len = app.autocomplete.command_candidates.len();
-        app.autocomplete.index = len + 5; // way out of bounds
-        app.update_autocomplete(); // should clamp
-        assert!(app.autocomplete.index < app.autocomplete.command_candidates.len());
-    }
-
-    // --- Join autocomplete tests ---
-
-    #[rstest]
-    fn join_autocomplete_shows_contacts(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .contact_names
-            .insert("+2".to_string(), "Bob".to_string());
-        app.input.buffer = "/join ".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.mode, AutocompleteMode::Join);
-        assert_eq!(app.autocomplete.join_candidates.len(), 2);
-    }
-
-    #[rstest]
-    fn join_autocomplete_shows_groups(mut app: App) {
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Family".to_string(),
-                members: vec![],
-                member_uuids: vec![],
-            },
-        );
-        app.input.buffer = "/join ".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.mode, AutocompleteMode::Join);
-        assert_eq!(app.autocomplete.join_candidates.len(), 1);
-        assert!(app.autocomplete.join_candidates[0].0.starts_with('#'));
-    }
-
-    #[rstest]
-    fn join_autocomplete_filters_by_name(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .contact_names
-            .insert("+2".to_string(), "Bob".to_string());
-        app.input.buffer = "/join al".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.join_candidates.len(), 1);
-        assert!(app.autocomplete.join_candidates[0].0.contains("Alice"));
-    }
-
-    #[rstest]
-    fn join_autocomplete_filters_by_phone(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1234".to_string(), "Alice".to_string());
-        app.store
-            .contact_names
-            .insert("+5678".to_string(), "Bob".to_string());
-        app.input.buffer = "/join +123".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.join_candidates.len(), 1);
-        assert!(app.autocomplete.join_candidates[0].1 == "+1234");
-    }
-
-    #[rstest]
-    fn join_autocomplete_alias(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.input.buffer = "/j ".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.mode, AutocompleteMode::Join);
-        assert_eq!(app.autocomplete.join_candidates.len(), 1);
-    }
-
-    #[rstest]
-    fn join_autocomplete_no_match_hides(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.input.buffer = "/join zzz".to_string();
-        app.update_autocomplete();
-        assert!(!app.is_overlay(OverlayKind::Autocomplete));
-    }
-
-    #[rstest]
-    fn apply_join_autocomplete(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.input.buffer = "/join al".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        app.apply_autocomplete();
-        assert_eq!(app.input.buffer, "/join +1");
-        assert_eq!(app.input.cursor, 8);
-        assert!(!app.is_overlay(OverlayKind::Autocomplete));
-    }
-
-    #[rstest]
-    fn apply_join_autocomplete_group(mut app: App) {
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Family".to_string(),
-                members: vec![],
-                member_uuids: vec![],
-            },
-        );
-        app.input.buffer = "/join fam".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        app.apply_autocomplete();
-        assert_eq!(app.input.buffer, "/join g1");
-        assert_eq!(app.input.cursor, 8);
-    }
-
-    #[rstest]
-    fn join_autocomplete_includes_conversations(mut app: App) {
-        // Create a conversation that isn't in contact_names
-        app.store
-            .get_or_create_conversation("+9999", "+9999", false, &app.db);
-        app.input.buffer = "/join +999".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.join_candidates.len(), 1);
-    }
-
-    #[rstest]
-    fn join_autocomplete_skips_group_ids_in_contacts(mut app: App) {
-        // group IDs in contact_names don't start with '+'
-        app.store
-            .contact_names
-            .insert("g1".to_string(), "Family".to_string());
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.input.buffer = "/join ".to_string();
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        // Only Alice should appear from contact_names (g1 is skipped as non-phone)
-        let contact_entries: Vec<_> = app
-            .autocomplete
-            .join_candidates
-            .iter()
-            .filter(|(_, v)| v == "+1")
-            .collect();
-        assert_eq!(contact_entries.len(), 1);
-    }
-
-    #[rstest]
-    fn join_autocomplete_index_clamped(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.input.buffer = "/join ".to_string();
-        app.update_autocomplete();
-        app.autocomplete.index = 100; // way out of bounds
-        app.update_autocomplete(); // should clamp
-        assert!(app.autocomplete.index < app.autocomplete.join_candidates.len());
-    }
-
-    // --- apply_input_edit tests ---
-
-    #[rstest]
-    fn input_edit_char_insert(mut app: App) {
-        assert!(app.apply_input_edit(KeyCode::Char('a')));
-        assert!(app.apply_input_edit(KeyCode::Char('b')));
-        assert_eq!(app.input.buffer, "ab");
-        assert_eq!(app.input.cursor, 2);
-    }
-
-    #[rstest]
-    fn input_edit_backspace(mut app: App) {
-        app.input.buffer = "abc".to_string();
-        app.input.cursor = 3;
-        assert!(app.apply_input_edit(KeyCode::Backspace));
-        assert_eq!(app.input.buffer, "ab");
-        assert_eq!(app.input.cursor, 2);
-    }
-
-    #[rstest]
-    fn input_edit_delete(mut app: App) {
-        app.input.buffer = "abc".to_string();
-        app.input.cursor = 1;
-        assert!(app.apply_input_edit(KeyCode::Delete));
-        assert_eq!(app.input.buffer, "ac");
-        assert_eq!(app.input.cursor, 1);
-    }
-
-    #[rstest]
-    fn input_edit_left_right(mut app: App) {
-        app.input.buffer = "abc".to_string();
-        app.input.cursor = 2;
-        assert!(app.apply_input_edit(KeyCode::Left));
-        assert_eq!(app.input.cursor, 1);
-        assert!(app.apply_input_edit(KeyCode::Right));
-        assert_eq!(app.input.cursor, 2);
-    }
-
-    #[rstest]
-    fn input_edit_home_end(mut app: App) {
-        app.input.buffer = "abc".to_string();
-        app.input.cursor = 1;
-        assert!(app.apply_input_edit(KeyCode::Home));
-        assert_eq!(app.input.cursor, 0);
-        assert!(app.apply_input_edit(KeyCode::End));
-        assert_eq!(app.input.cursor, 3);
-    }
-
-    #[rstest]
-    fn input_edit_unhandled_key(mut app: App) {
-        assert!(!app.apply_input_edit(KeyCode::F(1)));
-    }
-
-    // --- Input history tests ---
-
-    #[rstest]
-    fn history_up_empty_is_noop(mut app: App) {
-        app.input.buffer = "draft".to_string();
-        app.history_up();
-        assert_eq!(app.input.buffer, "draft");
-        assert_eq!(app.input.history_index, None);
-    }
-
-    #[rstest]
-    fn history_down_without_browsing_is_noop(mut app: App) {
-        app.input.buffer = "draft".to_string();
-        app.history_down();
-        assert_eq!(app.input.buffer, "draft");
-        assert_eq!(app.input.history_index, None);
-    }
-
-    #[rstest]
-    fn history_up_recalls_last_entry(mut app: App) {
-        app.input.history = vec!["hello".to_string(), "goodbye".to_string()];
-        app.input.buffer = "draft".to_string();
-        app.input.cursor = 5;
-
-        app.history_up();
-        assert_eq!(app.input.buffer, "goodbye");
-        assert_eq!(app.input.history_index, Some(1));
-        assert_eq!(app.input.history_draft, "draft");
-        assert_eq!(app.input.cursor, 7); // cursor at end of "goodbye" (7 bytes, distinct from draft's 5)
-    }
-
-    #[rstest]
-    fn history_up_walks_to_oldest(mut app: App) {
-        app.input.history = vec![
-            "first".to_string(),
-            "second".to_string(),
-            "third".to_string(),
-        ];
-        app.input.buffer = String::new();
-
-        app.history_up(); // -> "third"
-        assert_eq!(app.input.buffer, "third");
-        assert_eq!(app.input.history_index, Some(2));
-
-        app.history_up(); // -> "second"
-        assert_eq!(app.input.buffer, "second");
-        assert_eq!(app.input.history_index, Some(1));
-
-        app.history_up(); // -> "first"
-        assert_eq!(app.input.buffer, "first");
-        assert_eq!(app.input.history_index, Some(0));
-
-        // At oldest — stays put
-        app.history_up();
-        assert_eq!(app.input.buffer, "first");
-        assert_eq!(app.input.history_index, Some(0));
-    }
-
-    #[rstest]
-    fn history_down_walks_forward_and_restores_draft(mut app: App) {
-        app.input.history = vec!["aaa".to_string(), "bbb".to_string()];
-        app.input.buffer = "my draft".to_string();
-
-        // Go to oldest
-        app.history_up(); // -> "bbb"
-        app.history_up(); // -> "aaa"
-        assert_eq!(app.input.buffer, "aaa");
-        assert_eq!(app.input.history_index, Some(0));
-
-        // Walk forward
-        app.history_down(); // -> "bbb"
-        assert_eq!(app.input.buffer, "bbb");
-        assert_eq!(app.input.history_index, Some(1));
-
-        // Past newest restores draft
-        app.history_down();
-        assert_eq!(app.input.buffer, "my draft");
-        assert_eq!(app.input.history_index, None);
-    }
-
-    #[rstest]
-    fn history_cursor_moves_to_end(mut app: App) {
-        app.input.history = vec!["short".to_string(), "a longer entry".to_string()];
-        app.input.buffer = String::new();
-        app.input.cursor = 0;
-
-        app.history_up(); // -> "a longer entry"
-        assert_eq!(app.input.cursor, 14);
-
-        app.history_up(); // -> "short"
-        assert_eq!(app.input.cursor, 5);
-
-        app.history_down(); // -> "a longer entry"
-        assert_eq!(app.input.cursor, 14);
-
-        app.history_down(); // -> draft ""
-        assert_eq!(app.input.cursor, 0);
-    }
-
-    #[rstest]
-    fn handle_input_saves_to_history(mut app: App) {
-        // Need an active conversation for SendText to work
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-
-        app.input.buffer = "hello".to_string();
-        app.input.cursor = 5;
-        app.handle_input();
-        assert_eq!(app.input.history, vec!["hello".to_string()]);
-        assert_eq!(app.input.history_index, None);
-
-        app.input.buffer = "world".to_string();
-        app.input.cursor = 5;
-        app.handle_input();
-        assert_eq!(
-            app.input.history,
-            vec!["hello".to_string(), "world".to_string()]
-        );
-    }
-
-    #[rstest]
-    fn handle_input_trims_and_skips_empty(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-
-        // Whitespace-only input should not be saved
-        app.input.buffer = "   ".to_string();
-        app.handle_input();
-        assert!(app.input.history.is_empty());
-
-        // Input with surrounding whitespace should be trimmed
-        app.input.buffer = "  hello  ".to_string();
-        app.input.cursor = 9;
-        app.handle_input();
-        assert_eq!(app.input.history, vec!["hello".to_string()]);
-    }
-
-    #[rstest]
-    fn handle_input_resets_history_index(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-
-        app.input.history = vec!["old".to_string()];
-        app.input.history_index = Some(0);
-        app.input.buffer = "new".to_string();
-        app.input.cursor = 3;
-        app.handle_input();
-
-        assert_eq!(app.input.history_index, None);
-    }
-
-    #[rstest]
-    fn apply_input_edit_up_down_routes_to_history(mut app: App) {
-        app.input.history = vec!["recalled".to_string()];
-        app.input.buffer = "draft".to_string();
-
-        assert!(app.apply_input_edit(KeyCode::Up));
-        assert_eq!(app.input.buffer, "recalled");
-
-        assert!(app.apply_input_edit(KeyCode::Down));
-        assert_eq!(app.input.buffer, "draft");
-    }
-
-    // --- Multi-line input tests ---
-
-    #[rstest]
-    fn input_line_count_single_line(mut app: App) {
-        app.input.buffer = "hello".to_string();
-        assert_eq!(app.input_line_count(), 1);
-    }
-
-    #[rstest]
-    fn input_line_count_multi_line(mut app: App) {
-        app.input.buffer = "hello\nworld\nfoo".to_string();
-        assert_eq!(app.input_line_count(), 3);
-    }
-
-    #[rstest]
-    fn cursor_line_col_first_line(mut app: App) {
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 3;
-        assert_eq!(app.cursor_line_col(), (0, 3));
-    }
-
-    #[rstest]
-    fn cursor_line_col_second_line(mut app: App) {
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 8; // "world" index 2
-        assert_eq!(app.cursor_line_col(), (1, 2));
-    }
-
-    #[rstest]
-    fn cursor_line_col_at_newline(mut app: App) {
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 6; // start of "world"
-        assert_eq!(app.cursor_line_col(), (1, 0));
-    }
-
-    #[rstest]
-    fn up_navigates_between_lines(mut app: App) {
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 8; // line 1, col 2
-        app.apply_input_edit(KeyCode::Up);
-        assert_eq!(app.input.cursor, 2); // line 0, col 2
-    }
-
-    #[rstest]
-    fn down_navigates_between_lines(mut app: App) {
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 2; // line 0, col 2
-        app.apply_input_edit(KeyCode::Down);
-        assert_eq!(app.input.cursor, 8); // line 1, col 2
-    }
-
-    #[rstest]
-    fn up_clamps_to_shorter_line(mut app: App) {
-        app.input.buffer = "hi\nhello world".to_string();
-        app.input.cursor = 12; // line 1, col 9
-        app.apply_input_edit(KeyCode::Up);
-        assert_eq!(app.input.cursor, 2); // line 0, col 2 (clamped to "hi" length)
-    }
-
-    #[rstest]
-    fn down_clamps_to_shorter_line(mut app: App) {
-        app.input.buffer = "hello world\nhi".to_string();
-        app.input.cursor = 9; // line 0, col 9
-        app.apply_input_edit(KeyCode::Down);
-        assert_eq!(app.input.cursor, 14); // line 1, col 2 (clamped to "hi" length)
-    }
-
-    #[rstest]
-    fn up_on_first_line_uses_history(mut app: App) {
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 3; // line 0, col 3
-        app.input.history = vec!["recalled".to_string()];
-        app.apply_input_edit(KeyCode::Up);
-        assert_eq!(app.input.buffer, "recalled");
-    }
-
-    #[rstest]
-    fn down_on_last_line_falls_through_to_history(mut app: App) {
-        // Single-line buffer on last line → Down should use history_down
-        app.input.buffer = "current".to_string();
-        app.input.cursor = 3;
-        app.input.history = vec!["old".to_string()];
-        app.input.history_index = Some(0);
-        // history_down from index 0 with 1 item → restores draft
-        // but we didn't save a draft via history_up, so draft is ""
-        app.apply_input_edit(KeyCode::Down);
-        assert_eq!(app.input.history_index, None); // exited history browsing
-    }
-
-    #[rstest]
-    fn home_end_line_aware(mut app: App) {
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 8; // line 1, col 2
-        app.apply_input_edit(KeyCode::Home);
-        assert_eq!(app.input.cursor, 6); // start of line 1
-        app.apply_input_edit(KeyCode::End);
-        assert_eq!(app.input.cursor, 11); // end of line 1
-    }
-
-    #[rstest]
-    fn alt_enter_inserts_newline(mut app: App) {
-        app.mode = InputMode::Insert;
-        app.input.buffer = "hello".to_string();
-        app.input.cursor = 5;
-        app.handle_insert_key(KeyModifiers::ALT, KeyCode::Enter);
-        assert_eq!(app.input.buffer, "hello\n");
-        assert_eq!(app.input.cursor, 6);
-    }
-
-    #[rstest]
-    fn enter_sends_multiline_message(mut app: App) {
-        app.mode = InputMode::Insert;
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.input.buffer = "hello\nworld".to_string();
-        app.input.cursor = 11;
-        let result = app.handle_insert_key(KeyModifiers::NONE, KeyCode::Enter);
-        assert!(result.is_some()); // should produce a SendRequest
-        assert!(app.input.buffer.is_empty()); // buffer cleared after send
-    }
-
-    #[rstest]
-    fn paste_normalizes_line_endings(mut app: App) {
-        app.mode = InputMode::Insert;
-        app.handle_paste("hello\r\nworld\rfoo".to_string());
-        assert_eq!(app.input.buffer, "hello\nworld\nfoo");
-    }
-
-    // --- Pagination tests ---
-
-    #[rstest]
-    fn load_from_db_marks_has_more(mut app: App) {
-        // Insert exactly PAGE_SIZE messages
-        let conv_id = "+pagination";
-        app.db
-            .upsert_conversation(conv_id, "PagTest", false)
-            .unwrap();
-        for i in 0..App::PAGE_SIZE {
-            app.db
-                .insert_message(
-                    conv_id,
-                    "Alice",
-                    &format!("2025-01-01T00:{:02}:{:02}Z", i / 60, i % 60),
-                    &format!("msg{i}"),
-                    false,
-                    None,
-                    i as i64 * 1000,
-                )
-                .unwrap();
-        }
-        app.load_from_db().unwrap();
-        assert!(app.store.has_more_messages.contains(conv_id));
-    }
-
-    #[rstest]
-    fn load_from_db_no_more_when_under_page_size(mut app: App) {
-        let conv_id = "+small";
-        app.db.upsert_conversation(conv_id, "Small", false).unwrap();
-        app.db
-            .insert_message(
-                conv_id,
-                "Alice",
-                "2025-01-01T00:00:00Z",
-                "only one",
-                false,
-                None,
-                0,
-            )
-            .unwrap();
-        app.load_from_db().unwrap();
-        assert!(!app.store.has_more_messages.contains(conv_id));
-    }
-
-    // Reproduces #486: a row stuck in Sending means no SendTimestamp ever
-    // confirmed it. Promoting it to Sent on restart displayed never-delivered
-    // messages as sent; it must come back as Failed.
-    #[rstest]
-    fn load_from_db_demotes_stale_sending_to_failed(mut app: App) {
-        let conv_id = "+stale";
-        app.db.upsert_conversation(conv_id, "Stale", false).unwrap();
-        app.db
-            .insert_message(
-                conv_id,
-                "you",
-                "2025-01-01T00:00:00Z",
-                "never confirmed",
-                false,
-                Some(MessageStatus::Sending),
-                1000,
-            )
-            .unwrap();
-        app.load_from_db().unwrap();
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Failed)
-        );
-    }
-
-    // Reproduces #486: when dispatch_send fails locally (stdin channel closed),
-    // no SendFailed event will ever arrive, so the dispatcher calls
-    // mark_send_failed directly. It must update memory and the DB.
-    #[rstest]
-    fn mark_send_failed_updates_memory_and_db(mut app: App) {
-        let conv_id = "+1";
-        let local_ts = 1700000000000_i64;
-        app.db.upsert_conversation(conv_id, "Alice", false).unwrap();
-        app.db
-            .insert_message(
-                conv_id,
-                "you",
-                "2025-01-01T00:00:00Z",
-                "doomed",
-                false,
-                Some(MessageStatus::Sending),
-                local_ts,
-            )
-            .unwrap();
-        app.load_from_db().unwrap();
-        // load_from_db demotes stale Sending; restore an in-flight send state
-        app.store.conversations.get_mut(conv_id).unwrap().messages[0].status =
-            Some(MessageStatus::Sending);
-        app.db
-            .update_message_status(conv_id, local_ts, MessageStatus::Sending.to_i32())
-            .unwrap();
-
-        assert_eq!(app.store.conversations[conv_id].messages.len(), 1);
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].timestamp_ms,
-            local_ts
-        );
-
-        crate::handlers::signal::mark_send_failed(&mut app, conv_id, local_ts);
-
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Failed)
-        );
-        let reloaded = app.db.load_messages_page(conv_id, 10, 0).unwrap();
-        assert_eq!(reloaded[0].status, Some(MessageStatus::Failed));
-    }
-
-    // --- #488: scrollback extension ---
-    //
-    // Hitting the window top must make the render window strictly larger
-    // each time (over memory first, then DB pages), so the at_top flag
-    // cannot re-fire without further user scrolling. The old behavior
-    // (load_more_messages on every 50ms tick while at_top stayed true)
-    // streamed the entire history into RAM with the loaded messages
-    // unreachable behind a tail-anchored window.
-
-    #[rstest]
-    fn extend_scrollback_widens_window_over_memory_without_db_load(mut app: App) {
-        let conv_id = "+ext";
-        app.db.upsert_conversation(conv_id, "Ext", false).unwrap();
-        for i in 0..150 {
-            app.db
-                .insert_message(
-                    conv_id,
-                    "Alice",
-                    &format!("2025-01-01T{:02}:{:02}:00Z", i / 60, i % 60),
-                    &format!("msg{i}"),
-                    false,
-                    None,
-                    i as i64 * 1000,
-                )
-                .unwrap();
-        }
-        app.load_from_db().unwrap();
-        app.active_conversation = Some(conv_id.to_string());
-        let loaded = app.store.conversations[conv_id].messages.len();
-
-        app.scroll.at_top = true;
-        app.scroll.can_extend_in_memory = true;
-        app.extend_scrollback();
-
-        assert_eq!(app.scroll.window_extra, App::SCROLLBACK_EXTEND_CHUNK);
-        assert!(!app.scroll.at_top, "at_top must be consumed");
-        assert_eq!(
-            app.store.conversations[conv_id].messages.len(),
-            loaded,
-            "in-memory extension must not page from the DB"
-        );
-    }
-
-    #[rstest]
-    fn extend_scrollback_pages_from_db_and_makes_new_messages_reachable(mut app: App) {
-        let conv_id = "+ext2";
-        app.db.upsert_conversation(conv_id, "Ext2", false).unwrap();
-        for i in 0..150 {
-            app.db
-                .insert_message(
-                    conv_id,
-                    "Alice",
-                    &format!("2025-01-01T{:02}:{:02}:00Z", i / 60, i % 60),
-                    &format!("msg{i}"),
-                    false,
-                    None,
-                    i as i64 * 1000,
-                )
-                .unwrap();
-        }
-        app.load_from_db().unwrap();
-        app.active_conversation = Some(conv_id.to_string());
-        let loaded = app.store.conversations[conv_id].messages.len();
-        assert_eq!(loaded, App::PAGE_SIZE);
-
-        app.scroll.at_top = true;
-        app.scroll.can_extend_in_memory = false; // window already reaches msg 0
-        app.extend_scrollback();
-
-        let after = app.store.conversations[conv_id].messages.len();
-        assert_eq!(after, 150, "remaining DB page must load");
-        assert_eq!(
-            app.scroll.window_extra,
-            after - loaded,
-            "window must widen by exactly what arrived, keeping it reachable"
-        );
-        assert!(!app.scroll.at_top);
-    }
-
-    #[rstest]
-    fn conversation_switch_resets_window_extra(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.scroll.window_extra = 250;
-        app.scroll.can_extend_in_memory = true;
-        app.next_conversation();
-        assert_eq!(app.scroll.window_extra, 0);
-        assert!(!app.scroll.can_extend_in_memory);
-    }
-
-    // --- #483: expiry sweep must fix positional indices ---
-    //
-    // last_read_index, scroll.focused_index, and saved scroll positions are
-    // positions into conv.messages. Removing expired messages without
-    // shifting them leaves focus (and the delete-confirm target) pointing
-    // at the WRONG message and misplaces the unread divider.
-
-    /// A message with disappearing-message fields set. `expired` backdates
-    /// the expiration so the next sweep removes it.
-    fn expiring_msg(ts_ms: i64, body: &str, expired: bool) -> DisplayMessage {
-        let mut m = outgoing_sending_msg(ts_ms, body);
-        m.status = None;
-        m.sender = "Alice".to_string();
-        m.expires_in_seconds = 1;
-        m.expiration_start_ms = if expired { 1 } else { i64::MAX / 2 };
-        m
-    }
-
-    #[rstest]
-    fn sweep_shifts_focused_index_when_older_message_expires(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(expiring_msg(1000, "oldest", true));
-            conv.messages.push(expiring_msg(2000, "middle", false));
-            conv.messages.push(expiring_msg(3000, "newest", false));
-        }
-        app.active_conversation = Some(conv_id.to_string());
-        app.scroll.focused_index = Some(2); // focused on "newest"
-        app.expiring_msg_count = 3;
-
-        app.sweep_expired_messages();
-
-        let conv = &app.store.conversations[conv_id];
-        assert_eq!(conv.messages.len(), 2);
-        assert_eq!(
-            app.scroll.focused_index,
-            Some(1),
-            "focus must follow the same message after the shift"
-        );
-        assert_eq!(conv.messages[1].body, "newest");
-    }
-
-    #[rstest]
-    fn sweep_clears_focus_when_the_focused_message_expires(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(expiring_msg(1000, "doomed", true));
-            conv.messages.push(expiring_msg(2000, "keep", false));
-        }
-        app.active_conversation = Some(conv_id.to_string());
-        app.scroll.focused_index = Some(0);
-        app.expiring_msg_count = 2;
-
-        app.sweep_expired_messages();
-
-        assert_eq!(app.scroll.focused_index, None);
-    }
-
-    #[rstest]
-    fn sweep_shifts_and_clamps_last_read_index(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(expiring_msg(1000, "read+expired", true));
-            conv.messages.push(expiring_msg(2000, "read", false));
-            conv.messages.push(expiring_msg(3000, "unread", false));
-        }
-        app.store.last_read_index.insert(conv_id.to_string(), 2);
-        app.expiring_msg_count = 3;
-
-        app.sweep_expired_messages();
-
-        assert_eq!(
-            app.store.last_read_index.get(conv_id).copied(),
-            Some(1),
-            "marker shifts with the removal below it"
-        );
-
-        // Now expire everything; the marker must clamp to the new length.
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            for m in &mut conv.messages {
-                m.expiration_start_ms = 1;
-            }
-        }
-        app.expiring_msg_count = 2;
-        app.sweep_expired_messages();
-        assert_eq!(app.store.conversations[conv_id].messages.len(), 0);
-        assert_eq!(app.store.last_read_index.get(conv_id).copied(), Some(0));
-    }
-
-    #[rstest]
-    fn load_more_messages_prepends(mut app: App) {
-        let conv_id = "+paginate";
-        app.db.upsert_conversation(conv_id, "Test", false).unwrap();
-        // Insert 150 messages (more than PAGE_SIZE=100)
-        for i in 0..150 {
-            app.db
-                .insert_message(
-                    conv_id,
-                    "Alice",
-                    &format!("2025-01-01T{:02}:{:02}:00Z", i / 60, i % 60),
-                    &format!("msg{i}"),
-                    false,
-                    None,
-                    i as i64 * 1000,
-                )
-                .unwrap();
-        }
-        app.load_from_db().unwrap();
-        app.active_conversation = Some(conv_id.to_string());
-
-        // Should have 100 messages loaded, has_more set
-        assert_eq!(app.store.conversations[conv_id].messages.len(), 100);
-        assert!(app.store.has_more_messages.contains(conv_id));
-
-        // The loaded messages should be the 100 most recent (msg50..msg149)
-        assert_eq!(app.store.conversations[conv_id].messages[0].body, "msg50");
-        assert_eq!(app.store.conversations[conv_id].messages[99].body, "msg149");
-
-        // Set last_read_index and scroll.focused_index to verify they shift
-        app.store.last_read_index.insert(conv_id.to_string(), 90);
-        app.scroll.focused_index = Some(95);
-
-        // Trigger load_more
-        app.load_more_messages();
-
-        // Should now have 150 messages, oldest first
-        assert_eq!(app.store.conversations[conv_id].messages.len(), 150);
-        assert_eq!(app.store.conversations[conv_id].messages[0].body, "msg0");
-        assert_eq!(
-            app.store.conversations[conv_id].messages[149].body,
-            "msg149"
-        );
-
-        // Indexes should have shifted by 50 (the prepend count)
-        assert_eq!(app.store.last_read_index[conv_id], 140);
-        assert_eq!(app.scroll.focused_index, Some(145));
-
-        // No more messages to load
-        assert!(!app.store.has_more_messages.contains(conv_id));
-    }
-
-    // --- Receipt handling tests ---
-
-    #[rstest]
-    fn receipt_upgrades_outgoing_message_status(mut app: App) {
-        // Create a conversation with an outgoing message
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        let ts_ms = 1700000000000_i64;
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(DisplayMessage {
-                sender: "you".to_string(),
-                timestamp: chrono::Utc::now(),
-                body: "hello".to_string(),
-                is_system: false,
-                image_lines: None,
-                image_path: None,
-                status: Some(MessageStatus::Sent),
-                timestamp_ms: ts_ms,
-                reactions: Vec::new(),
-                mention_ranges: Vec::new(),
-                style_ranges: Vec::new(),
-                body_raw: None,
-                mentions: Vec::new(),
-                quote: None,
-                is_edited: false,
-                is_deleted: false,
-                is_pinned: false,
-                sender_id: String::new(),
-                expires_in_seconds: 0,
-                expiration_start_ms: 0,
-                poll_data: None,
-                poll_votes: Vec::new(),
-                preview: None,
-                preview_image_lines: None,
-                preview_image_path: None,
-            });
-        }
-
-        // Delivery receipt
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
-            timestamps: vec![ts_ms],
-        });
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Delivered)
-        );
-
-        // Read receipt — should upgrade
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: conv_id.to_string(),
-            receipt_type: "READ".to_string(),
-            timestamps: vec![ts_ms],
-        });
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Read)
-        );
-    }
-
-    #[rstest]
-    fn receipt_does_not_downgrade_status(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        let ts_ms = 1700000000000_i64;
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(DisplayMessage {
-                sender: "you".to_string(),
-                timestamp: chrono::Utc::now(),
-                body: "hello".to_string(),
-                is_system: false,
-                image_lines: None,
-                image_path: None,
-                status: Some(MessageStatus::Read),
-                timestamp_ms: ts_ms,
-                reactions: Vec::new(),
-                mention_ranges: Vec::new(),
-                style_ranges: Vec::new(),
-                body_raw: None,
-                mentions: Vec::new(),
-                quote: None,
-                is_edited: false,
-                is_deleted: false,
-                is_pinned: false,
-                sender_id: String::new(),
-                expires_in_seconds: 0,
-                expiration_start_ms: 0,
-                poll_data: None,
-                poll_votes: Vec::new(),
-                preview: None,
-                preview_image_lines: None,
-                preview_image_path: None,
-            });
-        }
-
-        // Delivery receipt after Read — should NOT downgrade
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
-            timestamps: vec![ts_ms],
-        });
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Read)
-        );
-    }
-
-    /// Build an outgoing message in the Sending state, as send_text's
-    /// optimistic insert would (appended with the local clock).
-    fn outgoing_sending_msg(ts_ms: i64, body: &str) -> DisplayMessage {
-        DisplayMessage {
-            sender: "you".to_string(),
-            timestamp: chrono::Utc::now(),
-            body: body.to_string(),
-            is_system: false,
-            image_lines: None,
-            image_path: None,
-            status: Some(MessageStatus::Sending),
-            timestamp_ms: ts_ms,
-            reactions: Vec::new(),
-            mention_ranges: Vec::new(),
-            style_ranges: Vec::new(),
-            body_raw: None,
-            mentions: Vec::new(),
-            quote: None,
-            is_edited: false,
-            is_deleted: false,
-            is_pinned: false,
-            sender_id: String::new(),
-            expires_in_seconds: 0,
-            expiration_start_ms: 0,
-            poll_data: None,
-            poll_votes: Vec::new(),
-            preview: None,
-            preview_image_lines: None,
-            preview_image_path: None,
-        }
-    }
-
-    // Reproduces #480: two quick consecutive sends. msg1's SendTimestamp
-    // rewrites its timestamp PAST msg2's local timestamp; if the rewrite
-    // happens in place the vec is no longer sorted, msg2's SendTimestamp
-    // misses in find_msg_idx's binary search, and msg2 (plus every later
-    // receipt/reaction/edit targeting it) is stuck in Sending forever.
-    #[rstest]
-    fn rapid_consecutive_sends_both_get_confirmed(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        let t = 1700000000000_i64;
-
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(outgoing_sending_msg(t, "first"));
-            conv.messages.push(outgoing_sending_msg(t + 200, "second"));
-        }
-        app.pending
-            .sends
-            .insert("rpc-1".to_string(), (conv_id.to_string(), t));
-        app.pending
-            .sends
-            .insert("rpc-2".to_string(), (conv_id.to_string(), t + 200));
-
-        // Server confirms msg1 with a timestamp LATER than msg2's local one
-        app.handle_signal_event(SignalEvent::SendTimestamp {
-            rpc_id: "rpc-1".to_string(),
-            server_ts: t + 450,
-        });
-        // The vec must still be sorted, or msg2's confirmation below misses
-        let msgs = &app.store.conversations[conv_id].messages;
-        assert!(
-            msgs.windows(2)
-                .all(|w| w[0].timestamp_ms <= w[1].timestamp_ms),
-            "messages out of order after server-timestamp rewrite: {:?}",
-            msgs.iter().map(|m| m.timestamp_ms).collect::<Vec<_>>()
-        );
-
-        app.handle_signal_event(SignalEvent::SendTimestamp {
-            rpc_id: "rpc-2".to_string(),
-            server_ts: t + 500,
-        });
-
-        let msgs = &app.store.conversations[conv_id].messages;
-        assert!(
-            msgs.iter().all(|m| m.status == Some(MessageStatus::Sent)),
-            "a send was never confirmed: {:?}",
-            msgs.iter()
-                .map(|m| (m.body.clone(), m.status))
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            msgs.windows(2)
-                .all(|w| w[0].timestamp_ms <= w[1].timestamp_ms)
-        );
-    }
-
-    #[rstest]
-    fn send_timestamp_upgrades_sending_to_sent(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        let local_ts = 1700000000000_i64;
-        let server_ts = 1700000000123_i64;
-
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(DisplayMessage {
-                sender: "you".to_string(),
-                timestamp: chrono::Utc::now(),
-                body: "hello".to_string(),
-                is_system: false,
-                image_lines: None,
-                image_path: None,
-                status: Some(MessageStatus::Sending),
-                timestamp_ms: local_ts,
-                reactions: Vec::new(),
-                mention_ranges: Vec::new(),
-                style_ranges: Vec::new(),
-                body_raw: None,
-                mentions: Vec::new(),
-                quote: None,
-                is_edited: false,
-                is_deleted: false,
-                is_pinned: false,
-                sender_id: String::new(),
-                expires_in_seconds: 0,
-                expiration_start_ms: 0,
-                poll_data: None,
-                poll_votes: Vec::new(),
-                preview: None,
-                preview_image_lines: None,
-                preview_image_path: None,
-            });
-        }
-
-        // Register pending send
-        app.pending
-            .sends
-            .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
-
-        app.handle_signal_event(SignalEvent::SendTimestamp {
-            rpc_id: "rpc-1".to_string(),
-            server_ts,
-        });
-
-        let msg = &app.store.conversations[conv_id].messages[0];
-        assert_eq!(msg.status, Some(MessageStatus::Sent));
-        assert_eq!(msg.timestamp_ms, server_ts);
-    }
-
-    #[rstest]
-    fn send_failed_sets_failed_status(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        let local_ts = 1700000000000_i64;
-
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(DisplayMessage {
-                sender: "you".to_string(),
-                timestamp: chrono::Utc::now(),
-                body: "hello".to_string(),
-                is_system: false,
-                image_lines: None,
-                image_path: None,
-                status: Some(MessageStatus::Sending),
-                timestamp_ms: local_ts,
-                reactions: Vec::new(),
-                mention_ranges: Vec::new(),
-                style_ranges: Vec::new(),
-                body_raw: None,
-                mentions: Vec::new(),
-                quote: None,
-                is_edited: false,
-                is_deleted: false,
-                is_pinned: false,
-                sender_id: String::new(),
-                expires_in_seconds: 0,
-                expiration_start_ms: 0,
-                poll_data: None,
-                poll_votes: Vec::new(),
-                preview: None,
-                preview_image_lines: None,
-                preview_image_path: None,
-            });
-        }
-
-        app.pending
-            .sends
-            .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
-
-        app.handle_signal_event(SignalEvent::SendFailed {
-            rpc_id: "rpc-1".to_string(),
-        });
-
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Failed)
-        );
-    }
-
-    // --- Paste cleanup tests ---
-
-    #[rstest]
-    fn send_timestamp_resets_paste_cleanup_deadline(mut app: App) {
-        // Set up a sentinel entry (far-future deadline = awaiting confirmation)
-        let tmp = std::env::temp_dir().join("test-paste-dummy.png");
-        let sentinel = Instant::now() + std::time::Duration::from_secs(PASTE_CLEANUP_SENTINEL_SECS);
-        app.pending_paste_cleanups
-            .insert("rpc-1".to_string(), (tmp.clone(), sentinel));
-
-        app.handle_signal_event(SignalEvent::SendTimestamp {
-            rpc_id: "rpc-1".to_string(),
-            server_ts: 0,
-        });
-
-        // Deadline should now be ~10s from now, well under the sentinel
-        let (_, deadline) = app
-            .pending_paste_cleanups
-            .get("rpc-1")
-            .expect("entry should still exist");
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            remaining <= std::time::Duration::from_secs(PASTE_CLEANUP_DELAY_SECS),
-            "deadline should be reset to ~{PASTE_CLEANUP_DELAY_SECS}s, got {remaining:?}"
-        );
-    }
-
-    #[rstest]
-    fn send_failed_resets_paste_cleanup_deadline(mut app: App) {
-        let tmp = std::env::temp_dir().join("test-paste-dummy-fail.png");
-        let sentinel = Instant::now() + std::time::Duration::from_secs(PASTE_CLEANUP_SENTINEL_SECS);
-        app.pending_paste_cleanups
-            .insert("rpc-2".to_string(), (tmp.clone(), sentinel));
-
-        app.handle_signal_event(SignalEvent::SendFailed {
-            rpc_id: "rpc-2".to_string(),
-        });
-
-        let (_, deadline) = app
-            .pending_paste_cleanups
-            .get("rpc-2")
-            .expect("entry should still exist");
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            remaining <= std::time::Duration::from_secs(PASTE_CLEANUP_DELAY_SECS),
-            "deadline should be reset to ~{PASTE_CLEANUP_DELAY_SECS}s, got {remaining:?}"
-        );
-    }
-
-    #[rstest]
-    fn cleanup_paste_files_removes_file_after_deadline(mut app: App) {
-        // Create a real temp file
-        let tmp =
-            std::env::temp_dir().join(format!("test-paste-cleanup-{}.png", std::process::id()));
-        std::fs::write(&tmp, b"fake image data").expect("write temp file");
-        assert!(tmp.exists());
-
-        // Insert with a deadline already in the past
-        let past = Instant::now() - std::time::Duration::from_secs(1);
-        app.pending_paste_cleanups
-            .insert("rpc-3".to_string(), (tmp.clone(), past));
-
-        app.cleanup_paste_files();
-
-        assert!(!tmp.exists(), "temp file should have been deleted");
-        assert!(
-            app.pending_paste_cleanups.is_empty(),
-            "entry should be removed"
-        );
-    }
-
-    #[rstest]
-    fn cleanup_paste_files_keeps_file_before_deadline(mut app: App) {
-        let tmp = std::env::temp_dir().join(format!("test-paste-keep-{}.png", std::process::id()));
-        std::fs::write(&tmp, b"fake image data").expect("write temp file");
-
-        // Insert with a future deadline
-        let future = Instant::now() + std::time::Duration::from_secs(60);
-        app.pending_paste_cleanups
-            .insert("rpc-4".to_string(), (tmp.clone(), future));
-
-        app.cleanup_paste_files();
-
-        // File should still exist; clean it up manually
-        assert!(tmp.exists(), "temp file should not have been deleted yet");
-        let _ = std::fs::remove_file(&tmp);
-        assert!(
-            !app.pending_paste_cleanups.is_empty(),
-            "entry should still be present"
-        );
-    }
-
-    #[rstest]
-    fn incoming_messages_have_no_status(mut app: App) {
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("hello".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        assert_eq!(app.store.conversations["+1"].messages[0].status, None);
-    }
-
-    #[rstest]
-    fn receipt_before_send_timestamp_is_buffered_and_replayed(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        let local_ts = 1700000000000_i64;
-        let server_ts = 1700000000123_i64;
-
-        // Create outgoing message with local timestamp (Sending state)
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(DisplayMessage {
-                sender: "you".to_string(),
-                timestamp: chrono::Utc::now(),
-                body: "hello".to_string(),
-                is_system: false,
-                image_lines: None,
-                image_path: None,
-                status: Some(MessageStatus::Sending),
-                timestamp_ms: local_ts,
-                reactions: Vec::new(),
-                mention_ranges: Vec::new(),
-                style_ranges: Vec::new(),
-                body_raw: None,
-                mentions: Vec::new(),
-                quote: None,
-                is_edited: false,
-                is_deleted: false,
-                is_pinned: false,
-                sender_id: String::new(),
-                expires_in_seconds: 0,
-                expiration_start_ms: 0,
-                poll_data: None,
-                poll_votes: Vec::new(),
-                preview: None,
-                preview_image_lines: None,
-                preview_image_path: None,
-            });
-        }
-
-        app.pending
-            .sends
-            .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
-
-        // Receipt arrives BEFORE SendTimestamp (references server_ts which we don't know yet)
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
-            timestamps: vec![server_ts],
-        });
-
-        // Receipt should be buffered, message still Sending
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Sending)
-        );
-        assert_eq!(app.pending.receipts.len(), 1);
-
-        // Now SendTimestamp arrives — updates timestamp_ms and replays buffered receipts
-        app.handle_signal_event(SignalEvent::SendTimestamp {
-            rpc_id: "rpc-1".to_string(),
-            server_ts,
-        });
-
-        // Message should now be Delivered (Sending → Sent by SendTimestamp, then → Delivered by replayed receipt)
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Delivered)
-        );
-        assert!(app.pending.receipts.is_empty());
-    }
-
-    // --- #484: receipt buffer integrity ---
-
-    #[rstest]
-    fn partial_receipt_match_buffers_only_unmatched_timestamps(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            let mut m = outgoing_sending_msg(1000, "delivered one");
-            m.status = Some(MessageStatus::Sent);
-            conv.messages.push(m);
-        }
-
-        // One timestamp matches, the sibling does not. The old per-event
-        // flag dropped the unmatched sibling outright.
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: conv_id.to_string(),
-            receipt_type: "DELIVERY".to_string(),
-            timestamps: vec![1000, 2000],
-        });
-
-        assert_eq!(
-            app.store.conversations[conv_id].messages[0].status,
-            Some(MessageStatus::Delivered)
-        );
-        assert_eq!(app.pending.receipts.len(), 1);
-        assert_eq!(app.pending.receipts[0].timestamps, vec![2000]);
-    }
-
-    #[rstest]
-    fn buffered_receipt_resolves_against_db_after_max_replays(mut app: App) {
-        // The target message exists only in the DB (outside the loaded
-        // page), so the in-memory replay can never match. The old code
-        // re-buffered such receipts forever and the DB status update was
-        // lost.
-        let conv_id = "+page";
-        let ts = 5000_i64;
-        app.db.upsert_conversation(conv_id, "Pg", false).unwrap();
-        app.db
-            .insert_message(
-                conv_id,
-                "you",
-                "2025-01-01T00:00:00Z",
-                "old outgoing",
-                false,
-                Some(MessageStatus::Sent),
-                ts,
-            )
-            .unwrap();
-
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: conv_id.to_string(),
-            receipt_type: "READ".to_string(),
-            timestamps: vec![ts],
-        });
-        assert_eq!(app.pending.receipts.len(), 1);
-
-        // Each confirmed send triggers one replay.
-        for i in 0..10 {
-            app.pending
-                .sends
-                .insert(format!("rpc-{i}"), ("+other".to_string(), 1_000_000 + i));
-            app.handle_signal_event(SignalEvent::SendTimestamp {
-                rpc_id: format!("rpc-{i}"),
-                server_ts: 2_000_000 + i,
-            });
-        }
-
-        assert!(
-            app.pending.receipts.is_empty(),
-            "buffer must drain after the replay cap"
-        );
-        let rows = app.db.load_messages_page(conv_id, 10, 0).unwrap();
-        assert_eq!(
-            rows[0].status,
-            Some(MessageStatus::Read),
-            "the receipt must reach the DB row even though it never matched in memory"
-        );
-    }
-
-    #[rstest]
-    fn mid_sync_message_does_not_persist_read_marker(mut app: App) {
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        app.active_conversation = Some(conv_id.to_string());
-        app.sync.active = true;
-
-        let m = make_msg_with_ts(conv_id, Some("seen never"), None, false, 1000);
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-
-        assert_eq!(
-            app.db.unread_count(conv_id).unwrap(),
-            1,
-            "a crash mid-sync must not leave unseen messages marked read on disk"
-        );
-    }
-
-    // --- Reaction tests ---
-
-    #[rstest]
-    fn handle_reaction_adds_to_message(mut app: App) {
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("hello".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let ts_ms = app.store.conversations["+1"].messages[0].timestamp_ms;
-
-        // React with thumbs up
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: "+1".to_string(),
-            emoji: "\u{1f44d}".to_string(),
-            sender: "+2".to_string(),
-            sender_name: Some("Bob".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts_ms,
-            is_remove: false,
-        });
-
-        let reactions = &app.store.conversations["+1"].messages[0].reactions;
-        assert_eq!(reactions.len(), 1);
-        assert_eq!(reactions[0].emoji, "\u{1f44d}");
-        // Sender should be resolved to display name
-        assert_eq!(reactions[0].sender, "Bob");
-    }
-
-    #[rstest]
-    fn handle_reaction_replaces_existing_from_same_sender(mut app: App) {
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("hello".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let ts_ms = app.store.conversations["+1"].messages[0].timestamp_ms;
-
-        // First reaction
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: "+1".to_string(),
-            emoji: "\u{1f44d}".to_string(),
-            sender: "+2".to_string(),
-            sender_name: Some("Bob".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts_ms,
-            is_remove: false,
-        });
-        // Replace with different emoji
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: "+1".to_string(),
-            emoji: "\u{2764}\u{fe0f}".to_string(),
-            sender: "+2".to_string(),
-            sender_name: Some("Bob".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts_ms,
-            is_remove: false,
-        });
-
-        let reactions = &app.store.conversations["+1"].messages[0].reactions;
-        assert_eq!(reactions.len(), 1);
-        assert_eq!(reactions[0].emoji, "\u{2764}\u{fe0f}");
-    }
-
-    #[rstest]
-    fn handle_reaction_remove(mut app: App) {
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("hello".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let ts_ms = app.store.conversations["+1"].messages[0].timestamp_ms;
-
-        // Add reaction
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: "+1".to_string(),
-            emoji: "\u{1f44d}".to_string(),
-            sender: "+2".to_string(),
-            sender_name: Some("Bob".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts_ms,
-            is_remove: false,
-        });
-        assert_eq!(app.store.conversations["+1"].messages[0].reactions.len(), 1);
-
-        // Remove it
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: "+1".to_string(),
-            emoji: "\u{1f44d}".to_string(),
-            sender: "+2".to_string(),
-            sender_name: Some("Bob".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts_ms,
-            is_remove: true,
-        });
-        assert_eq!(app.store.conversations["+1"].messages[0].reactions.len(), 0);
-    }
-
-    #[rstest]
-    fn handle_reaction_on_own_message(mut app: App) {
-        // Send a message (outgoing) — simulate by creating conversation and pushing directly
-        let conv_id = "+1";
-        app.store
-            .get_or_create_conversation(conv_id, "Alice", false, &app.db);
-        let ts_ms = 1700000000000_i64;
-        if let Some(conv) = app.store.conversations.get_mut(conv_id) {
-            conv.messages.push(DisplayMessage {
-                sender: "you".to_string(),
-                timestamp: chrono::Utc::now(),
-                body: "hello".to_string(),
-                is_system: false,
-                image_lines: None,
-                image_path: None,
-                status: Some(MessageStatus::Sent),
-                timestamp_ms: ts_ms,
-                reactions: Vec::new(),
-                mention_ranges: Vec::new(),
-                style_ranges: Vec::new(),
-                body_raw: None,
-                mentions: Vec::new(),
-                quote: None,
-                is_edited: false,
-                is_deleted: false,
-                is_pinned: false,
-                sender_id: String::new(),
-                expires_in_seconds: 0,
-                expiration_start_ms: 0,
-                poll_data: None,
-                poll_votes: Vec::new(),
-                preview: None,
-                preview_image_lines: None,
-                preview_image_path: None,
-            });
-        }
-
-        // Someone reacts to our message — target_author is our account number
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: conv_id.to_string(),
-            emoji: "\u{1f44d}".to_string(),
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            target_author: "+10000000000".to_string(), // test_app account
-            target_timestamp: ts_ms,
-            is_remove: false,
-        });
-
-        let reactions = &app.store.conversations[conv_id].messages[0].reactions;
-        assert_eq!(reactions.len(), 1);
-        assert_eq!(reactions[0].sender, "Alice");
-    }
-
-    #[rstest]
-    fn handle_reaction_unknown_message_persists_to_db(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-
-        // Reaction for a message not in memory (timestamp doesn't match any)
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: "+1".to_string(),
-            emoji: "\u{1f44d}".to_string(),
-            sender: "+2".to_string(),
-            sender_name: None,
-            target_author: "+1".to_string(),
-            target_timestamp: 9999999999999,
-            is_remove: false,
-        });
-
-        // No reactions on any message (none matched)
-        assert!(app.store.conversations["+1"].messages.is_empty());
-        // But it was persisted to DB
-        let db_reactions = app.db.load_reactions("+1").unwrap();
-        assert_eq!(db_reactions.len(), 1);
-    }
-
-    #[rstest]
-    fn contact_list_resolves_reactions_and_quotes(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "+1", false, &app.db);
-
-        // Simulate DB-loaded messages: one from a contact (+2=Bob), one from
-        // a non-contact (+3=Charlie, known only from sender_id on a message)
-        let conv = app.store.conversations.get_mut("+1").unwrap();
-        conv.messages.push(DisplayMessage {
-            sender: "Charlie".to_string(),
-            body: "hey".to_string(),
-            timestamp: chrono::Utc::now(),
-            is_system: false,
-            image_lines: None,
-            image_path: None,
-            status: None,
-            timestamp_ms: 900,
-            reactions: Vec::new(),
-            mention_ranges: Vec::new(),
-            style_ranges: Vec::new(),
-            body_raw: None,
-            mentions: Vec::new(),
-            quote: None,
-            is_edited: false,
-            is_deleted: false,
-            is_pinned: false,
-            sender_id: "+3".to_string(), // Charlie's phone — not in contacts
-            expires_in_seconds: 0,
-            expiration_start_ms: 0,
-            poll_data: None,
-            poll_votes: Vec::new(),
-            preview: None,
-            preview_image_lines: None,
-            preview_image_path: None,
-        });
-        conv.messages.push(DisplayMessage {
-            sender: "Alice".to_string(),
-            body: "hello".to_string(),
-            timestamp: chrono::Utc::now(),
-            is_system: false,
-            image_lines: None,
-            image_path: None,
-            status: None,
-            timestamp_ms: 1000,
-            reactions: vec![
-                Reaction {
-                    emoji: "\u{1f44d}".to_string(),
-                    sender: "+2".to_string(),
-                }, // contact
-                Reaction {
-                    emoji: "\u{2764}".to_string(),
-                    sender: "+10000000000".to_string(),
-                }, // own account
-                Reaction {
-                    emoji: "\u{1f602}".to_string(),
-                    sender: "+3".to_string(),
-                }, // non-contact
-            ],
-            mention_ranges: Vec::new(),
-            style_ranges: Vec::new(),
-            body_raw: None,
-            mentions: Vec::new(),
-            // Quote from own account (should become "you")
-            quote: Some(Quote {
-                author: "+10000000000".to_string(),
-                body: "quoted".to_string(),
-                timestamp_ms: 500,
-                author_id: "+10000000000".to_string(),
-            }),
-            is_edited: false,
-            is_deleted: false,
-            is_pinned: false,
-            sender_id: "+1".to_string(),
-            expires_in_seconds: 0,
-            expiration_start_ms: 0,
-            poll_data: None,
-            poll_votes: Vec::new(),
-            preview: None,
-            preview_image_lines: None,
-            preview_image_path: None,
-        });
-        // A message with a quote from a non-contact
-        conv.messages.push(DisplayMessage {
-            sender: "you".to_string(),
-            body: "reply".to_string(),
-            timestamp: chrono::Utc::now(),
-            is_system: false,
-            image_lines: None,
-            image_path: None,
-            status: None,
-            timestamp_ms: 1100,
-            reactions: Vec::new(),
-            mention_ranges: Vec::new(),
-            style_ranges: Vec::new(),
-            body_raw: None,
-            mentions: Vec::new(),
-            quote: Some(Quote {
-                author: "+3".to_string(),
-                body: "hey".to_string(),
-                timestamp_ms: 900,
-                author_id: "+3".to_string(),
-            }),
-            is_edited: false,
-            is_deleted: false,
-            is_pinned: false,
-            sender_id: "+10000000000".to_string(),
-            expires_in_seconds: 0,
-            expiration_start_ms: 0,
-            poll_data: None,
-            poll_votes: Vec::new(),
-            preview: None,
-            preview_image_lines: None,
-            preview_image_path: None,
-        });
-
-        // Contact list arrives — only +2 is a formal contact
-        app.handle_signal_event(SignalEvent::ContactList(vec![
-            Contact {
-                number: "+1".to_string(),
-                name: Some("Alice".to_string()),
-                uuid: None,
-            },
-            Contact {
-                number: "+2".to_string(),
-                name: Some("Bob".to_string()),
-                uuid: None,
-            },
-        ]));
-
-        let msgs = &app.store.conversations["+1"].messages;
-
-        // Reactions resolved: +2→Bob (contact), own→you, +3→Charlie (from sender_id)
-        assert_eq!(msgs[1].reactions[0].sender, "Bob");
-        assert_eq!(msgs[1].reactions[1].sender, "you");
-        assert_eq!(msgs[1].reactions[2].sender, "Charlie");
-
-        // Quote authors resolved: own→you, +3→Charlie (from sender_id)
-        assert_eq!(msgs[1].quote.as_ref().unwrap().author, "you");
-        assert_eq!(msgs[2].quote.as_ref().unwrap().author, "Charlie");
-    }
-
-    // --- @Mention tests ---
-
-    #[rstest]
-    #[case("basic", &[("uuid-alice", "Alice")], "\u{FFFC} check this out",
-        &[(0, 1, "uuid-alice")], "@Alice check this out", &["@Alice"])]
-    #[case("multiple", &[("uuid-alice", "Alice"), ("uuid-bob", "Bob")],
-        "\u{FFFC} and \u{FFFC} should join",
-        &[(0, 1, "uuid-alice"), (6, 1, "uuid-bob")],
-        "@Alice and @Bob should join", &["@Alice", "@Bob"])]
-    #[case("unknown_uuid", &[], "\u{FFFC} said hi",
-        &[(0, 1, "abcdef12-3456")], "@abcdef12 said hi", &["@abcdef12"])]
-    #[case("empty", &[], "no mentions here", &[], "no mentions here", &[])]
-    fn resolve_mentions_variants(
-        mut app: App,
-        #[case] _label: &str,
-        #[case] uuid_names: &[(&str, &str)],
-        #[case] body: &str,
-        #[case] mention_data: &[(usize, usize, &str)],
-        #[case] expected_body: &str,
-        #[case] expected_tags: &[&str],
-    ) {
-        for (uuid, name) in uuid_names {
-            app.store
-                .uuid_to_name
-                .insert(uuid.to_string(), name.to_string());
-        }
-        let mentions: Vec<Mention> = mention_data
-            .iter()
-            .map(|(start, length, uuid)| Mention {
-                start: *start,
-                length: *length,
-                uuid: uuid.to_string(),
-            })
-            .collect();
-        let (resolved, ranges) = app.store.resolve_mentions(body, &mentions);
-        assert_eq!(resolved, expected_body);
-        assert_eq!(ranges.len(), expected_tags.len());
-        for (range, tag) in ranges.iter().zip(expected_tags.iter()) {
-            assert_eq!(&resolved[range.0..range.1], *tag);
-        }
-    }
-
-    #[rstest]
-    fn mention_reresolves_when_contact_arrives_after_message(mut app: App) {
-        // Regression test for #283: message with mention arrives before
-        // contact list is processed, so the mention initially falls back
-        // to a truncated UUID. When the contact list arrives, the mention
-        // should update to the real name.
-        let msg = SignalMessage {
-            source: "+15550001111".to_string(),
-            source_name: None,
-            source_uuid: Some("aaaaaaaa-1111-1111-1111-111111111111".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("hi \u{FFFC} welcome".to_string()),
-            attachments: vec![],
-            group_id: None,
-            group_name: None,
-            is_outgoing: false,
-            destination: None,
-            mentions: vec![Mention {
-                start: 3,
-                length: 1,
-                uuid: "bbbbbbbb-2222-2222-2222-222222222222".to_string(),
-            }],
-            text_styles: vec![],
-            quote: None,
-            expires_in_seconds: 0,
-            previews: Vec::new(),
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        // Initial resolution falls back to truncated UUID.
-        let body = &app.store.conversations["+15550001111"].messages[0].body;
-        assert!(
-            body.contains("@bbbbbbbb"),
-            "expected truncated UUID fallback, got {body:?}"
-        );
-
-        // Contact list arrives with the mentioned user.
-        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
-            number: "+15550002222".to_string(),
-            name: Some("Bob".to_string()),
-            uuid: Some("bbbbbbbb-2222-2222-2222-222222222222".to_string()),
-        }]));
-
-        // Mention should now resolve to the real name.
-        let body = &app.store.conversations["+15550001111"].messages[0].body;
-        assert_eq!(body, "hi @Bob welcome");
-    }
-
-    #[rstest]
-    fn mention_autocomplete_in_direct_chat(mut app: App) {
-        // Create a 1:1 conversation with a known contact
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.active_conversation = Some("+1".to_string());
-        app.input.buffer = "@Al".to_string();
-        app.input.cursor = 3;
-        app.update_autocomplete();
-
-        // Should trigger mention autocomplete in 1:1 with the contact
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.mode, AutocompleteMode::Mention);
-        assert_eq!(app.autocomplete.mention_candidates.len(), 1);
-        assert_eq!(app.autocomplete.mention_candidates[0].1, "Alice");
-    }
-
-    #[rstest]
-    fn mention_autocomplete_in_group(mut app: App) {
-        // Set up group with members
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Test Group".to_string(),
-                members: vec!["+1".to_string(), "+2".to_string()],
-                member_uuids: vec![],
-            },
-        );
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .contact_names
-            .insert("+2".to_string(), "Bob".to_string());
-        app.store
-            .get_or_create_conversation("g1", "Test Group", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-
-        app.input.buffer = "@Al".to_string();
-        app.input.cursor = 3;
-        app.update_autocomplete();
-
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-        assert_eq!(app.autocomplete.mode, AutocompleteMode::Mention);
-        assert_eq!(app.autocomplete.mention_candidates.len(), 1);
-        assert_eq!(app.autocomplete.mention_candidates[0].1, "Alice");
-    }
-
-    #[rstest]
-    fn apply_mention_autocomplete(mut app: App) {
-        // Set up group with members
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Test Group".to_string(),
-                members: vec!["+1".to_string()],
-                member_uuids: vec![],
-            },
-        );
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .number_to_uuid
-            .insert("+1".to_string(), "uuid-alice".to_string());
-        app.store
-            .get_or_create_conversation("g1", "Test Group", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-
-        app.input.buffer = "Hey @Al".to_string();
-        app.input.cursor = 7;
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-
-        app.apply_autocomplete();
-        assert_eq!(app.input.buffer, "Hey @Alice ");
-        assert_eq!(app.autocomplete.pending_mentions.len(), 1);
-        assert_eq!(app.autocomplete.pending_mentions[0].0, "Alice");
-        assert_eq!(
-            app.autocomplete.pending_mentions[0].1.as_deref(),
-            Some("uuid-alice")
-        );
-    }
-
-    #[rstest]
-    fn prepare_outgoing_mentions(mut app: App) {
-        app.autocomplete.pending_mentions =
-            vec![("Alice".to_string(), Some("uuid-alice".to_string()))];
-
-        let (wire, mentions) = app.prepare_outgoing_mentions("Hey @Alice what's up");
-        assert_eq!(wire, "Hey \u{FFFC} what's up");
-        assert_eq!(mentions.len(), 1);
-        assert_eq!(mentions[0].0, 4); // UTF-16 offset of U+FFFC
-        assert_eq!(mentions[0].1, "uuid-alice");
-    }
-
-    #[rstest]
-    fn prepare_outgoing_no_pending_mentions(app: App) {
-        let (wire, mentions) = app.prepare_outgoing_mentions("Hello world");
-        assert_eq!(wire, "Hello world");
-        assert!(mentions.is_empty());
-    }
-
-    #[rstest]
-    fn contact_list_builds_uuid_maps(mut app: App) {
-        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
-            number: "+1".to_string(),
-            name: Some("Alice".to_string()),
-            uuid: Some("uuid-alice".to_string()),
-        }]));
-
-        assert_eq!(app.store.uuid_to_name.get("uuid-alice").unwrap(), "Alice");
-        assert_eq!(app.store.number_to_uuid.get("+1").unwrap(), "uuid-alice");
-    }
-
-    #[rstest]
-    fn group_list_stores_groups(mut app: App) {
-        app.handle_signal_event(SignalEvent::GroupList(vec![Group {
-            id: "g1".to_string(),
-            name: "Test".to_string(),
-            members: vec!["+1".to_string(), "+2".to_string()],
-            member_uuids: vec![],
-        }]));
-
-        assert!(app.store.groups.contains_key("g1"));
-        assert_eq!(app.store.groups["g1"].members.len(), 2);
-    }
-
-    #[rstest]
-    fn incoming_message_resolves_mentions(mut app: App) {
-        app.store
-            .uuid_to_name
-            .insert("uuid-bob".to_string(), "Bob".to_string());
-
-        let msg = SignalMessage {
-            source: "+1".to_string(),
-            source_name: Some("Alice".to_string()),
-            source_uuid: None,
-            timestamp: chrono::Utc::now(),
-            body: Some("\u{FFFC} check this".to_string()),
-            attachments: vec![],
-            group_id: None,
-            group_name: None,
-            is_outgoing: false,
-            destination: None,
-            mentions: vec![Mention {
-                start: 0,
-                length: 1,
-                uuid: "uuid-bob".to_string(),
-            }],
-            text_styles: vec![],
-            quote: None,
-            expires_in_seconds: 0,
-            previews: Vec::new(),
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        let conv = &app.store.conversations["+1"];
-        assert_eq!(conv.messages[0].body, "@Bob check this");
-        assert_eq!(conv.messages[0].mention_ranges.len(), 1);
-    }
-
-    #[rstest]
-    fn backspace_at_zero_clears_pending_attachment(mut app: App) {
-        app.pending_attachment = Some(std::path::PathBuf::from("/tmp/photo.jpg"));
-        app.input.cursor = 0;
-        app.input.buffer.clear();
-
-        app.apply_input_edit(KeyCode::Backspace);
-        assert!(app.pending_attachment.is_none());
-    }
-
-    #[rstest]
-    fn empty_text_with_attachment_sends(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.pending_attachment = Some(std::path::PathBuf::from("/tmp/photo.jpg"));
-        app.input.buffer.clear();
-        app.input.cursor = 0;
-
-        let result = app.handle_input();
-        assert!(result.is_some());
-        // Attachment should be consumed
-        assert!(app.pending_attachment.is_none());
-    }
-
-    #[rstest]
-    fn attach_no_conversation_shows_error(mut app: App) {
-        app.active_conversation = None;
-        app.open_file_browser();
-        assert!(!app.is_overlay(OverlayKind::FilePicker));
-        assert!(app.status_message.contains("No active conversation"));
-    }
-
-    #[rstest]
-    fn clears_attachment_on_next_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.pending_attachment = Some(std::path::PathBuf::from("/tmp/photo.jpg"));
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.next_conversation();
-        assert!(app.pending_attachment.is_none());
-    }
-
-    // Reproduces #481: an edit or reply started in conversation A must not
-    // survive a switch, or the next Enter sends the new text as an edit /
-    // quoted reply in A instead of a plain message in B.
-    #[rstest]
-    fn clears_edit_and_reply_targets_on_next_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.editing_message = Some((1000, "+1".to_string()));
-        app.reply_target = Some(("+1".to_string(), "hi".to_string(), 1000));
-        app.next_conversation();
-        assert!(app.editing_message.is_none());
-        assert!(app.reply_target.is_none());
-    }
-
-    #[rstest]
-    fn clears_edit_and_reply_targets_on_prev_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.editing_message = Some((1000, "+1".to_string()));
-        app.reply_target = Some(("+1".to_string(), "hi".to_string(), 1000));
-        app.prev_conversation();
-        assert!(app.editing_message.is_none());
-        assert!(app.reply_target.is_none());
-    }
-
-    #[rstest]
-    fn clears_edit_and_reply_targets_on_join_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.editing_message = Some((1000, "+1".to_string()));
-        app.reply_target = Some(("+1".to_string(), "hi".to_string(), 1000));
-        app.join_conversation("+2");
-        assert!(app.editing_message.is_none());
-        assert!(app.reply_target.is_none());
-    }
-
-    #[rstest]
-    fn history_browse_state_does_not_bleed_across_conv_switch(mut app: App) {
-        // Reproduces #362: pressing Up in conversation A starts history browsing
-        // (sets history_index and history_draft). Switching to conversation B
-        // must clear that browse state so pressing Down in B does nothing.
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-
-        app.input.history = vec!["earlier".to_string()];
-        app.input.buffer = "in-progress draft".to_string();
-        app.input.cursor = "in-progress draft".len();
-
-        app.history_up();
-        assert_eq!(app.input.buffer, "earlier");
-        assert_eq!(app.input.history_index, Some(0));
-        assert_eq!(app.input.history_draft, "in-progress draft");
-
-        app.next_conversation();
-
-        assert_eq!(app.active_conversation.as_deref(), Some("+2"));
-        assert!(app.input.buffer.is_empty(), "buffer should be cleared");
-        assert_eq!(app.input.cursor, 0);
-        assert_eq!(app.input.history_index, None);
-        assert_eq!(app.input.history_draft, "");
-        assert_eq!(
-            app.input.history,
-            vec!["earlier".to_string()],
-            "session history must be preserved across switches"
-        );
-    }
-
-    #[rstest]
-    fn spinner_pauses_during_sync(app: App) {
-        // Default state on a fresh App: loading=true AND sync.active=true
-        // (SyncState::new initializes active=true). The fix for #326 requires
-        // the spinner to pause in this overlap window so its 50ms tick rate
-        // doesn't bypass the 500ms sync redraw throttle in main's event loop.
-        assert!(app.loading);
-        assert!(app.sync.active);
-        assert!(
-            !app.should_tick_spinner(),
-            "spinner must not tick while sync is active"
-        );
-    }
-
-    #[rstest]
-    fn spinner_ticks_after_sync_ends_but_loading_continues(mut app: App) {
-        // Sync ended (no more incoming burst) but contact list hasn't arrived
-        // yet, so loading is still true. Spinner should resume so the user
-        // sees the "Loading contacts..." status animate.
-        app.sync.active = false;
-        assert!(app.loading);
-        assert!(app.should_tick_spinner());
-    }
-
-    #[rstest]
-    fn spinner_does_not_tick_when_loading_is_false(mut app: App) {
-        // Steady-state app: nothing to spin for.
-        app.loading = false;
-        app.sync.active = false;
-        assert!(!app.should_tick_spinner());
-    }
-
-    #[rstest]
-    fn clears_attachment_on_part_command(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.pending_attachment = Some(std::path::PathBuf::from("/tmp/photo.jpg"));
-        app.input.buffer = "/part".to_string();
-        app.input.cursor = 5;
-        app.handle_input();
-        assert!(app.pending_attachment.is_none());
-    }
-
-    #[rstest]
-    fn search_opens_overlay(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-
-        // Insert a message into the DB so search has something to find
-        app.db
-            .insert_message(
-                "+1",
-                "Alice",
-                "2025-01-01T00:00:00Z",
-                "hello world",
-                false,
-                None,
-                1000,
-            )
-            .unwrap();
-
-        app.input.buffer = "/search hello".to_string();
-        app.input.cursor = 13;
-        app.handle_input();
-
-        assert!(app.is_overlay(OverlayKind::Search));
-        assert_eq!(app.search.query, "hello");
-        assert!(!app.search.results.is_empty());
-        assert_eq!(app.search.results[0].body, "hello world");
-    }
-
-    #[rstest]
-    fn search_without_query_shows_error(mut app: App) {
-        app.input.buffer = "/search".to_string();
-        app.input.cursor = 7;
-        app.handle_input();
-
-        assert!(!app.is_overlay(OverlayKind::Search));
-        assert!(app.status_message.contains("requires"));
-    }
-
-    #[rstest]
-    fn search_overlay_esc_closes(mut app: App) {
-        app.open_overlay(OverlayKind::Search);
-        app.search.query = "test".to_string();
-
-        app.handle_search_key(KeyCode::Esc);
-
-        assert!(!app.is_overlay(OverlayKind::Search));
-        assert!(app.search.query.is_empty());
-    }
-
-    #[rstest]
-    fn search_overlay_typing_refines(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.db
-            .insert_message(
-                "+1",
-                "Alice",
-                "2025-01-01T00:00:00Z",
-                "hello world",
-                false,
-                None,
-                1000,
-            )
-            .unwrap();
-        app.db
-            .insert_message(
-                "+1",
-                "Alice",
-                "2025-01-01T00:01:00Z",
-                "goodbye world",
-                false,
-                None,
-                2000,
-            )
-            .unwrap();
-
-        app.open_overlay(OverlayKind::Search);
-        app.search.query = "hello".to_string();
-        app.search.run(app.active_conversation.as_deref(), &app.db);
-        assert_eq!(app.search.results.len(), 1);
-
-        // Type more to search for "world" instead
-        app.search.query = "world".to_string();
-        app.search.run(app.active_conversation.as_deref(), &app.db);
-        assert_eq!(app.search.results.len(), 2);
-    }
-
-    #[rstest]
-    fn system_message_inserted_with_is_system_true(mut app: App) {
-        let ts = chrono::Utc::now();
-        let ts_ms = ts.timestamp_millis();
-        app.handle_signal_event(SignalEvent::SystemMessage {
-            conv_id: "+15551234567".to_string(),
-            body: "Missed voice call".to_string(),
-            timestamp: ts,
-            timestamp_ms: ts_ms,
-        });
-
-        assert!(app.store.conversations.contains_key("+15551234567"));
-        let conv = &app.store.conversations["+15551234567"];
-        assert_eq!(conv.messages.len(), 1);
-        assert!(conv.messages[0].is_system);
-        assert_eq!(conv.messages[0].body, "Missed voice call");
-        assert!(conv.messages[0].sender.is_empty());
-    }
-
-    #[rstest]
-    fn unread_bar_clears_on_active_incoming_message(mut app: App) {
-        app.sync.active = false;
-
-        // Deliver a message while conversation is NOT active → creates unread
-        let msg1 = SignalMessage {
-            source: "+15551234567".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("first".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg1));
-
-        // Conversation exists with 1 message, last_read_index should be 0 (unread)
-        assert_eq!(app.store.conversations["+15551234567"].messages.len(), 1);
-        let read_idx = app
-            .store
-            .last_read_index
-            .get("+15551234567")
-            .copied()
-            .unwrap_or(0);
-        assert_eq!(read_idx, 0);
-
-        // Now make it the active conversation
-        app.active_conversation = Some("+15551234567".to_string());
-
-        // Deliver another message while conversation IS active
-        let msg2 = SignalMessage {
-            source: "+15551234567".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("second".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg2));
-
-        // last_read_index should now equal messages.len() → no unread bar
-        let total = app.store.conversations["+15551234567"].messages.len();
-        let read_idx = app.store.last_read_index["+15551234567"];
-        assert_eq!(total, 2);
-        assert_eq!(read_idx, total);
-    }
-
-    #[rstest]
-    fn read_sync_advances_read_marker_and_clears_unread(mut app: App) {
-        // Create a conversation with 3 messages (all incoming, unread)
-        let msg = |body: &str, ts_ms: i64| SignalMessage {
-            source: "+15551234567".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: DateTime::from_timestamp_millis(ts_ms).unwrap(),
-            body: Some(body.to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg("one", 1000)));
-        app.handle_signal_event(SignalEvent::MessageReceived(msg("two", 2000)));
-        app.handle_signal_event(SignalEvent::MessageReceived(msg("three", 3000)));
-
-        assert_eq!(app.store.conversations["+15551234567"].unread, 3);
-        assert_eq!(
-            app.store
-                .last_read_index
-                .get("+15551234567")
-                .copied()
-                .unwrap_or(0),
-            0
-        );
-
-        // Simulate reading through timestamp 2000 on another device
-        app.handle_signal_event(SignalEvent::ReadSyncReceived {
-            read_messages: vec![("+15551234567".to_string(), 2000)],
-        });
-
-        // Read marker should advance to index 2 (after msg "one" and "two")
-        assert_eq!(app.store.last_read_index["+15551234567"], 2);
-        // Only "three" should remain unread
-        assert_eq!(app.store.conversations["+15551234567"].unread, 1);
-    }
-
-    #[rstest]
-    fn read_sync_does_not_retreat_read_marker(mut app: App) {
-        let msg = |body: &str, ts_ms: i64| SignalMessage {
-            source: "+15551234567".to_string(),
-            source_name: Some("Alice".to_string()),
-            timestamp: DateTime::from_timestamp_millis(ts_ms).unwrap(),
-            body: Some(body.to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg("one", 1000)));
-        app.handle_signal_event(SignalEvent::MessageReceived(msg("two", 2000)));
-        app.handle_signal_event(SignalEvent::MessageReceived(msg("three", 3000)));
-
-        // First sync reads up to ts 3000 (all messages)
-        app.handle_signal_event(SignalEvent::ReadSyncReceived {
-            read_messages: vec![("+15551234567".to_string(), 3000)],
-        });
-        assert_eq!(app.store.last_read_index["+15551234567"], 3);
-        assert_eq!(app.store.conversations["+15551234567"].unread, 0);
-
-        // A stale sync for ts 1000 should NOT retreat the read marker
-        app.handle_signal_event(SignalEvent::ReadSyncReceived {
-            read_messages: vec![("+15551234567".to_string(), 1000)],
-        });
-        assert_eq!(app.store.last_read_index["+15551234567"], 3);
-        assert_eq!(app.store.conversations["+15551234567"].unread, 0);
-    }
-
-    // --- Text style resolution tests ---
-
-    #[rstest]
-    fn text_style_ranges_resolved_to_byte_offsets(app: App) {
-        // ASCII body: "hello bold world"
-        // "bold" is at UTF-16 offset 6, length 4
-        let body = "hello bold world";
-        let styles = vec![
-            TextStyle {
-                start: 6,
-                length: 4,
-                style: StyleType::Bold,
-            },
-            TextStyle {
-                start: 11,
-                length: 5,
-                style: StyleType::Italic,
-            },
-        ];
-        let resolved = app.store.resolve_text_styles(body, &styles, &[]);
-
-        // In pure ASCII, UTF-16 offsets == byte offsets
-        assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0], (6, 10, StyleType::Bold)); // "bold"
-        assert_eq!(resolved[1], (11, 16, StyleType::Italic)); // "world"
-    }
-
-    #[rstest]
-    fn text_style_ranges_with_multibyte_chars(app: App) {
-        // Body with multi-byte chars: "Hi \u{1F600} bold" (emoji is 4 bytes UTF-8, 2 units UTF-16)
-        // UTF-16: H(1) i(1) ' '(1) \u{1F600}(2) ' '(1) b(1) o(1) l(1) d(1) = offsets
-        // "bold" starts at UTF-16 offset 6, length 4
-        let body = "Hi \u{1F600} bold";
-        let styles = vec![TextStyle {
-            start: 6,
-            length: 4,
-            style: StyleType::Bold,
-        }];
-        let resolved = app.store.resolve_text_styles(body, &styles, &[]);
-
-        // "Hi " = 3 bytes, emoji = 4 bytes, " " = 1 byte => "bold" starts at byte 8
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].0, 8); // byte start of "bold"
-        assert_eq!(resolved[0].1, 12); // byte end of "bold"
-        assert_eq!(resolved[0].2, StyleType::Bold);
-    }
-
-    #[rstest]
-    fn text_style_ranges_with_mentions(mut app: App) {
-        app.store
-            .uuid_to_name
-            .insert("uuid-bob".to_string(), "Bob".to_string());
-
-        // Original body: "\u{FFFC} is bold"
-        // After mention resolution: "@Bob is bold"
-        // Mention at UTF-16 offset 0, length 1 => replaced with "@Bob" (4 chars)
-        // "bold" is at original UTF-16 offset 5, length 4
-        // After resolution shift: offset 5 + 3 (replacement grew by 3) = 8
-        let resolved_body = "@Bob is bold";
-        let mentions = vec![Mention {
-            start: 0,
-            length: 1,
-            uuid: "uuid-bob".to_string(),
-        }];
-        let styles = vec![TextStyle {
-            start: 5,
-            length: 4,
-            style: StyleType::Strikethrough,
-        }];
-        let resolved = app
-            .store
-            .resolve_text_styles(resolved_body, &styles, &mentions);
-
-        assert_eq!(resolved.len(), 1);
-        // "bold" in "@Bob is bold" starts at byte 8
-        assert_eq!(resolved[0].0, 8);
-        assert_eq!(resolved[0].1, 12);
-        assert_eq!(resolved[0].2, StyleType::Strikethrough);
-    }
-
-    #[rstest]
-    fn text_style_ranges_empty_styles(app: App) {
-        let resolved = app.store.resolve_text_styles("hello world", &[], &[]);
-        assert!(resolved.is_empty());
-    }
-
-    // --- Group management tests ---
-
-    #[test]
-    fn group_command_parsed() {
-        assert!(matches!(
-            crate::input::parse_input("/group"),
-            crate::input::InputAction::Group
-        ));
-        assert!(matches!(
-            crate::input::parse_input("/g"),
-            crate::input::InputAction::Group
-        ));
-    }
-
-    #[rstest]
-    fn group_menu_items_in_group(mut app: App) {
-        app.store
-            .get_or_create_conversation("g1", "Family", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-        let items = app.group_menu_items();
-        assert_eq!(items.len(), 5);
-        assert_eq!(items[0].label, "Members");
-        assert_eq!(items[items.len() - 1].label, "Leave");
-    }
-
-    #[rstest]
-    fn group_menu_items_not_in_group(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        let items = app.group_menu_items();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].label, "Create group");
-    }
-
-    #[rstest]
-    fn group_menu_items_no_conversation(app: App) {
-        let items = app.group_menu_items();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].label, "Create group");
-    }
-
-    #[rstest]
-    fn group_add_filter_excludes_existing_members(mut app: App) {
-        app.store
-            .get_or_create_conversation("g1", "Family", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Family".to_string(),
-                members: vec!["+1".to_string(), "+2".to_string()],
-                member_uuids: vec![],
-            },
-        );
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .contact_names
-            .insert("+2".to_string(), "Bob".to_string());
-        app.store
-            .contact_names
-            .insert("+3".to_string(), "Charlie".to_string());
-
-        app.refresh_group_add_filter();
-
-        // Only Charlie should appear (not Alice or Bob who are already members)
-        assert_eq!(app.group_menu.filtered.len(), 1);
-        assert_eq!(app.group_menu.filtered[0].0, "+3");
-    }
-
-    #[rstest]
-    fn group_remove_filter_excludes_self(mut app: App) {
-        app.store
-            .get_or_create_conversation("g1", "Family", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Family".to_string(),
-                members: vec![
-                    "+10000000000".to_string(),
-                    "+1".to_string(),
-                    "+2".to_string(),
-                ],
-                member_uuids: vec![],
-            },
-        );
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .contact_names
-            .insert("+2".to_string(), "Bob".to_string());
-
-        app.refresh_group_remove_filter();
-
-        // Self (+10000000000) should be excluded
-        assert_eq!(app.group_menu.filtered.len(), 2);
-        let phones: Vec<&str> = app
-            .group_menu
-            .filtered
-            .iter()
-            .map(|(p, _)| p.as_str())
-            .collect();
-        assert!(!phones.contains(&"+10000000000"));
-        assert!(phones.contains(&"+1"));
-        assert!(phones.contains(&"+2"));
-    }
-
-    #[rstest]
-    fn group_menu_state_transitions(mut app: App) {
-        app.store
-            .get_or_create_conversation("g1", "Family", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Family".to_string(),
-                members: vec!["+1".to_string()],
-                member_uuids: vec![],
-            },
-        );
-
-        // Open group menu via handle_input
-        app.input.buffer = "/group".to_string();
-        app.input.cursor = 6;
-        app.handle_input();
-        assert_eq!(app.group_menu.state, Some(GroupMenuState::Menu));
-
-        // Press 'm' to go to Members
-        app.handle_group_menu_key(KeyCode::Char('m'));
-        assert_eq!(app.group_menu.state, Some(GroupMenuState::Members));
-
-        // Esc goes back to Menu
-        app.handle_group_menu_key(KeyCode::Esc);
-        assert_eq!(app.group_menu.state, Some(GroupMenuState::Menu));
-
-        // Press 'l' to go to LeaveConfirm
-        app.handle_group_menu_key(KeyCode::Char('l'));
-        assert_eq!(app.group_menu.state, Some(GroupMenuState::LeaveConfirm));
-
-        // Press 'n' to cancel leave
-        app.handle_group_menu_key(KeyCode::Char('n'));
-        assert_eq!(app.group_menu.state, Some(GroupMenuState::Menu));
-
-        // Esc closes the menu entirely
-        app.handle_group_menu_key(KeyCode::Esc);
-        assert_eq!(app.group_menu.state, None);
-    }
-
-    #[rstest]
-    fn group_leave_produces_send_request(mut app: App) {
-        app.store
-            .get_or_create_conversation("g1", "Family", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-        app.store.groups.insert(
-            "g1".to_string(),
-            Group {
-                id: "g1".to_string(),
-                name: "Family".to_string(),
-                members: vec![],
-                member_uuids: vec![],
-            },
-        );
-
-        app.group_menu.state = Some(GroupMenuState::LeaveConfirm);
-        let req = app.handle_group_menu_key(KeyCode::Char('y'));
-        assert!(req.is_some());
-        assert!(matches!(req, Some(SendRequest::LeaveGroup { group_id }) if group_id == "g1"));
-        assert_eq!(app.group_menu.state, None);
-    }
-
-    #[rstest]
-    fn group_create_produces_send_request(mut app: App) {
-        app.group_menu.state = Some(GroupMenuState::Create);
-        app.group_menu.input = "New Group".to_string();
-        let req = app.handle_group_menu_key(KeyCode::Enter);
-        assert!(req.is_some());
-        assert!(matches!(req, Some(SendRequest::CreateGroup { name }) if name == "New Group"));
-        assert_eq!(app.group_menu.state, None);
-    }
-
-    #[rstest]
-    fn group_rename_produces_send_request(mut app: App) {
-        app.store
-            .get_or_create_conversation("g1", "Old Name", true, &app.db);
-        app.active_conversation = Some("g1".to_string());
-        app.group_menu.state = Some(GroupMenuState::Rename);
-        app.group_menu.input = "New Name".to_string();
-        let req = app.handle_group_menu_key(KeyCode::Enter);
-        assert!(req.is_some());
-        assert!(
-            matches!(req, Some(SendRequest::RenameGroup { group_id, name }) if group_id == "g1" && name == "New Name")
-        );
-        assert_eq!(app.group_menu.state, None);
-    }
-
-    // --- Message request tests ---
-
-    fn msg_from(source: &str) -> SignalMessage {
-        SignalMessage {
-            source: source.to_string(),
-            source_name: None,
-            source_uuid: None,
-            timestamp: chrono::Utc::now(),
-            body: Some("hello".to_string()),
-            attachments: vec![],
-            group_id: None,
-            group_name: None,
-            is_outgoing: false,
-            destination: None,
-            mentions: vec![],
-            text_styles: vec![],
-            quote: None,
-            expires_in_seconds: 0,
-            previews: Vec::new(),
-        }
-    }
-
-    #[rstest]
-    fn unknown_sender_creates_unaccepted_conversation(mut app: App) {
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(!app.store.conversations["+1"].accepted);
-    }
-
-    #[rstest]
-    fn known_contact_creates_accepted_conversation(mut app: App) {
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(app.store.conversations["+1"].accepted);
-    }
-
-    #[test]
-    fn action_menu_hint_roundtrips_through_char() {
-        // Every variant in ActionMenuHint must round-trip through its key_char.
-        // This guards the from_char/key_char tables from drift if a variant
-        // is added without updating both.
-        let all = [
-            ActionMenuHint::Reply,
-            ActionMenuHint::Edit,
-            ActionMenuHint::React,
-            ActionMenuHint::Forward,
-            ActionMenuHint::Copy,
-            ActionMenuHint::Delete,
-            ActionMenuHint::PinToggle,
-            ActionMenuHint::Vote,
-            ActionMenuHint::EndPoll,
-            ActionMenuHint::OpenAttachment,
-            ActionMenuHint::OpenLink,
-        ];
-        for hint in all {
-            let c = hint.key_char();
-            assert_eq!(
-                ActionMenuHint::from_char(c),
-                Some(hint),
-                "round-trip failed for {hint:?} (char {c})"
-            );
-        }
-
-        // Distinct chars across all variants (no accidental aliasing).
-        let chars: Vec<char> = all.iter().map(|h| h.key_char()).collect();
-        let unique: std::collections::HashSet<&char> = chars.iter().collect();
-        assert_eq!(
-            unique.len(),
-            chars.len(),
-            "ActionMenuHint variants must map to distinct keys; got {chars:?}"
-        );
-
-        // Garbage chars don't smuggle a variant in.
-        assert_eq!(ActionMenuHint::from_char('z'), None);
-        assert_eq!(ActionMenuHint::from_char(' '), None);
-    }
-
-    #[rstest]
-    fn unknown_sender_with_source_name_creates_accepted_conversation(mut app: App) {
-        // Regression for #421 review: a first message from an unknown sender
-        // whose envelope includes source_name should auto-accept the
-        // conversation, because remember_contact_name inserts the name into
-        // contact_names before the message-request check runs.
-        let mut msg = msg_from("+1");
-        msg.source_name = Some("Alice".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(
-            app.store.conversations["+1"].accepted,
-            "sender announced their name in the envelope — conversation should not be a message request"
-        );
-    }
-
-    #[rstest]
-    fn outgoing_sync_creates_accepted_conversation(mut app: App) {
-        let msg = SignalMessage {
-            source: "+10000000000".to_string(),
-            timestamp: chrono::Utc::now(),
-            body: Some("hey".to_string()),
-            is_outgoing: true,
-            destination: Some("+1".to_string()),
-            ..Default::default()
-        };
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(app.store.conversations["+1"].accepted);
-    }
-
-    #[rstest]
-    fn contact_sync_auto_accepts_matching_conversations(mut app: App) {
-        // Message from unknown creates unaccepted
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(!app.store.conversations["+1"].accepted);
-
-        // Contact list arrives with +1 → auto-accept
-        app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
-            number: "+1".to_string(),
-            name: Some("Alice".to_string()),
-            uuid: None,
-        }]));
-        assert!(app.store.conversations["+1"].accepted);
-    }
-
-    #[rstest]
-    fn accept_key_returns_send_request_and_marks_accepted(mut app: App) {
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        app.active_conversation = Some("+1".to_string());
-        app.open_overlay(OverlayKind::MessageRequest);
-
-        let req = app.handle_message_request_key(KeyCode::Char('a'));
-        assert!(app.store.conversations["+1"].accepted);
-        assert!(!app.is_overlay(OverlayKind::MessageRequest));
-        assert!(matches!(
-            req,
-            Some(SendRequest::MessageRequestResponse { ref response_type, .. })
-            if response_type == "accept"
-        ));
-    }
-
-    #[rstest]
-    fn delete_key_removes_conversation(mut app: App) {
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        app.active_conversation = Some("+1".to_string());
-        // Pre-populate auxiliary state that the dedup with delete_active_conversation
-        // is supposed to clean up (regression guard for the partial cleanup the
-        // 'd' arm did before PR #312).
-        app.scroll.positions.insert("+1".to_string(), (3, Some(0)));
-        app.store.last_read_index.insert("+1".to_string(), 1);
-        app.store.has_more_messages.insert("+1".to_string());
-        app.muted_conversations
-            .insert("+1".to_string(), MuteState::Permanent);
-        app.blocked_conversations.insert("+1".to_string());
-        app.open_overlay(OverlayKind::MessageRequest);
-
-        let req = app.handle_message_request_key(KeyCode::Char('d'));
-        assert!(!app.store.conversations.contains_key("+1"));
-        assert!(!app.store.conversation_order.contains(&"+1".to_string()));
-        assert!(!app.scroll.positions.contains_key("+1"));
-        assert!(!app.store.last_read_index.contains_key("+1"));
-        assert!(!app.store.has_more_messages.contains("+1"));
-        assert!(!app.muted_conversations.contains_key("+1"));
-        assert!(!app.blocked_conversations.contains("+1"));
-        assert!(app.active_conversation.is_none());
-        assert!(!app.is_overlay(OverlayKind::MessageRequest));
-        assert!(matches!(
-            req,
-            Some(SendRequest::MessageRequestResponse { ref response_type, .. })
-            if response_type == "delete"
-        ));
-    }
-
-    #[rstest]
-    fn esc_closes_message_request_overlay(mut app: App) {
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        app.active_conversation = Some("+1".to_string());
-        app.open_overlay(OverlayKind::MessageRequest);
-
-        let req = app.handle_message_request_key(KeyCode::Esc);
-        assert!(req.is_none());
-        assert!(!app.is_overlay(OverlayKind::MessageRequest));
-        assert!(app.active_conversation.is_none());
-    }
-
-    // --- /delete slash command + confirmation overlay (PR #312) ---
-
-    #[rstest]
-    fn slash_delete_opens_confirmation_overlay(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.input.buffer = "/delete".to_string();
-        app.input.cursor = 7;
-
-        let req = app.handle_input();
-
-        assert!(req.is_none());
-        assert!(app.is_overlay(OverlayKind::DeleteConversationConfirm));
-        // Confirmation overlay is just a prompt — must not delete yet.
-        assert!(app.store.conversations.contains_key("+1"));
-        assert_eq!(app.active_conversation.as_deref(), Some("+1"));
-    }
-
-    #[rstest]
-    fn slash_delete_without_active_conversation_sets_error(mut app: App) {
-        app.input.buffer = "/delete".to_string();
-        app.input.cursor = 7;
-
-        let req = app.handle_input();
-
-        assert!(req.is_none());
-        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
-        assert!(app.status_message.contains("No active conversation"));
-    }
-
-    #[rstest]
-    fn delete_confirm_yes_removes_accepted_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.scroll.positions.insert("+1".to_string(), (3, Some(0)));
-        app.store.last_read_index.insert("+1".to_string(), 1);
-        app.open_overlay(OverlayKind::DeleteConversationConfirm);
-
-        let (handled, req) = app.handle_overlay_key(KeyCode::Char('y'));
-
-        assert!(handled);
-        // Accepted conversation: purely local, no remote response.
-        assert!(req.is_none());
-        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
-        assert!(!app.store.conversations.contains_key("+1"));
-        assert!(!app.scroll.positions.contains_key("+1"));
-        assert!(!app.store.last_read_index.contains_key("+1"));
-        assert!(app.active_conversation.is_none());
-    }
-
-    #[rstest]
-    fn delete_confirm_yes_on_unaccepted_returns_remote_delete(mut app: App) {
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+15550007777")));
-        assert!(!app.store.conversations["+15550007777"].accepted);
-        app.active_conversation = Some("+15550007777".to_string());
-        app.open_overlay(OverlayKind::DeleteConversationConfirm);
-
-        let (_, req) = app.handle_overlay_key(KeyCode::Char('y'));
-
-        let Some(SendRequest::MessageRequestResponse {
-            recipient,
-            is_group,
-            response_type,
-        }) = req
-        else {
-            panic!("expected MessageRequestResponse(delete) for unaccepted conversation");
-        };
-        assert_eq!(recipient, "+15550007777");
-        assert!(!is_group);
-        assert_eq!(response_type, "delete");
-        assert!(!app.store.conversations.contains_key("+15550007777"));
-        assert!(app.active_conversation.is_none());
-    }
-
-    #[rstest]
-    fn delete_confirm_no_keeps_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.open_overlay(OverlayKind::DeleteConversationConfirm);
-
-        let (handled, req) = app.handle_overlay_key(KeyCode::Char('n'));
-
-        assert!(handled);
-        assert!(req.is_none());
-        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
-        assert!(app.store.conversations.contains_key("+1"));
-        assert_eq!(app.active_conversation.as_deref(), Some("+1"));
-    }
-
-    #[rstest]
-    fn delete_confirm_esc_keeps_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.open_overlay(OverlayKind::DeleteConversationConfirm);
-
-        let (_, req) = app.handle_overlay_key(KeyCode::Esc);
-
-        assert!(req.is_none());
-        assert!(!app.is_overlay(OverlayKind::DeleteConversationConfirm));
-        assert!(app.store.conversations.contains_key("+1"));
-    }
-
-    #[rstest]
-    fn update_status_does_not_clobber_active_app_overlay(mut app: App) {
-        // Regression guard for PR #345: opening MessageRequest during a
-        // conversation switch must not close an already-open App-owned
-        // overlay (e.g. Settings mid-edit). The user would see their
-        // settings state silently vanish.
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+unaccepted")));
-        app.open_overlay(OverlayKind::Settings);
-        app.active_conversation = Some("+unaccepted".to_string());
-
-        // Simulate the conversation switch that triggers update_status.
-        // (update_status is private; calling the public code path via an
-        // explicit switch reaches it.)
-        app.update_status();
-
-        assert_eq!(
-            app.active_overlay(),
-            Some(OverlayKind::Settings),
-            "Settings overlay must not be clobbered by MessageRequest"
-        );
-    }
-
-    #[rstest]
-    fn autocomplete_esc_closes_overlay(mut app: App) {
-        // Regression guard for PR #346: pre-fix, AutocompleteState::clear()
-        // no longer touched visibility, so Esc cleared candidates but left
-        // current_overlay = Some(Autocomplete), trapping subsequent input
-        // in the empty handler.
-        app.mode = InputMode::Insert;
-        app.input.buffer = "/j".to_string();
-        app.input.cursor = 2;
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-
-        app.handle_autocomplete_key(KeyCode::Esc);
-        assert!(
-            !app.is_overlay(OverlayKind::Autocomplete),
-            "Esc should close the autocomplete overlay"
-        );
-    }
-
-    #[rstest]
-    fn autocomplete_no_match_closes_overlay(mut app: App) {
-        // Regression guard for PR #346: typing past any candidate match
-        // should drop visibility, not leave the empty overlay open.
-        app.mode = InputMode::Insert;
-        app.input.buffer = "/j".to_string();
-        app.input.cursor = 2;
-        app.update_autocomplete();
-        assert!(app.is_overlay(OverlayKind::Autocomplete));
-
-        // Type a string that matches no command/mention/join.
-        app.input.buffer = "/zzznothingmatches".to_string();
-        app.input.cursor = app.input.buffer.len();
-        app.update_autocomplete();
-        assert!(
-            !app.is_overlay(OverlayKind::Autocomplete),
-            "no-match autocomplete refresh should close the overlay"
-        );
-    }
-
-    #[rstest]
-    fn bell_skipped_for_unaccepted_conversation(mut app: App) {
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(!app.notifications.pending_bell);
-    }
-
-    #[rstest]
-    fn bell_skipped_for_blocked_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        if let Some(conv) = app.store.conversations.get_mut("+1") {
-            conv.accepted = true;
-        }
-        app.blocked_conversations.insert("+1".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        assert!(!app.notifications.pending_bell);
-    }
-
-    #[rstest]
-    fn read_receipts_not_sent_for_unaccepted(mut app: App) {
-        app.send_read_receipts = true;
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        app.queue_read_receipts_for_conv("+1", 0);
-        assert!(app.pending.read_receipts.is_empty());
-    }
-
-    #[rstest]
-    fn read_receipts_not_sent_for_blocked(mut app: App) {
-        app.send_read_receipts = true;
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        if let Some(conv) = app.store.conversations.get_mut("+1") {
-            conv.accepted = true;
-        }
-        app.blocked_conversations.insert("+1".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
-        app.queue_read_receipts_for_conv("+1", 0);
-        assert!(app.pending.read_receipts.is_empty());
-    }
-
-    // --- Block / Unblock tests ---
-
-    #[rstest]
-    fn block_adds_to_set_and_returns_send_request(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.input.buffer = "/block".to_string();
-        let req = app.handle_input();
-        assert!(app.blocked_conversations.contains("+1"));
-        assert!(
-            matches!(req, Some(SendRequest::Block { ref recipient, is_group }) if recipient == "+1" && !is_group)
-        );
-        assert!(app.status_message.contains("blocked"));
-    }
-
-    #[rstest]
-    fn unblock_removes_from_set_and_returns_send_request(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.blocked_conversations.insert("+1".to_string());
-        app.input.buffer = "/unblock".to_string();
-        let req = app.handle_input();
-        assert!(!app.blocked_conversations.contains("+1"));
-        assert!(
-            matches!(req, Some(SendRequest::Unblock { ref recipient, is_group }) if recipient == "+1" && !is_group)
-        );
-        assert!(app.status_message.contains("unblocked"));
-    }
-
-    #[rstest]
-    #[case("/block", true, "already blocked")]
-    #[case("/unblock", false, "not blocked")]
-    fn block_unblock_already_in_state(
-        mut app: App,
-        #[case] cmd: &str,
-        #[case] pre_blocked: bool,
-        #[case] expected_msg: &str,
-    ) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        if pre_blocked {
-            app.blocked_conversations.insert("+1".to_string());
-        }
-        app.input.buffer = cmd.to_string();
-        let req = app.handle_input();
-        assert!(req.is_none());
-        assert!(app.status_message.contains(expected_msg));
-    }
-
-    #[rstest]
-    #[case("/block", "no active conversation")]
-    #[case("/unblock", "no active conversation")]
-    fn block_unblock_no_active_conversation(
-        mut app: App,
-        #[case] cmd: &str,
-        #[case] expected_msg: &str,
-    ) {
-        app.input.buffer = cmd.to_string();
-        let req = app.handle_input();
-        assert!(req.is_none());
-        assert!(app.status_message.contains(expected_msg));
-    }
-
-    // --- Mouse support tests ---
-
-    fn mouse_down(col: u16, row: u16) -> MouseEvent {
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: col,
-            row,
-            modifiers: KeyModifiers::empty(),
-        }
-    }
-
-    fn mouse_scroll_up(col: u16, row: u16) -> MouseEvent {
-        MouseEvent {
-            kind: MouseEventKind::ScrollUp,
-            column: col,
-            row,
-            modifiers: KeyModifiers::empty(),
-        }
-    }
-
-    fn mouse_scroll_down(col: u16, row: u16) -> MouseEvent {
-        MouseEvent {
-            kind: MouseEventKind::ScrollDown,
-            column: col,
-            row,
-            modifiers: KeyModifiers::empty(),
-        }
-    }
-
-    #[rstest]
-    fn mouse_disabled_ignores_events(mut app: App) {
-        app.mouse.enabled = false;
-        app.mouse.messages_area = Rect::new(0, 0, 80, 20);
-        let result = app.handle_mouse_event(mouse_scroll_up(10, 10));
-        assert!(result.is_none());
-        assert_eq!(app.scroll.offset, 0);
-    }
-
-    #[rstest]
-    fn mouse_overlay_scroll_navigates_list(mut app: App) {
-        app.open_overlay(OverlayKind::Settings);
-        app.settings_overlay.index = 0;
-        app.mouse.messages_area = Rect::new(0, 0, 80, 20);
-        // Scroll down in overlay should navigate settings list (j), not scroll messages
-        app.handle_mouse_event(mouse_scroll_down(10, 10));
-        assert_eq!(app.settings_overlay.index, 1);
-        assert_eq!(app.scroll.offset, 0); // messages not scrolled
-    }
-
-    #[rstest]
-    #[case(0, true, 3)]
-    #[case(10, false, 7)]
-    #[case(1, false, 0)]
-    fn mouse_scroll_behavior(
-        mut app: App,
-        #[case] initial_offset: usize,
-        #[case] scroll_up: bool,
-        #[case] expected_offset: usize,
-    ) {
-        app.mouse.messages_area = Rect::new(0, 0, 80, 20);
-        app.scroll.offset = initial_offset;
-        let event = if scroll_up {
-            mouse_scroll_up(10, 10)
-        } else {
-            mouse_scroll_down(10, 10)
-        };
-        app.handle_mouse_event(event);
-        assert_eq!(app.scroll.offset, expected_offset);
-    }
-
-    #[rstest]
-    fn mouse_sidebar_click_switches_conversation(mut app: App) {
-        // Create two conversations
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-
-        // Sidebar inner starts at row 0, so clicking row 1 selects the second conv
-        app.mouse.sidebar_inner = Some(Rect::new(0, 0, 20, 10));
-        app.handle_mouse_event(mouse_down(5, 1));
-        assert_eq!(app.active_conversation.as_deref(), Some("+2"));
-    }
-
-    #[rstest]
-    fn mouse_input_click_positions_cursor(mut app: App) {
-        app.mode = InputMode::Normal;
-        app.input.buffer = "hello world".to_string();
-        app.input.cursor = 0;
-        // Input area with borders: x=10, y=20, w=40, h=3
-        app.mouse.input_area = Rect::new(10, 20, 40, 3);
-        app.mouse.input_prefix_len = 2; // "> "
-
-        // Click at column 18 (inside input area)
-        // content_start_col = 10 + 1 + 2 = 13, so click_offset = 18 - 13 = 5
-        app.handle_mouse_event(mouse_down(18, 21));
-        assert_eq!(app.mode, InputMode::Insert);
-        assert_eq!(app.input.cursor, 5);
-    }
-
-    #[rstest]
-    fn mouse_input_click_handles_multibyte(mut app: App) {
-        app.mode = InputMode::Normal;
-        app.input.buffer = "caf\u{e9} ok".to_string(); // "café ok" — é is 2 bytes
-        app.input.cursor = 0;
-        app.mouse.input_area = Rect::new(0, 0, 40, 3);
-        app.mouse.input_prefix_len = 2;
-
-        // Click at column 7: content_start = 0+1+2 = 3, target_col = 7-3 = 4
-        // Characters: c(1) a(1) f(1) é(2bytes,1col) → 4 chars = 5 bytes
-        app.handle_mouse_event(mouse_down(7, 1));
-        assert_eq!(app.input.cursor, 5); // byte offset of space after "café"
-    }
-
-    /// Toggle an overlay to the requested state. Routes through
-    /// `open_overlay`/`close_overlay` so the test mirrors production
-    /// callers, and special-cases GroupMenu's sub-state field.
-    fn toggle_overlay(app: &mut App, kind: OverlayKind, on: bool) {
-        if on {
-            app.open_overlay(kind);
-        } else if app.is_overlay(kind) {
-            app.close_overlay();
-        }
-        // GroupMenu carries an extra Option<GroupMenuState> sub-state that
-        // historically also encoded visibility. Keep it in sync so tests
-        // exercising group-menu rendering still see Some(Menu) when open.
-        if matches!(kind, OverlayKind::GroupMenu) {
-            app.group_menu.state = if on { Some(GroupMenuState::Menu) } else { None };
-        }
-    }
-
-    const ALL_OVERLAYS: &[OverlayKind] = &[
-        OverlayKind::SidebarFilter,
-        OverlayKind::PollVote,
-        OverlayKind::PinDuration,
-        OverlayKind::ActionMenu,
-        OverlayKind::DeleteConfirm,
-        OverlayKind::FilePicker,
-        OverlayKind::EmojiPicker,
-        OverlayKind::ReactionPicker,
-        OverlayKind::MessageRequest,
-        OverlayKind::GroupMenu,
-        OverlayKind::About,
-        OverlayKind::Profile,
-        OverlayKind::Help,
-        OverlayKind::Verify,
-        OverlayKind::Forward,
-        OverlayKind::Contacts,
-        OverlayKind::Search,
-        OverlayKind::SettingsProfiles,
-        OverlayKind::ThemePicker,
-        OverlayKind::Keybindings,
-        OverlayKind::Customize,
-        OverlayKind::Settings,
-        OverlayKind::Autocomplete,
-    ];
-
-    #[rstest]
-    fn active_overlay_covers_every_variant(mut app: App) {
-        // Tripwire: `ALL_OVERLAYS` is a hand-maintained slice because Rust has
-        // no stable way to enumerate enum variants. Adding a variant without
-        // extending this slice would silently skip it; the length check turns
-        // that into a loud test failure.
-        assert_eq!(
-            ALL_OVERLAYS.len(),
-            23,
-            "ALL_OVERLAYS is out of sync with OverlayKind - update when adding or removing a variant"
-        );
-
-        assert_eq!(app.active_overlay(), None);
-        assert!(!app.has_overlay());
-
-        for &kind in ALL_OVERLAYS {
-            toggle_overlay(&mut app, kind, true);
-            assert_eq!(
-                app.active_overlay(),
-                Some(kind),
-                "active_overlay did not match after enabling {kind:?}"
-            );
-            assert!(app.has_overlay(), "has_overlay returned false for {kind:?}");
-            toggle_overlay(&mut app, kind, false);
-        }
-
-        assert_eq!(app.active_overlay(), None);
-        assert!(!app.has_overlay());
-    }
-
-    // --- Vim normal-mode keybinding tests ---
-
-    #[rstest]
-    fn gg_scrolls_to_top(mut app: App) {
-        for i in 0..20 {
-            let msg = make_msg("+1", Some(&format!("msg {i}")), None, false);
-            app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        }
-        app.active_conversation = Some("+1".to_string());
-        app.scroll.offset = 0;
-        app.mode = InputMode::Normal;
-
-        // First g sets pending
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
-        assert_eq!(app.pending_normal_key, Some('g'));
-
-        // Second g scrolls to top
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
-        assert_eq!(app.pending_normal_key, None);
-        assert_eq!(app.scroll.offset, 20);
-    }
-
-    #[rstest]
-    fn dd_shows_delete_confirm(mut app: App) {
-        let msg = make_msg("+1", Some("hello"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        app.active_conversation = Some("+1".to_string());
-        app.mode = InputMode::Normal;
-
-        // First d sets pending
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('d'));
-        assert_eq!(app.pending_normal_key, Some('d'));
-        assert!(!app.is_overlay(OverlayKind::DeleteConfirm));
-
-        // Second d triggers delete confirm
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('d'));
-        assert_eq!(app.pending_normal_key, None);
-        assert!(app.is_overlay(OverlayKind::DeleteConfirm));
-    }
-
-    #[rstest]
-    fn pending_key_cancelled_by_esc(mut app: App) {
-        app.mode = InputMode::Normal;
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
-        assert_eq!(app.pending_normal_key, Some('g'));
-
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Esc);
-        assert_eq!(app.pending_normal_key, None);
-    }
-
-    #[rstest]
-    fn pending_key_discarded_on_other_key(mut app: App) {
-        let msg = make_msg("+1", Some("hello"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        app.active_conversation = Some("+1".to_string());
-        app.mode = InputMode::Normal;
-
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
-        assert_eq!(app.pending_normal_key, Some('g'));
-
-        // Pressing 'j' clears pending and processes j normally
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('j'));
-        assert_eq!(app.pending_normal_key, None);
-    }
-
-    #[rstest]
-    fn o_preserves_composer_buffer(mut app: App) {
-        app.mode = InputMode::Normal;
-        app.input.buffer = "hello world".to_string();
-        app.input.cursor = 5;
-
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('o'));
-
-        assert_eq!(app.mode, InputMode::Insert);
-        assert_eq!(app.input.buffer, "hello world\n");
-        assert_eq!(app.input.cursor, 12);
-    }
-
-    #[rstest]
-    fn jk_focus_messages(mut app: App) {
-        for i in 0..5 {
-            let msg = make_msg("+1", Some(&format!("msg {i}")), None, false);
-            app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        }
-        app.active_conversation = Some("+1".to_string());
-        app.mode = InputMode::Normal;
-
-        // k (FocusPrevMessage) should invoke jump_to_adjacent_message
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('k'));
-        assert!(app.scroll.focused_index.is_some());
-    }
-
-    #[rstest]
-    fn pending_key_cleared_on_mode_transition(mut app: App) {
-        app.mode = InputMode::Normal;
-
-        // Press g to set pending
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('g'));
-        assert_eq!(app.pending_normal_key, Some('g'));
-
-        // Press i to enter Insert mode -- pending should be cleared
-        app.handle_normal_key(KeyModifiers::NONE, KeyCode::Char('i'));
-        assert_eq!(app.pending_normal_key, None);
-        assert_eq!(app.mode, InputMode::Insert);
-    }
-
-    #[rstest]
-    fn ctrl_e_scrolls_without_focus(mut app: App) {
-        for i in 0..20 {
-            let msg = make_msg("+1", Some(&format!("msg {i}")), None, false);
-            app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        }
-        app.active_conversation = Some("+1".to_string());
-        app.mode = InputMode::Normal;
-        app.scroll.offset = 5;
-        app.scroll.focused_index = Some(10);
-
-        // Ctrl-E (ScrollDown) should scroll viewport and clear focus
-        app.handle_normal_key(KeyModifiers::CONTROL, KeyCode::Char('e'));
-        assert_eq!(app.scroll.offset, 4);
-        assert_eq!(app.scroll.focused_index, None);
-    }
-
-    // --- Helper for building a SignalMessage ---
-
-    fn make_msg(
-        source: &str,
-        body: Option<&str>,
-        group_id: Option<&str>,
-        is_outgoing: bool,
-    ) -> SignalMessage {
-        SignalMessage {
-            source: source.to_string(),
-            source_name: None,
-            source_uuid: None,
-            timestamp: chrono::Utc::now(),
-            body: body.map(|s| s.to_string()),
-            attachments: vec![],
-            group_id: group_id.map(|s| s.to_string()),
-            group_name: None,
-            is_outgoing,
-            destination: None,
-            mentions: vec![],
-            text_styles: vec![],
-            quote: None,
-            expires_in_seconds: 0,
-            previews: Vec::new(),
-        }
-    }
-
-    /// Like `make_msg` but with an explicit millisecond timestamp offset, so
-    /// tests that send multiple messages in quick succession get distinct
-    /// timestamps (avoiding the dedup path).
-    fn make_msg_with_ts(
-        source: &str,
-        body: Option<&str>,
-        group_id: Option<&str>,
-        is_outgoing: bool,
-        ts_ms: i64,
-    ) -> SignalMessage {
-        let mut m = make_msg(source, body, group_id, is_outgoing);
-        m.timestamp = chrono::DateTime::from_timestamp_millis(ts_ms).unwrap();
-        m
-    }
-
-    // --- Typing indicator tests ---
-
-    #[rstest]
-    fn typing_indicator_adds_and_removes(mut app: App) {
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            is_typing: true,
-            group_id: None,
-        });
-        assert!(app.typing.indicators.contains_key("+1"));
-        assert_eq!(app.store.contact_names.get("+1").unwrap(), "Alice");
-
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+1".to_string(),
-            sender_name: None,
-            is_typing: false,
-            group_id: None,
-        });
-        assert!(!app.typing.indicators.contains_key("+1"));
-    }
-
-    // --- Error event ---
-
-    #[rstest]
-    fn error_event_sets_status(mut app: App) {
-        app.handle_signal_event(SignalEvent::Error("connection lost".to_string()));
-        assert!(app.status_message.contains("connection lost"));
-    }
-
-    // --- Attachment tests ---
-
-    #[rstest]
-    fn message_with_image_attachment(mut app: App) {
-        let mut msg = make_msg("+1", None, None, false);
-        msg.attachments = vec![Attachment {
-            id: "a1".to_string(),
-            content_type: "image/jpeg".to_string(),
-            filename: Some("photo.jpg".to_string()),
-            local_path: None,
-        }];
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.store.conversations["+1"];
-        assert!(
-            conv.messages
-                .iter()
-                .any(|m| m.body.contains("[image: photo.jpg]"))
-        );
-    }
-
-    #[rstest]
-    fn message_with_non_image_attachment(mut app: App) {
-        let mut msg = make_msg("+1", None, None, false);
-        msg.attachments = vec![Attachment {
-            id: "a1".to_string(),
-            content_type: "application/pdf".to_string(),
-            filename: Some("doc.pdf".to_string()),
-            local_path: None,
-        }];
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.store.conversations["+1"];
-        assert!(
-            conv.messages
-                .iter()
-                .any(|m| m.body.contains("[attachment: doc.pdf]"))
-        );
-    }
-
-    #[rstest]
-    fn message_with_body_and_attachment(mut app: App) {
-        let mut msg = make_msg("+1", Some("look at this"), None, false);
-        msg.attachments = vec![Attachment {
-            id: "a1".to_string(),
-            content_type: "image/png".to_string(),
-            filename: Some("img.png".to_string()),
-            local_path: None,
-        }];
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.store.conversations["+1"];
-        // Should have 2 display messages: text body + attachment
-        assert_eq!(conv.messages.len(), 2);
-        assert!(conv.messages[0].body.contains("look at this"));
-        assert!(conv.messages[1].body.contains("[image: img.png]"));
-    }
-
-    #[rstest]
-    fn attachment_without_filename_uses_content_type(mut app: App) {
-        let mut msg = make_msg("+1", None, None, false);
-        msg.attachments = vec![Attachment {
-            id: "a1".to_string(),
-            content_type: "audio/ogg".to_string(),
-            filename: None,
-            local_path: None,
-        }];
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let conv = &app.store.conversations["+1"];
-        assert!(
-            conv.messages
-                .iter()
-                .any(|m| m.body.contains("[attachment: audio/ogg]"))
-        );
-    }
-
-    // --- Bell / notification tests ---
-
-    #[rstest]
-    fn bell_rings_for_background_dm(mut app: App) {
-        app.sync.active = false;
-        // "+1" must be a known contact so conversation is accepted
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .get_or_create_conversation("+other", "Other", false, &app.db);
-        app.active_conversation = Some("+other".to_string());
-        app.notifications.notify_direct = true;
-
-        let msg = make_msg("+1", Some("hey"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(app.notifications.pending_bell);
-    }
-
-    #[rstest]
-    fn bell_not_set_for_active_conversation(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.notifications.notify_direct = true;
-
-        let msg = make_msg("+1", Some("hey"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(!app.notifications.pending_bell);
-    }
-
-    #[rstest]
-    fn bell_skipped_when_notify_disabled(mut app: App) {
-        app.store
-            .get_or_create_conversation("+other", "Other", false, &app.db);
-        app.active_conversation = Some("+other".to_string());
-        app.notifications.notify_direct = false;
-
-        let msg = make_msg("+1", Some("hey"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(!app.notifications.pending_bell);
-    }
-
-    #[rstest]
-    fn bell_for_group_respects_setting(mut app: App) {
-        app.sync.active = false;
-        app.handle_signal_event(SignalEvent::GroupList(vec![Group {
-            id: "g1".to_string(),
-            name: "Team".to_string(),
-            members: vec![],
-            member_uuids: vec![],
-        }]));
-        app.store
-            .get_or_create_conversation("+other", "Other", false, &app.db);
-        app.active_conversation = Some("+other".to_string());
-
-        // group notifications enabled
-        app.notifications.notify_group = true;
-        let msg = make_msg("+1", Some("hi team"), Some("g1"), false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(app.notifications.pending_bell);
-
-        // reset and disable
-        app.notifications.pending_bell = false;
-        app.notifications.notify_group = false;
-        let msg2 = make_msg("+2", Some("again"), Some("g1"), false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg2));
-        assert!(!app.notifications.pending_bell);
-    }
-
-    // --- Unread count tests ---
-
-    #[rstest]
-    fn unread_increments_for_background(mut app: App) {
-        // No active conversation
-        app.active_conversation = None;
-        let msg = make_msg("+1", Some("hey"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.store.conversations["+1"].unread, 1);
-    }
-
-    #[rstest]
-    fn unread_no_increment_for_active(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        let msg = make_msg("+1", Some("hey"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.store.conversations["+1"].unread, 0);
-    }
-
-    // --- Read receipt tests ---
-
-    #[rstest]
-    fn active_conv_queues_read_receipt(mut app: App) {
-        app.sync.active = false;
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.send_read_receipts = true;
-
-        let msg = make_msg("+1", Some("hey"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(
-            !app.pending.read_receipts.is_empty(),
-            "expected read receipt to be queued"
-        );
-        let (recipient, _) = &app.pending.read_receipts[0];
-        assert_eq!(recipient, "+1");
-    }
-
-    // --- Expiration timer sync ---
-
-    #[rstest]
-    fn handle_message_syncs_expiration_timer(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        assert_eq!(app.store.conversations["+1"].expiration_timer, 0);
-
-        let mut msg = make_msg("+1", Some("secret"), None, false);
-        msg.expires_in_seconds = 3600;
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert_eq!(app.store.conversations["+1"].expiration_timer, 3600);
-    }
-
-    // --- Paste command tests ---
-
-    #[rstest]
-    fn paste_text_inserts_into_composer(mut app: App) {
-        // handle_paste_text delegates to handle_paste for plain text, which guards on Insert mode
-        app.mode = InputMode::Insert;
-        app.active_conversation = Some("test-conv".to_string());
-        app.handle_paste_text("hello world");
-        assert_eq!(app.input.buffer, "hello world");
-    }
-
-    #[rstest]
-    fn paste_file_path_inserts_as_text(mut app: App) {
-        // File paths in clipboard text are treated as plain text, not auto-attached
-        let path = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
-        app.mode = InputMode::Insert;
-        app.active_conversation = Some("test-conv".to_string());
-        app.handle_paste_text(&path);
-        assert!(app.pending_attachment.is_none());
-        assert_eq!(app.input.buffer, path);
-    }
-
-    #[rstest]
-    fn paste_empty_text_shows_status_message(mut app: App) {
-        app.active_conversation = Some("test-conv".to_string());
-        app.handle_paste_text("   ");
-        assert!(app.status_message.contains("empty"));
-        assert!(app.pending_attachment.is_none());
-        assert!(app.input.buffer.is_empty());
-    }
-
-    #[rstest]
-    fn paste_clipboard_image_saves_png_as_attachment(mut app: App) {
-        let img_data = arboard::ImageData {
-            width: 2,
-            height: 2,
-            bytes: std::borrow::Cow::Owned(vec![
-                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
-            ]),
-        };
-
-        app.active_conversation = Some("test-conv".to_string());
-        app.handle_clipboard_image(img_data);
-
-        assert!(app.pending_attachment.is_some());
-        let path = app.pending_attachment.as_ref().unwrap();
-        assert!(path.exists(), "PNG file should have been written to disk");
-        assert!(path.to_string_lossy().contains("clipboard_"));
-        assert!(path.extension().is_some_and(|e| e == "png"));
-
-        // Clean up
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[rstest]
-    fn paste_command_without_active_conversation_sets_error(mut app: App) {
-        // active_conversation is None by default in test fixture
-        app.handle_paste_command();
-        assert!(app.status_message.contains("No active conversation"));
-    }
-
-    // --- Typing indicator scoping ---
-
-    #[rstest]
-    fn group_typing_indicator_keyed_by_group_not_sender(mut app: App) {
-        // Alice types in group-a. The typing indicator must be stored under
-        // "group-a", not under Alice's phone number.
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            is_typing: true,
-            group_id: Some("group-a".to_string()),
-        });
-
-        assert!(
-            app.typing.indicators.contains_key("group-a"),
-            "typing indicator should be keyed by group ID"
-        );
-        assert!(
-            !app.typing.indicators.contains_key("+1"),
-            "typing indicator must NOT be keyed by sender phone"
-        );
-        // Inner map stores the sender phone so we can resolve the display name
-        assert!(app.typing.indicators["group-a"].contains_key("+1"));
-    }
-
-    #[rstest]
-    fn group_typing_does_not_bleed_into_other_group(mut app: App) {
-        // Alice types in group-a. Viewing group-b must show no typing indicator.
-        app.store
-            .get_or_create_conversation("group-a", "Group A", true, &app.db);
-        app.store
-            .get_or_create_conversation("group-b", "Group B", true, &app.db);
-
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            is_typing: true,
-            group_id: Some("group-a".to_string()),
-        });
-
-        // Viewing group-b: no indicator should be visible for it
-        assert!(
-            !app.typing.indicators.contains_key("group-b"),
-            "group-a typing must not bleed into group-b"
-        );
-    }
-
-    #[rstest]
-    fn direct_typing_indicator_keyed_by_sender(mut app: App) {
-        // 1:1 typing (no group_id) must still be keyed by sender phone number.
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+1".to_string(),
-            sender_name: None,
-            is_typing: true,
-            group_id: None,
-        });
-
-        assert!(
-            app.typing.indicators.contains_key("+1"),
-            "1:1 typing indicator should be keyed by sender phone"
-        );
-    }
-
-    #[rstest]
-    fn concurrent_typers_in_group(mut app: App) {
-        // Alice and Bob both type in the same group
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            is_typing: true,
-            group_id: Some("group-a".to_string()),
-        });
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+2".to_string(),
-            sender_name: Some("Bob".to_string()),
-            is_typing: true,
-            group_id: Some("group-a".to_string()),
-        });
-
-        let senders = &app.typing.indicators["group-a"];
-        assert_eq!(senders.len(), 2);
-        assert!(senders.contains_key("+1"));
-        assert!(senders.contains_key("+2"));
-
-        // Alice stops typing
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+1".to_string(),
-            sender_name: None,
-            is_typing: false,
-            group_id: Some("group-a".to_string()),
-        });
-
-        let senders = &app.typing.indicators["group-a"];
-        assert_eq!(senders.len(), 1);
-        assert!(senders.contains_key("+2"));
-
-        // Bob stops typing — entry should be fully removed
-        app.handle_signal_event(SignalEvent::TypingIndicator {
-            sender: "+2".to_string(),
-            sender_name: None,
-            is_typing: false,
-            group_id: Some("group-a".to_string()),
-        });
-
-        assert!(!app.typing.indicators.contains_key("group-a"));
-    }
-
-    #[test]
-    fn is_stale_filters_correctly() {
-        let empty_group = Conversation {
-            name: "abc123groupid".to_string(),
-            id: "abc123groupid".to_string(),
-            messages: vec![],
-            unread: 0,
-            is_group: true,
-            expiration_timer: 0,
-            accepted: true,
-        };
-        assert!(
-            empty_group.is_stale(),
-            "group with no messages and name==id is stale"
-        );
-
-        let named_group = Conversation {
-            name: "Book Club".to_string(),
-            id: "abc123groupid".to_string(),
-            messages: vec![],
-            unread: 0,
-            is_group: true,
-            expiration_timer: 0,
-            accepted: true,
-        };
-        assert!(
-            !named_group.is_stale(),
-            "group with a real name is not stale"
-        );
-
-        let phone_contact = Conversation {
-            name: "+15551234567".to_string(),
-            id: "+15551234567".to_string(),
-            messages: vec![],
-            unread: 0,
-            is_group: false,
-            expiration_timer: 0,
-            accepted: true,
-        };
-        assert!(
-            !phone_contact.is_stale(),
-            "contact with phone number is not stale"
-        );
-
-        let uuid_contact = Conversation {
-            name: "8eb3dbda-1234-5678".to_string(),
-            id: "8eb3dbda-1234-5678".to_string(),
-            messages: vec![],
-            unread: 0,
-            is_group: false,
-            expiration_timer: 0,
-            accepted: true,
-        };
-        assert!(
-            uuid_contact.is_stale(),
-            "contact with UUID-only name is stale"
-        );
-    }
-
-    #[test]
-    fn extract_file_uri_from_image_body() {
-        let body = "[image: photo.jpg](file:///home/user/photo.jpg)";
-        assert_eq!(
-            extract_file_uri(body),
-            Some("file:///home/user/photo.jpg".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_file_uri_from_attachment_body() {
-        let body = "[attachment: doc.pdf](file:///home/user/doc.pdf)";
-        assert_eq!(
-            extract_file_uri(body),
-            Some("file:///home/user/doc.pdf".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_file_uri_none_for_plain_text() {
-        assert_eq!(extract_file_uri("hello world"), None);
-    }
-
-    #[test]
-    fn classify_file_open_allows_safe_type_in_download_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("photo.jpg");
-        std::fs::write(&file, b"x").unwrap();
-        assert!(matches!(
-            classify_file_open(file.to_str().unwrap(), dir.path()),
-            OpenFileDecision::Allow(_)
-        ));
-    }
-
-    #[test]
-    fn classify_file_open_allows_uppercase_extension() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("PHOTO.JPG");
-        std::fs::write(&file, b"x").unwrap();
-        assert!(matches!(
-            classify_file_open(file.to_str().unwrap(), dir.path()),
-            OpenFileDecision::Allow(_)
-        ));
-    }
-
-    #[test]
-    fn classify_file_open_rejects_path_outside_download_dir() {
-        let download = tempfile::tempdir().unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        let file = elsewhere.path().join("doc.pdf");
-        std::fs::write(&file, b"x").unwrap();
-        assert_eq!(
-            classify_file_open(file.to_str().unwrap(), download.path()),
-            OpenFileDecision::OutsideDownloadDir
-        );
-    }
-
-    #[test]
-    fn classify_file_open_rejects_executable_and_unknown_types() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in [
-            "evil.hta", "evil.exe", "evil.lnk", "evil.bat", "evil.ps1", "noext",
-        ] {
-            let file = dir.path().join(name);
-            std::fs::write(&file, b"x").unwrap();
-            assert_eq!(
-                classify_file_open(file.to_str().unwrap(), dir.path()),
-                OpenFileDecision::UnsafeType,
-                "expected UnsafeType for {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn classify_file_open_missing_file_is_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nope.png");
-        assert_eq!(
-            classify_file_open(path.to_str().unwrap(), dir.path()),
-            OpenFileDecision::NotFound
-        );
-    }
-
-    #[test]
-    fn classify_file_open_rejects_everything_when_download_dir_unset() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("photo.jpg");
-        std::fs::write(&file, b"x").unwrap();
-        assert_eq!(
-            classify_file_open(file.to_str().unwrap(), Path::new("")),
-            OpenFileDecision::OutsideDownloadDir
-        );
-    }
-
-    #[test]
-    fn extract_http_url_from_body() {
-        let body = "check this out https://example.com/page and more text";
-        assert_eq!(
-            extract_http_url(body),
-            Some("https://example.com/page".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_http_url_skips_file_uri() {
-        let body = "[image: photo.jpg](file:///home/user/photo.jpg) see https://example.com";
-        assert_eq!(
-            extract_http_url(body),
-            Some("https://example.com".to_string())
-        );
-    }
-
-    #[test]
-    fn extract_http_url_none_for_plain_text() {
-        assert_eq!(extract_http_url("hello world"), None);
-    }
-
-    #[test]
-    fn extract_http_url_with_trailing_paren() {
-        let body = "link (https://example.com/path) here";
-        assert_eq!(
-            extract_http_url(body),
-            Some("https://example.com/path".to_string())
-        );
-    }
-
-    // --- Action menu item tests ---
-
-    #[rstest]
-    fn action_menu_shows_open_attachment(mut app: App) {
-        let mut msg = make_msg("+1", None, None, false);
-        msg.attachments = vec![Attachment {
-            id: "123".to_string(),
-            content_type: "application/pdf".to_string(),
-            filename: Some("doc.pdf".to_string()),
-            local_path: Some("/tmp/doc.pdf".to_string()),
-        }];
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        app.active_conversation = Some("+1".to_string());
-        let items = app.action_menu_items();
-        assert!(
-            items.iter().any(|a| a.label == "Open attachment"),
-            "expected Open attachment in menu"
-        );
-    }
-
-    #[rstest]
-    fn action_menu_shows_open_link(mut app: App) {
-        let msg = make_msg("+1", Some("check https://example.com"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        app.active_conversation = Some("+1".to_string());
-        let items = app.action_menu_items();
-        assert!(
-            items.iter().any(|a| a.label == "Open link"),
-            "expected Open link in menu"
-        );
-    }
-
-    #[rstest]
-    fn action_menu_shows_both_open_items(mut app: App) {
-        // Send a message with a URL body and an attachment with a local path.
-        // The body and attachment are stored as separate DisplayMessages with the
-        // same timestamp; body is at index 0, attachment at index 1.
-        // Focus index 0 (the body message) to verify "Open link" appears.
-        let mut msg = make_msg("+1", Some("see https://example.com"), None, false);
-        msg.attachments = vec![Attachment {
-            id: "456".to_string(),
-            content_type: "image/png".to_string(),
-            filename: Some("photo.png".to_string()),
-            local_path: Some("/tmp/photo.png".to_string()),
-        }];
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        app.active_conversation = Some("+1".to_string());
-        // Index 0 is the body message ("see https://example.com")
-        app.scroll.focused_index = Some(0);
-        let items_body = app.action_menu_items();
-        assert!(
-            items_body.iter().any(|a| a.label == "Open link"),
-            "expected Open link for body message"
-        );
-        // Index 1 is the attachment message ("[image: photo.png](file:///tmp/photo.png)")
-        app.scroll.focused_index = Some(1);
-        let items_att = app.action_menu_items();
-        assert!(
-            items_att.iter().any(|a| a.label == "Open attachment"),
-            "expected Open attachment for attachment message"
-        );
-    }
-
-    #[rstest]
-    fn action_menu_no_open_for_plain_text(mut app: App) {
-        let msg = make_msg("+1", Some("just a regular message"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        app.active_conversation = Some("+1".to_string());
-        let items = app.action_menu_items();
-        assert!(
-            !items.iter().any(|a| a.label == "Open attachment"),
-            "should not have Open attachment"
-        );
-        assert!(
-            !items.iter().any(|a| a.label == "Open link"),
-            "should not have Open link"
-        );
-    }
-
-    #[rstest]
-    fn action_menu_respects_focused_index(mut app: App) {
-        // Message 0: has a URL
-        let msg1 = make_msg("+1", Some("check https://example.com"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg1));
-        // Message 1: plain text (last/newest)
-        let msg2 = make_msg("+1", Some("just text"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg2));
-        app.active_conversation = Some("+1".to_string());
-
-        // Without focus, defaults to last message (plain text) — no Open link
-        let items = app.action_menu_items();
-        assert!(
-            !items.iter().any(|a| a.label == "Open link"),
-            "last msg has no URL"
-        );
-
-        // Focus the first message (the one with a URL)
-        app.scroll.focused_index = Some(0);
-        let items = app.action_menu_items();
-        assert!(
-            items.iter().any(|a| a.label == "Open link"),
-            "focused msg has URL, should show Open link"
-        );
-    }
-
-    // --- SyncState tests ---
-
-    #[rstest]
-    fn sync_starts_active(app: App) {
-        assert!(app.sync.active);
-        assert_eq!(app.sync.message_count, 0);
-        assert!(!app.sync.user_scrolled);
-    }
-
-    #[rstest]
-    fn sync_should_end_requires_quiet_and_min_elapsed(mut app: App) {
-        assert!(!app.sync.should_end());
-        app.sync.started_at = Instant::now() - std::time::Duration::from_secs(15);
-        assert!(app.sync.should_end());
-        app.sync.last_message_time = Some(Instant::now());
-        assert!(!app.sync.should_end());
-        app.sync.last_message_time = Some(Instant::now() - std::time::Duration::from_secs(5));
-        assert!(app.sync.should_end());
-    }
-
-    #[rstest]
-    fn sync_suppresses_notifications(mut app: App) {
-        assert!(app.sync.active);
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .get_or_create_conversation("+other", "Other", false, &app.db);
-        app.active_conversation = Some("+other".to_string());
-        app.notifications.notify_direct = true;
-        let msg = make_msg("+1", Some("hello"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(!app.notifications.pending_bell);
-        assert_eq!(
-            app.sync
-                .suppressed_notifications
-                .get("+1")
-                .copied()
-                .unwrap_or(0),
-            1
-        );
-        assert!(app.sync.message_count > 0);
-    }
-
-    #[rstest]
-    fn notifications_fire_after_sync_ends(mut app: App) {
-        app.sync.active = false;
-        app.store
-            .contact_names
-            .insert("+1".to_string(), "Alice".to_string());
-        app.store
-            .get_or_create_conversation("+other", "Other", false, &app.db);
-        app.active_conversation = Some("+other".to_string());
-        app.notifications.notify_direct = true;
-        let msg = make_msg("+1", Some("hello"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        assert!(app.notifications.pending_bell);
-    }
-
-    #[rstest]
-    fn sync_captures_pin_on_first_message(mut app: App) {
-        // Conversation has a prior message (so there's something to anchor to).
-        // First sync arrival captures the pin to that message's timestamp + the
-        // current scroll.offset.
-        assert!(app.sync.active);
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        let prior = make_msg_with_ts("+1", Some("prior message"), None, false, 1000);
-        app.handle_signal_event(SignalEvent::MessageReceived(prior));
-        let pinned_ts = app.store.conversations["+1"]
-            .messages
-            .last()
-            .unwrap()
-            .timestamp;
-        // Set a non-zero offset to verify it's captured rather than coerced to 0.
-        app.scroll.offset = 4;
-
-        let msg = make_msg_with_ts("+1", Some("first sync msg"), None, false, 2000);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        let (pin_ts, pin_offset) = app
-            .sync
-            .pin
-            .expect("pin should be captured on first sync msg");
-        assert_eq!(pin_ts, pinned_ts);
-        assert_eq!(pin_offset, 4);
-    }
-
-    #[rstest]
-    fn sync_pin_only_captured_once(mut app: App) {
-        // Subsequent sync messages must NOT overwrite the pin -- it anchors
-        // to the user's view at sync start, not the most recent arrival.
-        assert!(app.sync.active);
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        let prior = make_msg_with_ts("+1", Some("prior"), None, false, 1000);
-        app.handle_signal_event(SignalEvent::MessageReceived(prior));
-        let pinned_ts = app.store.conversations["+1"]
-            .messages
-            .last()
-            .unwrap()
-            .timestamp;
-
-        let msg1 = make_msg_with_ts("+1", Some("first"), None, false, 2000);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg1));
-        let msg2 = make_msg_with_ts("+1", Some("second"), None, false, 3000);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg2));
-
-        let (pin_ts, _) = app.sync.pin.expect("pin should still be set");
-        assert_eq!(
-            pin_ts, pinned_ts,
-            "pin must still anchor to the original message"
-        );
-    }
-
-    #[rstest]
-    fn sync_does_not_capture_pin_after_user_scroll(mut app: App) {
-        assert!(app.sync.active);
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        let prior = make_msg_with_ts("+1", Some("prior"), None, false, 1000);
-        app.handle_signal_event(SignalEvent::MessageReceived(prior));
-        app.sync.user_scrolled = true;
-
-        let msg = make_msg_with_ts("+1", Some("sync"), None, false, 2000);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        assert!(app.sync.pin.is_none());
-        // Old behavior: scroll.offset += 1 was suppressed by user_scrolled.
-        // New behavior preserves that property — scroll.offset stays put.
-        assert_eq!(app.scroll.offset, 0);
-    }
-
-    #[rstest]
-    fn sync_pin_skips_non_active_conversation(mut app: App) {
-        // Pin is per-active-conversation. Sync messages for a non-active conv
-        // must not capture or overwrite the active conv's pin.
-        assert!(app.sync.active);
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        let prior_other = make_msg_with_ts("+2", Some("prior"), None, false, 1000);
-        app.handle_signal_event(SignalEvent::MessageReceived(prior_other));
-
-        let msg = make_msg_with_ts("+2", Some("from non-active"), None, false, 2000);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-
-        assert!(
-            app.sync.pin.is_none(),
-            "sync messages for the non-active conversation must not capture pin"
-        );
-    }
-
-    #[rstest]
-    fn sync_pin_cleared_on_end_sync(mut app: App) {
-        app.sync.pin = Some((Utc::now(), 3));
-        app.end_sync();
-        assert!(app.sync.pin.is_none());
-    }
-
-    #[rstest]
-    fn sync_pin_cleared_on_conv_switch(mut app: App) {
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.store
-            .get_or_create_conversation("+2", "Bob", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        app.sync.pin = Some((Utc::now(), 2));
-        app.next_conversation();
-        assert!(
-            app.sync.pin.is_none(),
-            "switching conversations must clear the pin so it doesn't apply to the new conv"
-        );
-    }
-
-    #[rstest]
-    fn sync_does_not_advance_read_index_for_active_conv(mut app: App) {
-        assert!(app.sync.active);
-        app.store
-            .get_or_create_conversation("+1", "Alice", false, &app.db);
-        app.active_conversation = Some("+1".to_string());
-        let initial_read = app.store.last_read_index.get("+1").copied().unwrap_or(0);
-        let msg = make_msg("+1", Some("hello"), None, false);
-        app.handle_signal_event(SignalEvent::MessageReceived(msg));
-        let after_read = app.store.last_read_index.get("+1").copied().unwrap_or(0);
-        assert_eq!(
-            initial_read, after_read,
-            "read index should not advance during sync"
-        );
-    }
-
-    #[rstest]
-    fn end_sync_snaps_to_bottom_and_fires_bell(mut app: App) {
-        app.sync.active = true;
-        app.sync.message_count = 50;
-        app.scroll.offset = 30;
-        app.sync
-            .suppressed_notifications
-            .insert("+1".to_string(), 10);
-        app.sync
-            .suppressed_notifications
-            .insert("+2".to_string(), 5);
-        app.end_sync();
-        assert!(!app.sync.active);
-        assert_eq!(app.scroll.offset, 0);
-        assert!(app.notifications.pending_bell);
-        assert!(app.sync.suppressed_notifications.is_empty());
-    }
-
-    #[rstest]
-    fn end_sync_respects_user_scroll(mut app: App) {
-        app.sync.active = true;
-        app.scroll.offset = 15;
-        app.sync.user_scrolled = true;
-        app.end_sync();
-        assert!(!app.sync.active);
-        assert_eq!(app.scroll.offset, 15);
-    }
-
-    #[rstest]
-    fn end_sync_no_bell_when_no_suppressed(mut app: App) {
-        app.sync.active = true;
-        app.sync.message_count = 5;
-        app.end_sync();
-        assert!(!app.sync.active);
-        assert!(!app.notifications.pending_bell);
-    }
-
-    // --- SignalEvent dispatch coverage (closes #418) ---
-    //
-    // Each test fires one previously-uncovered SignalEvent variant through
-    // App::handle_signal_event and asserts the expected observable mutation.
-    // A future regression that turns any variant into a silent no-op will
-    // fail the test for that variant.
-
-    /// Seed a 1:1 conversation with one incoming message at the given timestamp.
-    /// Returns the conversation id (== source phone for 1:1).
-    fn seed_conv_with_msg(app: &mut App, source: &str, body: &str, ts_ms: i64) -> String {
-        let mut m = make_msg_with_ts(source, Some(body), None, false, ts_ms);
-        m.source_name = Some("Alice".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-        source.to_string()
-    }
-
-    #[rstest]
-    fn edit_received_updates_body_and_marks_edited(mut app: App) {
-        let ts = 1_700_000_000_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
-
-        app.handle_signal_event(SignalEvent::EditReceived {
-            conv_id: conv_id.clone(),
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            target_timestamp: ts,
-            new_body: "edited body".to_string(),
-            new_timestamp: ts + 1,
-            is_outgoing: false,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert_eq!(conv.messages[idx].body, "edited body");
-        assert!(conv.messages[idx].is_edited);
-    }
-
-    #[rstest]
-    fn remote_delete_received_clears_body_and_reactions(mut app: App) {
-        let ts = 1_700_000_001_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
-
-        // Add a reaction so we can verify clearing.
-        app.handle_signal_event(SignalEvent::ReactionReceived {
-            conv_id: conv_id.clone(),
-            emoji: "👍".to_string(),
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts,
-            is_remove: false,
-        });
-
-        app.handle_signal_event(SignalEvent::RemoteDeleteReceived {
-            conv_id: conv_id.clone(),
-            sender: "+1".to_string(),
-            target_timestamp: ts,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert!(conv.messages[idx].is_deleted);
-        assert_eq!(conv.messages[idx].body, "[deleted]");
-        assert!(conv.messages[idx].reactions.is_empty());
-    }
-
-    // --- #482: only the original author may edit or remote-delete ---
-    //
-    // The Signal server does not enforce author-match on edit/delete
-    // envelopes; official clients verify client-side. Without the check,
-    // any conversation member can rewrite or delete someone else's
-    // message locally by targeting its (visible) timestamp.
-
-    #[rstest]
-    fn edit_from_non_author_is_rejected(mut app: App) {
-        let ts = 1_700_000_000_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "original", ts);
-
-        app.handle_signal_event(SignalEvent::EditReceived {
-            conv_id: conv_id.clone(),
-            sender: "+2".to_string(), // not the author of the target
-            sender_name: Some("Mallory".to_string()),
-            target_timestamp: ts,
-            new_body: "forged".to_string(),
-            new_timestamp: ts + 1,
-            is_outgoing: false,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert_eq!(conv.messages[idx].body, "original");
-        assert!(!conv.messages[idx].is_edited);
-    }
-
-    #[rstest]
-    fn remote_delete_from_non_author_is_rejected(mut app: App) {
-        let ts = 1_700_000_000_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "original", ts);
-
-        app.handle_signal_event(SignalEvent::RemoteDeleteReceived {
-            conv_id: conv_id.clone(),
-            sender: "+2".to_string(),
-            target_timestamp: ts,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert!(!conv.messages[idx].is_deleted);
-        assert_eq!(conv.messages[idx].body, "original");
-    }
-
-    #[rstest]
-    fn edit_targeting_outgoing_message_from_contact_is_rejected(mut app: App) {
-        // A contact crafts an editMessage whose targetSentTimestamp matches
-        // one of OUR outgoing messages (timestamps are visible to them).
-        let ts = 1_700_000_000_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "their msg", ts - 10);
-        if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
-            let mut mine = conv.messages[0].clone();
-            mine.sender = "you".to_string();
-            mine.sender_id = String::new();
-            mine.status = Some(MessageStatus::Sent);
-            mine.timestamp_ms = ts;
-            mine.body = "my message".to_string();
-            conv.messages.push(mine);
-        }
-
-        app.handle_signal_event(SignalEvent::EditReceived {
-            conv_id: conv_id.clone(),
-            sender: "+1".to_string(), // the contact, NOT this account
-            sender_name: Some("Alice".to_string()),
-            target_timestamp: ts,
-            new_body: "you said this, honest".to_string(),
-            new_timestamp: ts + 1,
-            is_outgoing: false,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert_eq!(conv.messages[idx].body, "my message");
-        assert!(!conv.messages[idx].is_edited);
-    }
-
-    #[rstest]
-    fn own_sync_edit_of_outgoing_message_applies(mut app: App) {
-        // Editing your own message from another device: sync envelope whose
-        // sender is this account. Must still apply.
-        let ts = 1_700_000_000_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "their msg", ts - 10);
-        if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
-            let mut mine = conv.messages[0].clone();
-            mine.sender = "you".to_string();
-            mine.sender_id = String::new();
-            mine.status = Some(MessageStatus::Sent);
-            mine.timestamp_ms = ts;
-            mine.body = "my message".to_string();
-            conv.messages.push(mine);
-        }
-
-        app.handle_signal_event(SignalEvent::EditReceived {
-            conv_id: conv_id.clone(),
-            sender: app.account.clone(),
-            sender_name: None,
-            target_timestamp: ts,
-            new_body: "my message, fixed".to_string(),
-            new_timestamp: ts + 1,
-            is_outgoing: true,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert_eq!(conv.messages[idx].body, "my message, fixed");
-        assert!(conv.messages[idx].is_edited);
-    }
-
-    #[rstest]
-    fn pin_received_sets_pinned_and_inserts_system_message(mut app: App) {
-        let ts = 1_700_000_002_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
-        let before = app.store.conversations[&conv_id].messages.len();
-
-        app.handle_signal_event(SignalEvent::PinReceived {
-            conv_id: conv_id.clone(),
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert!(conv.messages[idx].is_pinned);
-        assert_eq!(conv.messages.len(), before + 1, "system message inserted");
-        let last = conv.messages.last().unwrap();
-        assert!(last.is_system);
-        assert!(last.body.contains("pinned"));
-    }
-
-    #[rstest]
-    fn unpin_received_clears_pinned(mut app: App) {
-        let ts = 1_700_000_003_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
-
-        app.handle_signal_event(SignalEvent::PinReceived {
-            conv_id: conv_id.clone(),
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts,
-        });
-        assert!(
-            app.store.conversations[&conv_id]
-                .find_msg_idx(ts)
-                .map(|i| app.store.conversations[&conv_id].messages[i].is_pinned)
-                .unwrap_or(false)
-        );
-
-        app.handle_signal_event(SignalEvent::UnpinReceived {
-            conv_id: conv_id.clone(),
-            sender: "+1".to_string(),
-            sender_name: Some("Alice".to_string()),
-            target_author: "+1".to_string(),
-            target_timestamp: ts,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert!(!conv.messages[idx].is_pinned);
-        let last = conv.messages.last().unwrap();
-        assert!(last.is_system);
-        assert!(last.body.contains("unpinned"));
-    }
-
-    fn sample_poll() -> PollData {
-        PollData {
-            question: "tabs or spaces?".to_string(),
-            options: vec![
-                PollOption {
-                    id: 0,
-                    text: "tabs".to_string(),
-                },
-                PollOption {
-                    id: 1,
-                    text: "spaces".to_string(),
-                },
-            ],
-            allow_multiple: false,
-            closed: false,
-        }
-    }
-
-    #[rstest]
-    fn poll_created_attaches_to_existing_message(mut app: App) {
-        let ts = 1_700_000_010_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "vote!", ts);
-
-        app.handle_signal_event(SignalEvent::PollCreated {
-            conv_id: conv_id.clone(),
-            timestamp: ts,
-            poll_data: sample_poll(),
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        let poll = conv.messages[idx]
-            .poll_data
-            .as_ref()
-            .expect("poll attached");
-        assert_eq!(poll.question, "tabs or spaces?");
-    }
-
-    #[rstest]
-    fn poll_created_before_message_buffers_then_attaches_on_arrival(mut app: App) {
-        let ts = 1_700_000_011_000;
-        // Conversation must exist so the buffer-insert branch runs (the
-        // handle_poll_created code looks up conversations.get_mut).
-        seed_conv_with_msg(&mut app, "+1", "ignore", ts - 1000);
-
-        app.handle_signal_event(SignalEvent::PollCreated {
-            conv_id: "+1".to_string(),
-            timestamp: ts,
-            poll_data: sample_poll(),
-        });
-
-        // The poll arrived before the message that carries it. The poll should
-        // be parked in pending_polls until the message lands.
-        assert!(
-            app.poll_vote
-                .pending_polls
-                .contains_key(&("+1".to_string(), ts))
-        );
-
-        // Now the message arrives via the normal MessageReceived path.
-        let m = make_msg_with_ts("+1", Some("vote!"), None, false, ts);
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-
-        let conv = &app.store.conversations["+1"];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        let poll = conv.messages[idx]
-            .poll_data
-            .as_ref()
-            .expect("poll attached on arrival");
-        assert_eq!(poll.question, "tabs or spaces?");
-        assert!(
-            !app.poll_vote
-                .pending_polls
-                .contains_key(&("+1".to_string(), ts))
-        );
-    }
-
-    // #485: the buffer-insert used to sit inside the conversation lookup,
-    // so a poll event arriving before its conversation even existed
-    // (first-ever contact, poll event ordered before its companion
-    // message) was dropped and the poll rendered as bare text until
-    // restart.
-    #[rstest]
-    fn poll_created_before_conversation_exists_still_buffers(mut app: App) {
-        let ts = 1_700_000_013_000;
-        app.handle_signal_event(SignalEvent::PollCreated {
-            conv_id: "+brandnew".to_string(),
-            timestamp: ts,
-            poll_data: sample_poll(),
-        });
-        assert!(
-            app.poll_vote
-                .pending_polls
-                .contains_key(&("+brandnew".to_string(), ts))
-        );
-
-        let m = make_msg_with_ts("+brandnew", Some("vote!"), None, false, ts);
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-
-        let conv = &app.store.conversations["+brandnew"];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        assert!(
-            conv.messages[idx].poll_data.is_some(),
-            "poll must attach when the conversation and message arrive"
-        );
-    }
-
-    #[rstest]
-    fn poll_vote_received_upserts_vote(mut app: App) {
-        let ts = 1_700_000_012_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "vote!", ts);
-        app.handle_signal_event(SignalEvent::PollCreated {
-            conv_id: conv_id.clone(),
-            timestamp: ts,
-            poll_data: sample_poll(),
-        });
-
-        app.handle_signal_event(SignalEvent::PollVoteReceived {
-            conv_id: conv_id.clone(),
-            target_timestamp: ts,
-            voter: "+2".to_string(),
-            voter_name: Some("Bob".to_string()),
-            option_indexes: vec![0],
-            vote_count: 1,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        let votes = &conv.messages[idx].poll_votes;
-        assert_eq!(votes.len(), 1);
-        assert_eq!(votes[0].voter, "+2");
-        assert_eq!(votes[0].option_indexes, vec![0]);
-
-        // Upsert: same voter, different option, should replace not duplicate.
-        app.handle_signal_event(SignalEvent::PollVoteReceived {
-            conv_id: conv_id.clone(),
-            target_timestamp: ts,
-            voter: "+2".to_string(),
-            voter_name: Some("Bob".to_string()),
-            option_indexes: vec![1],
-            vote_count: 2,
-        });
-        let conv = &app.store.conversations[&conv_id];
-        let votes = &conv.messages[conv.find_msg_idx(ts).unwrap()].poll_votes;
-        assert_eq!(votes.len(), 1, "vote upserted, not duplicated");
-        assert_eq!(votes[0].option_indexes, vec![1]);
-    }
-
-    #[rstest]
-    fn poll_terminated_marks_closed(mut app: App) {
-        let ts = 1_700_000_013_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "vote!", ts);
-        app.handle_signal_event(SignalEvent::PollCreated {
-            conv_id: conv_id.clone(),
-            timestamp: ts,
-            poll_data: sample_poll(),
-        });
-
-        app.handle_signal_event(SignalEvent::PollTerminated {
-            conv_id: conv_id.clone(),
-            target_timestamp: ts,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        let idx = conv.find_msg_idx(ts).expect("message present");
-        let poll = conv.messages[idx]
-            .poll_data
-            .as_ref()
-            .expect("poll attached");
-        assert!(poll.closed);
-    }
-
-    #[rstest]
-    fn identity_list_populates_trust_map(mut app: App) {
-        app.handle_signal_event(SignalEvent::IdentityList(vec![
-            IdentityInfo {
-                number: Some("+1".to_string()),
-                uuid: None,
-                fingerprint: "fp1".to_string(),
-                safety_number: "sn1".to_string(),
-                trust_level: TrustLevel::TrustedVerified,
-                added_timestamp: 0,
-            },
-            IdentityInfo {
-                number: Some("+2".to_string()),
-                uuid: None,
-                fingerprint: "fp2".to_string(),
-                safety_number: "sn2".to_string(),
-                trust_level: TrustLevel::Untrusted,
-                added_timestamp: 0,
-            },
-        ]));
-
-        assert_eq!(
-            app.identity_trust.get("+1").copied(),
-            Some(TrustLevel::TrustedVerified)
-        );
-        assert_eq!(
-            app.identity_trust.get("+2").copied(),
-            Some(TrustLevel::Untrusted)
-        );
-    }
-
-    #[rstest]
-    fn expiration_timer_changed_updates_conv_and_inserts_system_message(mut app: App) {
-        let ts = 1_700_000_020_000;
-        let conv_id = seed_conv_with_msg(&mut app, "+1", "first", ts);
-        let before = app.store.conversations[&conv_id].messages.len();
-
-        let later = chrono::DateTime::from_timestamp_millis(ts + 1000).unwrap();
-        app.handle_signal_event(SignalEvent::ExpirationTimerChanged {
-            conv_id: conv_id.clone(),
-            seconds: 300,
-            body: "Alice set the timer to 5 minutes".to_string(),
-            timestamp: later,
-            timestamp_ms: ts + 1000,
-        });
-
-        let conv = &app.store.conversations[&conv_id];
-        assert_eq!(conv.expiration_timer, 300);
-        assert_eq!(conv.messages.len(), before + 1, "system message inserted");
-        let last = conv.messages.last().unwrap();
-        assert!(last.is_system);
-        assert!(last.body.contains("5 minutes"));
-    }
-
-    #[rstest]
-    fn receipt_viewed_upgrades_outgoing_status(mut app: App) {
-        let ts = 1_700_000_030_000;
-        // Outgoing message: handle_receipt only upgrades messages from "you".
-        let mut m = make_msg_with_ts("+10000000000", Some("hi"), None, true, ts);
-        m.destination = Some("+1".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: "+1".to_string(),
-            receipt_type: "VIEWED".to_string(),
-            timestamps: vec![ts],
-        });
-
-        let conv = &app.store.conversations["+1"];
-        let idx = conv.find_msg_idx(ts).expect("outgoing message present");
-        assert_eq!(conv.messages[idx].status, Some(MessageStatus::Viewed));
-    }
-
-    #[rstest]
-    fn receipt_falls_back_to_group_scan_when_sender_is_not_conv_id(mut app: App) {
-        let ts = 1_700_000_031_000;
-        // Outgoing message keyed to a group, sent by us. The receipt arrives
-        // from a member's phone (+2), which is NOT the conv key (the group id).
-        // handle_receipt's 1:1 lookup misses, so the group-scan fallback must
-        // find the message by timestamp across all conversations.
-        let mut m = make_msg_with_ts("+10000000000", Some("hey"), Some("group_a"), true, ts);
-        m.destination = Some("group_a".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-
-        app.handle_signal_event(SignalEvent::ReceiptReceived {
-            sender: "+2".to_string(),
-            receipt_type: "READ".to_string(),
-            timestamps: vec![ts],
-        });
-
-        let conv = &app.store.conversations["group_a"];
-        let idx = conv.find_msg_idx(ts).expect("group message present");
-        assert_eq!(conv.messages[idx].status, Some(MessageStatus::Read));
-    }
-
-    #[rstest]
-    fn wire_quote_attached_to_body_row_not_attachment_row(mut app: App) {
-        // Regression for #423: a message with a body + image attachment + quote
-        // should persist the wire-quote on the body row only. The attachment
-        // row's quote_author / quote_body / quote_ts_ms columns must be NULL
-        // so a reload from DB doesn't render a duplicate quote on the
-        // attachment message.
-        let ts = 1_700_000_040_000;
-        let quote_ts = ts - 1000;
-        let mut m = make_msg_with_ts("+1", Some("see this"), None, false, ts);
-        m.source_name = Some("Alice".to_string());
-        m.quote = Some((quote_ts, "+2".to_string(), "original".to_string()));
-        m.attachments = vec![Attachment {
-            id: "att1".to_string(),
-            content_type: "image/png".to_string(),
-            filename: Some("pic.png".to_string()),
-            local_path: None,
-        }];
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-
-        // Read what was persisted. load_messages_page reconstructs the quote
-        // field from the quote_* DB columns, so it accurately reflects what
-        // we wrote.
-        let rows = app
-            .db
-            .load_messages_page("+1", 100, 0)
-            .expect("DB query succeeds");
-        assert_eq!(rows.len(), 2, "body + one attachment row");
-
-        // Body row carries the wire-quote.
-        let body_row = rows
-            .iter()
-            .find(|r| !r.body.starts_with('['))
-            .expect("body row present");
-        let q = body_row.quote.as_ref().expect("body row has quote");
-        assert_eq!(q.body, "original");
-        assert_eq!(q.timestamp_ms, quote_ts);
-
-        // Attachment row does NOT carry the wire-quote.
-        let attachment_row = rows
-            .iter()
-            .find(|r| r.body.starts_with("[image:"))
-            .expect("attachment row present");
-        assert!(
-            attachment_row.quote.is_none(),
-            "attachment row should not carry wire-quote columns; got {:?}",
-            attachment_row.quote
-        );
-    }
-
-    #[rstest]
-    fn locked_session_suppresses_pending_bell(mut app: App) {
-        // Lock the session by setting phase to LockEntry directly. We don't
-        // need a real hash for this test -- we're verifying the side-effect
-        // gate, not the unlock flow.
-        app.lock.phase = crate::domain::LockPhase::LockEntry;
-        app.notifications.notify_direct = true;
-        app.notifications.notify_group = true;
-
-        // Now fire an inbound message in a non-active conversation. Normally
-        // this would set pending_bell = true; with the lock gate it must not.
-        let ts = 1_700_000_100_000;
-        let mut m = make_msg_with_ts("+1", Some("hi"), None, false, ts);
-        m.source_name = Some("Alice".to_string());
-        app.handle_signal_event(SignalEvent::MessageReceived(m));
-
-        assert!(
-            !app.notifications.pending_bell,
-            "pending_bell should be false when locked"
-        );
-    }
-
-    #[rstest]
-    fn lock_flow_set_then_unlock(mut app: App) {
-        use crossterm::event::KeyCode;
-
-        // No passphrase yet -- /lock should drop into SetPassphrase phase.
-        app.lock_now();
-        assert_eq!(app.lock.phase, crate::domain::LockPhase::SetPassphrase);
-
-        // Set a passphrase via Enter.
-        for c in "secret".chars() {
-            app.handle_lock_key(KeyCode::Char(c));
-        }
-        app.handle_lock_key(KeyCode::Enter);
-        assert_eq!(app.lock.phase, crate::domain::LockPhase::Unlocked);
-
-        // Lock again -- hash now exists, should drop into LockEntry.
-        app.lock_now();
-        assert_eq!(app.lock.phase, crate::domain::LockPhase::LockEntry);
-
-        // Wrong passphrase -- stays locked, sets error.
-        for c in "wrong".chars() {
-            app.handle_lock_key(KeyCode::Char(c));
-        }
-        app.handle_lock_key(KeyCode::Enter);
-        assert_eq!(app.lock.phase, crate::domain::LockPhase::LockEntry);
-        assert!(app.lock.error.is_some());
-
-        // Correct passphrase -- unlocks.
-        for c in "secret".chars() {
-            app.handle_lock_key(KeyCode::Char(c));
-        }
-        app.handle_lock_key(KeyCode::Enter);
-        assert_eq!(app.lock.phase, crate::domain::LockPhase::Unlocked);
-        assert!(app.lock.error.is_none());
-    }
-}
+#[path = "app_tests.rs"]
+mod tests;

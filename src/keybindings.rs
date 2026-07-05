@@ -26,6 +26,15 @@ pub enum KeyAction {
     ResizeSidebarRight,
     PageScrollUp,
     PageScrollDown,
+    // Global: open overlays / toggles (unbound by default; bind in a profile).
+    OpenContacts,
+    OpenSettings,
+    OpenHelp,
+    ToggleSidebar,
+    Attach,
+    /// Fuzzy command palette (#614). Bound to Ctrl+P in the Default and
+    /// Minimal profiles; unbound in Emacs, where Ctrl+P is line-up.
+    CommandPalette,
     // Normal: scroll
     ScrollUp,
     ScrollDown,
@@ -420,6 +429,12 @@ pub const GLOBAL_ACTIONS: &[KeyAction] = &[
     KeyAction::ResizeSidebarRight,
     KeyAction::PageScrollUp,
     KeyAction::PageScrollDown,
+    KeyAction::OpenContacts,
+    KeyAction::OpenSettings,
+    KeyAction::OpenHelp,
+    KeyAction::ToggleSidebar,
+    KeyAction::Attach,
+    KeyAction::CommandPalette,
 ];
 
 pub const NORMAL_ACTIONS: &[KeyAction] = &[
@@ -480,6 +495,12 @@ pub fn action_label(action: KeyAction) -> &'static str {
         KeyAction::ResizeSidebarRight => "Grow sidebar",
         KeyAction::PageScrollUp => "Page scroll up",
         KeyAction::PageScrollDown => "Page scroll down",
+        KeyAction::OpenContacts => "Open contacts",
+        KeyAction::OpenSettings => "Open settings",
+        KeyAction::OpenHelp => "Open help",
+        KeyAction::ToggleSidebar => "Toggle sidebar",
+        KeyAction::Attach => "Attach file",
+        KeyAction::CommandPalette => "Command palette",
         KeyAction::ScrollUp => "Scroll up",
         KeyAction::ScrollDown => "Scroll down",
         KeyAction::FocusNextMessage => "Focus next message",
@@ -577,6 +598,7 @@ const DEFAULT_BINDINGS: &[BindingRow] = {
         (Global, M::CONTROL, KeyCode::Right, ResizeSidebarRight),
         (Global, M::NONE, PageUp, PageScrollUp),
         (Global, M::NONE, PageDown, PageScrollDown),
+        (Global, M::CONTROL, Char('p'), CommandPalette),
         // Normal: scroll
         (Normal, M::NONE, Char('j'), FocusNextMessage),
         (Normal, M::NONE, Char('k'), FocusPrevMessage),
@@ -696,6 +718,7 @@ const MINIMAL_BINDINGS: &[BindingRow] = {
         (Global, M::CONTROL, Char('q'), Quit),
         (Global, M::CONTROL, Char('c'), Quit),
         (Global, M::CONTROL, Char('l'), Lock),
+        (Global, M::CONTROL, Char('p'), CommandPalette),
         (Global, M::NONE, Tab, NextConversation),
         (Global, M::SHIFT, BackTab, PrevConversation),
         (Global, M::CONTROL, KeyCode::Left, ResizeSidebarLeft),

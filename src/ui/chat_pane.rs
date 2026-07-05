@@ -51,9 +51,38 @@ fn sixel_placeholder_line(line: &Line<'static>) -> Line<'static> {
 /// see the cell-pixel calibration follow-up.
 const SIXEL_GUARD_ROWS: usize = 1;
 
+/// Hash of everything that affects per-line wrapped height: the pane width and
+/// each line's text. Wrapping is by display width of the concatenated line text,
+/// independent of span boundaries and style, so we hash span contents back to
+/// back with only a per-line terminator. Used to cache `line_heights` across
+/// frames (#490); a matching key means the heights cannot have changed.
+fn line_heights_cache_key(width: u16, lines: &[Line<'_>]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    width.hash(&mut h);
+    lines.len().hash(&mut h);
+    for line in lines {
+        // Raw byte writes (not str::hash) so span boundaries within a line are
+        // transparent: ["foo","bar"] keys the same as ["foobar"], matching how
+        // wrapping sees the concatenated line text.
+        for span in &line.spans {
+            h.write(span.content.as_bytes());
+        }
+        // Per-line terminator so ["ab"] differs from ["a"] + ["b"].
+        h.write_u8(0xFF);
+    }
+    h.finish()
+}
+
 /// Convert emoji in a string to text emoticons or :shortcodes:.
 /// Common emoji get classic emoticons (e.g. :) <3), others get :shortcode: format.
 fn emoji_to_text(input: &str) -> String {
+    // Fast path: the conversion only ever touches non-ASCII codepoints, so an
+    // all-ASCII body (the common case) needs no work and no allocation churn
+    // beyond the copy (#490).
+    if input.is_ascii() {
+        return input.to_string();
+    }
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
@@ -315,9 +344,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.scroll.offset == 0 {
         app.scroll.window_extra = 0;
     }
-    let start =
-        total.saturating_sub(available_height * MSG_WINDOW_MULTIPLIER + app.scroll.window_extra);
+    let start = window_start(total, available_height, app.scroll.window_extra);
     let visible = &messages[start..total];
+    // Record the render-window start so off-window image_lines can be evicted to
+    // bound memory (#492); messages before `start` are never drawn this frame.
+    app.scroll.render_window_start = start;
 
     // Get last_read_index for unread marker
     let conv_id = app.active_conversation.as_ref().unwrap();
@@ -479,9 +510,17 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(spans));
                 line_msg_idx.push(Some(msg_index));
             } else {
-                // Style URIs and @mentions
-                let (body_spans, hidden_url) =
-                    styled_uri_spans(&msg.body, &msg.mention_ranges, &msg.style_ranges, theme);
+                // Style URIs and @mentions. Spoilers unmask while the message
+                // is explicitly focused via J/K in Normal mode (#616).
+                let reveal_spoilers =
+                    app.mode == InputMode::Normal && app.scroll.focused_index == Some(msg_index);
+                let (body_spans, hidden_url) = styled_uri_spans(
+                    &msg.body,
+                    &msg.mention_ranges,
+                    &msg.style_ranges,
+                    theme,
+                    reveal_spoilers,
+                );
                 if let Some(url) = hidden_url {
                     // Collect display text for link_url_map lookup
                     let display_text: String =
@@ -675,15 +714,28 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // WordWrapper on realistic text and shifts Kitty placeholder cells off their
     // halfblock origins, which caused images to clip into neighboring messages.
     let inner_w_u16 = inner.width.max(1);
-    let line_heights: Vec<usize> = lines
-        .iter()
-        .map(|line| {
-            Paragraph::new(line.clone())
-                .wrap(Wrap { trim: false })
-                .line_count(inner_w_u16)
-                .max(1)
-        })
-        .collect();
+    // Wrapping every line through ratatui (and cloning each into a throwaway
+    // Paragraph) is the dominant per-frame cost. The heights depend only on the
+    // pane width and the line text, so cache them across frames and recompute
+    // only when that key changes -- not on scroll, cursor, or composer keys
+    // (#490). The cached vec is the exact value the uncached path would build.
+    let cache_key = line_heights_cache_key(inner_w_u16, &lines);
+    let line_heights: Vec<usize> = if app.scroll.height_cache_key == Some(cache_key) {
+        app.scroll.height_cache.clone()
+    } else {
+        let heights: Vec<usize> = lines
+            .iter()
+            .map(|line| {
+                Paragraph::new(line.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(inner_w_u16)
+                    .max(1)
+            })
+            .collect();
+        app.scroll.height_cache = heights.clone();
+        app.scroll.height_cache_key = Some(cache_key);
+        heights
+    };
     let content_height: usize = line_heights.iter().sum();
 
     // Sync viewport pin (#394): when a pin anchor was captured at sync start,
@@ -708,9 +760,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Bottom-align by default; app.scroll.offset shifts the view upward
-    let base_scroll = content_height.saturating_sub(available_height);
-    app.scroll.offset = app.scroll.offset.min(base_scroll);
-    let mut scroll_y = base_scroll - app.scroll.offset;
+    let (base_scroll, clamped_offset, mut scroll_y) =
+        bottom_align_scroll(content_height, available_height, app.scroll.offset);
+    app.scroll.offset = clamped_offset;
 
     // Signal when the user has scrolled to the top of the render window and
     // there is anywhere further up to go: unrendered in-memory messages
@@ -738,29 +790,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     {
         if let Some(fi) = app.scroll.focused_index {
             // J/K already set scroll.focused_index — ensure it's visible by adjusting scroll.
-            let mut msg_start: Option<usize> = None;
-            let mut msg_end = 0usize;
-            let mut cumul = 0usize;
-            for (idx, &h) in line_heights.iter().enumerate() {
-                if line_msg_idx.get(idx) == Some(&Some(fi)) {
-                    if msg_start.is_none() {
-                        msg_start = Some(cumul);
-                    }
-                    msg_end = cumul + h;
-                }
-                cumul += h;
-            }
-            if let Some(start) = msg_start {
-                if start < scroll_y {
-                    // Message is above viewport — scroll up
-                    app.scroll.offset = base_scroll.saturating_sub(start);
-                    scroll_y = base_scroll - app.scroll.offset;
-                } else if msg_end > scroll_y + available_height {
-                    // Message is below viewport — scroll down
-                    let new_scroll_y = msg_end.saturating_sub(available_height);
-                    app.scroll.offset = base_scroll.saturating_sub(new_scroll_y);
-                    scroll_y = base_scroll - app.scroll.offset;
-                }
+            if let Some((start, end)) = focus_line_span(&line_heights, &line_msg_idx, fi)
+                && let Some((offset, new_scroll_y)) =
+                    ensure_focus_visible(start, end, base_scroll, scroll_y, available_height)
+            {
+                app.scroll.offset = offset;
+                scroll_y = new_scroll_y;
             }
             app.scroll.focused_time = messages.get(fi).map(|m| m.timestamp);
             render_focus = Some(fi);
@@ -1080,11 +1115,154 @@ fn compute_sync_pin_offset(
     Some(pin_offset_at_capture.saturating_add(lines_below_pin))
 }
 
+/// Index of the first message to render in the bottom-anchored window.
+///
+/// `window_extra` grows in discrete chunks via `App::extend_scrollback` (#488)
+/// and is counted in *messages*, never derived from the scroll offset. Keeping
+/// the start offset-independent is what prevents the v0.6.1 stuck-viewport bug:
+/// folding the offset in here would expand the window by one message per scroll
+/// increment, growing `content_height` in lockstep so `scroll_y` never moves.
+pub(crate) fn window_start(total: usize, available_height: usize, window_extra: usize) -> usize {
+    total.saturating_sub(available_height * MSG_WINDOW_MULTIPLIER + window_extra)
+}
+
+/// Bottom-aligned scroll math. Given the total wrapped `content_height`, the
+/// `available_height` viewport, and the user's `offset` (lines up from the
+/// bottom), returns `(base_scroll, clamped_offset, scroll_y)`.
+///
+/// `base_scroll` is the maximum upward travel; the offset is clamped to it so it
+/// can never push past the oldest content, and `scroll_y` is the resulting
+/// Paragraph scroll row. This is the second half of the v0.6.1 surface: with an
+/// offset-independent window start (see [`window_start`]), `scroll_y` actually
+/// decreases as the offset grows instead of staying pinned.
+pub(crate) fn bottom_align_scroll(
+    content_height: usize,
+    available_height: usize,
+    offset: usize,
+) -> (usize, usize, usize) {
+    let base_scroll = content_height.saturating_sub(available_height);
+    let clamped_offset = offset.min(base_scroll);
+    let scroll_y = base_scroll - clamped_offset;
+    (base_scroll, clamped_offset, scroll_y)
+}
+
+/// Adjust the scroll so the focused message's line span `[msg_start, msg_end)`
+/// is fully visible, returning the new `(offset, scroll_y)` or `None` if it
+/// already fits within `[scroll_y, scroll_y + available_height)`.
+///
+/// Mirrors the J/K "ensure focused message visible" path: when the message sits
+/// above the viewport we scroll up so its first line is at the top; when it sits
+/// below we scroll down so its last line is at the bottom. Both branches recover
+/// the offset from `base_scroll` so the caller's `scroll_y` stays consistent.
+/// Cumulative line span `[start, end)` of the message with index `focus_idx`
+/// within the rendered lines, or `None` if that message contributed no lines.
+/// `line_heights` and `line_msg_idx` are parallel per-line arrays: the wrapped
+/// height of each line and the message index that produced it (separators and
+/// markers are `None`). Extracted from the render pass so the focus-derivation
+/// math is pure and unit-testable rather than buried inline (#496).
+pub(crate) fn focus_line_span(
+    line_heights: &[usize],
+    line_msg_idx: &[Option<usize>],
+    focus_idx: usize,
+) -> Option<(usize, usize)> {
+    let mut msg_start: Option<usize> = None;
+    let mut msg_end = 0usize;
+    let mut cumul = 0usize;
+    for (idx, &h) in line_heights.iter().enumerate() {
+        if line_msg_idx.get(idx) == Some(&Some(focus_idx)) {
+            if msg_start.is_none() {
+                msg_start = Some(cumul);
+            }
+            msg_end = cumul + h;
+        }
+        cumul += h;
+    }
+    msg_start.map(|s| (s, msg_end))
+}
+
+pub(crate) fn ensure_focus_visible(
+    msg_start: usize,
+    msg_end: usize,
+    base_scroll: usize,
+    scroll_y: usize,
+    available_height: usize,
+) -> Option<(usize, usize)> {
+    if msg_start < scroll_y {
+        let offset = base_scroll.saturating_sub(msg_start);
+        Some((offset, base_scroll - offset))
+    } else if msg_end > scroll_y + available_height {
+        let new_scroll_y = msg_end.saturating_sub(available_height);
+        let offset = base_scroll.saturating_sub(new_scroll_y);
+        Some((offset, base_scroll - offset))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::signal::types::{PollData, PollOption, PollVote, Reaction};
     use crate::theme::default_theme;
+
+    // --- line_heights_cache_key (#490) ---
+
+    fn line(text: &str) -> Line<'static> {
+        Line::from(text.to_string())
+    }
+
+    #[test]
+    fn cache_key_stable_for_identical_input() {
+        let lines = [line("hello"), line("world")];
+        assert_eq!(
+            line_heights_cache_key(80, &lines),
+            line_heights_cache_key(80, &lines)
+        );
+    }
+
+    #[test]
+    fn cache_key_changes_with_width() {
+        let lines = [line("hello world")];
+        assert_ne!(
+            line_heights_cache_key(80, &lines),
+            line_heights_cache_key(40, &lines)
+        );
+    }
+
+    #[test]
+    fn cache_key_changes_with_content() {
+        assert_ne!(
+            line_heights_cache_key(80, &[line("hello")]),
+            line_heights_cache_key(80, &[line("hallo")])
+        );
+    }
+
+    #[test]
+    fn cache_key_distinguishes_line_split() {
+        // Same total text, split across one vs two lines, must differ: they
+        // wrap (and occupy rows) differently.
+        let one = [line("ab")];
+        let two = [line("a"), line("b")];
+        assert_ne!(
+            line_heights_cache_key(80, &one),
+            line_heights_cache_key(80, &two)
+        );
+    }
+
+    #[test]
+    fn cache_key_ignores_span_boundaries_within_a_line() {
+        // Wrapping sees the concatenated line text, so a line built from two
+        // spans must key the same as one span with the joined text.
+        let split = [Line::from(vec![
+            Span::raw("foo".to_string()),
+            Span::raw("bar".to_string()),
+        ])];
+        let joined = [line("foobar")];
+        assert_eq!(
+            line_heights_cache_key(80, &split),
+            line_heights_cache_key(80, &joined)
+        );
+    }
 
     // --- compute_sync_pin_offset ---
 
@@ -1172,6 +1350,103 @@ mod tests {
     }
 
     // --- end compute_sync_pin_offset ---
+
+    // --- scroll windowing (#503) ---
+
+    #[test]
+    fn window_start_anchors_to_bottom_window() {
+        // Plenty of headroom: start clamps to 0 (render everything).
+        assert_eq!(window_start(5, 10, 0), 0);
+        // 1000 messages, height 10, multiplier 10 -> window of 100, start at 900.
+        assert_eq!(window_start(1000, 10, 0), 1000 - 10 * MSG_WINDOW_MULTIPLIER);
+        // window_extra widens the window (moves start earlier) by message count.
+        assert_eq!(
+            window_start(1000, 10, 50),
+            1000 - (10 * MSG_WINDOW_MULTIPLIER + 50)
+        );
+        // window_extra larger than the remaining history saturates to 0.
+        assert_eq!(window_start(20, 10, 1000), 0);
+    }
+
+    #[test]
+    fn bottom_align_content_fits_viewport() {
+        // Content shorter than the viewport: no scroll, offset clamps to 0.
+        // This is the regression guard from v0.6.1 where J/K could strand the
+        // viewport even when everything fit.
+        let (base, offset, scroll_y) = bottom_align_scroll(5, 10, 3);
+        assert_eq!(base, 0);
+        assert_eq!(offset, 0, "offset must clamp to base_scroll (0)");
+        assert_eq!(scroll_y, 0);
+    }
+
+    #[test]
+    fn bottom_align_scrolls_up_by_offset() {
+        // content 100, viewport 10 -> base_scroll 90 (bottom-aligned).
+        let (base, offset, scroll_y) = bottom_align_scroll(100, 10, 0);
+        assert_eq!((base, offset, scroll_y), (90, 0, 90), "at bottom");
+        // Scrolling up by 30 must actually move scroll_y, not pin it (v0.6.1).
+        let (base, offset, scroll_y) = bottom_align_scroll(100, 10, 30);
+        assert_eq!((base, offset, scroll_y), (90, 30, 60));
+        // Scrolling past the top clamps offset to base_scroll and pins scroll_y=0.
+        let (base, offset, scroll_y) = bottom_align_scroll(100, 10, 999);
+        assert_eq!((base, offset, scroll_y), (90, 90, 0));
+    }
+
+    #[test]
+    fn ensure_focus_visible_noop_when_already_in_view() {
+        // Focused message lines 12..15, viewport [10, 20): fully visible.
+        assert_eq!(ensure_focus_visible(12, 15, 90, 10, 10), None);
+    }
+
+    #[test]
+    fn ensure_focus_visible_scrolls_up_to_top() {
+        // Focus starts at line 5, above the viewport [10, 20).
+        // Expect scroll_y to land on the message start (5).
+        let (offset, scroll_y) = ensure_focus_visible(5, 8, 90, 10, 10).unwrap();
+        assert_eq!(scroll_y, 5, "first line of focus sits at the top");
+        assert_eq!(offset, 85, "offset = base_scroll - scroll_y");
+    }
+
+    #[test]
+    fn ensure_focus_visible_scrolls_down_to_bottom() {
+        // Focus ends at line 35, below the viewport [10, 20).
+        // Expect the last line at the bottom: scroll_y = 35 - 10 = 25.
+        let (offset, scroll_y) = ensure_focus_visible(30, 35, 90, 10, 10).unwrap();
+        assert_eq!(scroll_y, 25, "last line of focus sits at the bottom");
+        assert_eq!(offset, 65, "offset = base_scroll - scroll_y");
+    }
+
+    #[test]
+    fn focus_line_span_spans_multi_line_message() {
+        // Lines:        0   1        2  3  4        5
+        // Message idx:  0   sep(-)   1  1  1        2
+        let heights = vec![1, 1, 1, 1, 1, 1];
+        let idx = vec![Some(0), None, Some(1), Some(1), Some(1), Some(2)];
+        // Message 1 occupies lines 2..=4 -> cumulative span [2, 5).
+        assert_eq!(focus_line_span(&heights, &idx, 1), Some((2, 5)));
+        // Message 0 is a single line at the top.
+        assert_eq!(focus_line_span(&heights, &idx, 0), Some((0, 1)));
+        // Message 2 is the last line.
+        assert_eq!(focus_line_span(&heights, &idx, 2), Some((5, 6)));
+    }
+
+    #[test]
+    fn focus_line_span_accounts_for_line_heights() {
+        // A wrapped message whose first line is 3 rows tall.
+        let heights = vec![3, 2];
+        let idx = vec![Some(0), Some(1)];
+        assert_eq!(focus_line_span(&heights, &idx, 0), Some((0, 3)));
+        assert_eq!(focus_line_span(&heights, &idx, 1), Some((3, 5)));
+    }
+
+    #[test]
+    fn focus_line_span_absent_message_is_none() {
+        let heights = vec![1, 1];
+        let idx = vec![Some(0), None];
+        assert_eq!(focus_line_span(&heights, &idx, 9), None);
+    }
+
+    // --- end scroll windowing ---
 
     #[test]
     fn reaction_summary_counts() {

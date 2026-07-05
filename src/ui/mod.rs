@@ -1,9 +1,19 @@
-//! Stateless rendering layer.
+//! Rendering layer.
 //!
-//! [`draw`] takes the current [`App`] and renders sidebar + chat + status
-//! bar each frame. Sender colors are hash-based across an 8-color palette;
-//! groups are prefixed with `#`. OSC 8 hyperlinks are injected post-render
-//! to dodge ratatui width calculation bugs (see [`LinkRegion`]).
+//! [`draw`] renders sidebar + chat + status bar each frame. Sender colors are
+//! hash-based across an 8-color palette; groups are prefixed with `#`. OSC 8
+//! hyperlinks are injected post-render to dodge ratatui width calculation bugs
+//! (see [`LinkRegion`]).
+//!
+//! Contract caveat: rendering is **not** stateless. [`draw`] takes `&mut App`
+//! and writes layout feedback back during the pass -- it clamps `scroll.offset`
+//! to the rendered content height, derives/clears `scroll.focused_index` and
+//! `focused_time`, sets `scroll.at_top`, and captures mouse hit-rects, link
+//! regions, and image caches. These depend on the realised layout, so they
+//! cannot be computed without rendering. Splitting this into a `ViewState`
+//! borrowed `&mut` (or an explicit pre-render layout pass) is tracked in #496;
+//! the pure scroll-window math is already factored out in `chat_pane`
+//! (`window_start` / `bottom_align_scroll` / `ensure_focus_visible`, #503).
 
 mod autocomplete;
 mod chat_pane;
@@ -16,7 +26,9 @@ mod welcome;
 
 use autocomplete::draw_autocomplete;
 use chat_pane::draw_chat_area;
-pub use links::LinkRegion;
+// LinkRegion now lives in `domain` (#495); keep `crate::ui::LinkRegion` working
+// for existing callers by re-exporting it here.
+pub use crate::domain::LinkRegion;
 use links::collect_link_regions;
 use overlays::about::draw_about;
 use overlays::action_menu::{draw_action_menu, draw_delete_confirm};
@@ -29,6 +41,7 @@ use overlays::group_menu::draw_group_menu;
 use overlays::help::draw_help;
 use overlays::keybindings::draw_keybindings;
 use overlays::message_request::draw_message_request;
+use overlays::palette::draw_palette;
 use overlays::pin_duration::draw_pin_duration_picker;
 use overlays::poll_vote::draw_poll_vote_overlay;
 use overlays::profile::draw_profile;
@@ -63,6 +76,8 @@ pub(super) const SETTINGS_POPUP_WIDTH: u16 = 50;
 pub(super) const SETTINGS_POPUP_HEIGHT: u16 = 25;
 pub(super) const CONTACTS_POPUP_WIDTH: u16 = 50;
 pub(super) const CONTACTS_MAX_VISIBLE: usize = 20;
+pub(super) const PALETTE_POPUP_WIDTH: u16 = 56;
+pub(super) const PALETTE_MAX_VISIBLE: usize = 12;
 pub(super) const FILE_BROWSER_POPUP_WIDTH: u16 = 60;
 pub(super) const FILE_BROWSER_MAX_VISIBLE: usize = 20;
 pub(super) const SEARCH_POPUP_WIDTH: u16 = 60;
@@ -159,6 +174,12 @@ pub(super) fn centered_popup(
     (popup_area, block)
 }
 
+/// Render one frame: sidebar, chat pane, status bar, and any active overlay.
+///
+/// Takes `&mut App` because the pass writes layout feedback that can only be
+/// known after rendering -- scroll clamping, focus derivation, `at_top`, mouse
+/// hit-rects, and the link/image caches. See the module-level docs and #496 for
+/// the contract and the planned ViewState split.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.image.link_url_map.clear();
     app.image.visible_images.clear();
@@ -245,6 +266,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Contacts overlay (overlays everything)
     if app.is_overlay(OverlayKind::Contacts) {
         draw_contacts(frame, app, size);
+    }
+
+    // Command palette overlay (#614)
+    if app.is_overlay(OverlayKind::Palette) {
+        draw_palette(frame, app, size);
     }
 
     // Verify identity overlay
@@ -500,6 +526,40 @@ mod snapshot_tests {
         insta::assert_snapshot!(output);
     }
 
+    // Scrolled-state render coverage (#496 / #503): every other snapshot renders
+    // at the default bottom-anchored scroll, leaving the scroll-windowing path
+    // (the v0.6.1 stuck-viewport bug surface) uncovered at the buffer level.
+
+    #[test]
+    fn chat_scrolled_up_shows_older_messages() {
+        let mut app = demo_app();
+        // Page up from the bottom; Alice has enough messages to scroll.
+        app.scroll.offset = 6;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn chat_scroll_offset_clamps_at_top() {
+        let mut app = demo_app();
+        // A huge offset must clamp to the top of the content, not overscroll.
+        app.scroll.offset = 100_000;
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn chat_focused_message_scrolls_into_view() {
+        let mut app = demo_app();
+        app.mode = InputMode::Normal;
+        // Focus an early message: the render pass must derive focus, scroll it
+        // into view, and highlight it -- the focus-derivation-during-render path
+        // #496 flags as frame-order-dependent and previously untested.
+        app.scroll.focused_index = Some(2);
+        let output = render_to_string(&mut app, 100, 30);
+        insta::assert_snapshot!(output);
+    }
+
     #[test]
     fn body_newlines_render_as_separate_lines() {
         use crate::conversation_store::DisplayMessage;
@@ -663,6 +723,7 @@ mod snapshot_tests {
                 is_group: false,
                 expiration_timer: 0,
                 accepted: true,
+                archived: false,
             },
         );
         app.store.conversation_order.push(empty_id.clone());
@@ -693,7 +754,7 @@ mod snapshot_tests {
     fn test_sidebar_filter() {
         let mut app = demo_app();
         app.open_overlay(OverlayKind::SidebarFilter);
-        app.sidebar_filter = "ali".to_string();
+        app.sidebar_filter.query = "ali".to_string();
         app.refresh_sidebar_filter();
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);

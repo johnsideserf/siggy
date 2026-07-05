@@ -28,6 +28,7 @@ notify_group = true
 desktop_notifications = false
 notification_preview = "full"
 clipboard_clear_seconds = 30
+lock_timeout = 0
 image_mode = "halfblock"
 image_max_width = 40
 preview_image_max_width = 30
@@ -63,12 +64,15 @@ proxy = ""
 | `desktop_notifications` | bool | `false` | OS-level desktop notifications for incoming messages |
 | `notification_preview` | string | `"full"` | Notification content level: `full`, `sender`, or `minimal` |
 | `clipboard_clear_seconds` | int | `30` | Seconds before clipboard auto-clears after copying (0 = disabled) |
+| `lock_timeout` | int | `0` | Minutes of keyboard inactivity before the session auto-locks (0 = disabled) |
+| `db_path` | string | *(unset)* | Override the message database path. Absolute paths are used as-is; relative paths resolve under the data dir. Leave unset for the default `siggy.db`. Used to run multiple accounts side by side (see below) |
 | `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
 | `image_max_width` | int | `40` | Maximum attachment image width in terminal cells |
 | `preview_image_max_width` | int | `30` | Maximum link preview thumbnail width in terminal cells |
 | `image_max_height` | int | `30` | Maximum image height in terminal cell rows |
 | `sixel_max_colors` | int | `256` | Maximum Sixel palette colors (`2`-`256`) |
 | `sixel_diffusion` | float | `0.875` | Sixel Floyd-Steinberg diffusion strength (`0.0`-`1.0`) |
+| `audio_player` | string | *(unset)* | Command for inline voice message playback, e.g. `"mpv --no-config"`. Leave unset to autodetect a player on PATH (mpv, ffplay, afplay, cvlc, paplay, aplay) |
 | `show_link_previews` | bool | `true` | Show link preview cards for URLs in messages |
 | `date_separators` | bool | `true` | Show date separator lines between messages from different days |
 | `show_receipts` | bool | `true` | Show delivery/read receipt status symbols |
@@ -99,6 +103,12 @@ CLI flags override config file values for the current session:
 | `--debug` | Write debug log to `~/.cache/siggy/debug.log` (PII redacted) |
 | `--debug-full` | Same as `--debug` but without redaction |
 | `--reset-lock` | Delete the session-lock passphrase hash and exit |
+| `--reset-account` | Clear local signal-cli account data for the configured account and exit, for a clean relink (`siggy --reset-account` then `siggy --setup`). Only removes local data; a server-side conflict also needs old devices removed on your phone |
+| `--check` | Print a setup health report (config, account, signal-cli, download dir) and exit; exit code 0 when ready, 1 otherwise |
+| `--send <TO> <MSG>` | Send one message non-interactively and exit (`TO` = `+E164` for a 1:1 or a group id); exit 0 on confirmed send, 1 on failure/timeout |
+| `--list` | Print cached conversations as tab-separated rows (`unread`, `type`, `name`, `id`) and exit; reads the local DB, no signal-cli needed |
+| `--receive` | Stream incoming messages as tab-separated rows (`timestamp_ms`, `sender`, `group-id`, `body`) until signal-cli disconnects or interrupted (Ctrl-C) |
+| `-V`, `--version` | Print `siggy <version>` to stdout and exit |
 
 ## Environment variables
 
@@ -161,3 +171,31 @@ siggy --incognito
 Incognito mode replaces the on-disk SQLite database with an in-memory database.
 No messages, conversations, or read markers are saved. When you exit, all data is
 gone. The status bar shows a bold magenta **incognito** indicator.
+
+## Multiple accounts
+
+siggy runs one account per process, but you can use several accounts side by side
+by giving each its own config file (with its own `account`) and its own database
+via `db_path`, then selecting the config with `-c`:
+
+```toml
+# ~/.config/siggy/personal.toml
+account = "+15551110000"
+db_path = "personal.db"        # resolves to <data dir>/siggy/personal.db
+```
+
+```toml
+# ~/.config/siggy/work.toml
+account = "+15552220000"
+db_path = "work.db"
+```
+
+```sh
+siggy -c ~/.config/siggy/personal.toml
+siggy -c ~/.config/siggy/work.toml
+```
+
+Each account keeps a separate message history. `db_path` accepts an absolute
+path too. Without `db_path` the default `siggy.db` is used, so existing
+single-account setups are unaffected. The non-interactive `--list` honors the
+selected config's `db_path` as well.

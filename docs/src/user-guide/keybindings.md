@@ -63,6 +63,24 @@ insert_newline = ["shift+enter", "alt+enter"]
 
 Arrays are supported for binding multiple keys to the same action.
 
+### Command actions
+
+Six commands are also exposed as bindable actions, so you can open overlays
+directly from a key instead of typing the slash command: `open_contacts`,
+`open_settings`, `open_help`, `toggle_sidebar`, `attach`, and
+`command_palette`. The palette is bound to `Ctrl+P` in the Default and
+Minimal profiles (unbound in Emacs, where `Ctrl+P` is line-up); the others
+are unbound by default so they never conflict with profile defaults. Bind
+them like any other action:
+
+```toml
+[global]
+open_contacts = "ctrl+b"
+open_help = "f1"
+```
+
+They also appear in the `/keybindings` overlay for in-app rebinding.
+
 ### In-app rebinding
 
 Open the keybindings overlay with `/keybindings` (alias `/kb`). Navigate
@@ -78,6 +96,7 @@ The tables below show the Default profile bindings.
 | Key | Action |
 |---|---|
 | `Ctrl+C` | Quit |
+| `Ctrl+P` | Command palette (fuzzy finder over conversations and commands) |
 | `Tab` / `Shift+Tab` | Next / previous conversation |
 | `PgUp` / `PgDn` | Scroll messages (5 lines) |
 | `Ctrl+Left` / `Ctrl+Right` | Resize sidebar |

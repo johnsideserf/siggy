@@ -13,7 +13,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Flex, Layout},
+    layout::{Alignment, Constraint, Flex, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
@@ -61,6 +61,9 @@ pub async fn run_setup(
     let mut custom_path_mode = false;
     let mut custom_path_input = String::new();
     let mut custom_path_cursor: usize = 0;
+    // Relink pre-flight (#603): only prompt about pre-existing local account
+    // data once, not on every link retry.
+    let mut reset_checked = false;
 
     loop {
         match step {
@@ -104,50 +107,33 @@ pub async fn run_setup(
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                    match handle_signal_cli_key(
+                        custom_path_mode,
+                        &mut custom_path_input,
+                        &mut custom_path_cursor,
+                        key.modifiers,
+                        key.code,
+                    ) {
+                        SignalCliStepOutcome::Continue => {}
+                        SignalCliStepOutcome::Cancel => {
                             return Ok(SetupResult::Cancelled);
                         }
-                        (_, KeyCode::Esc) if custom_path_mode => {
-                            custom_path_mode = false;
-                        }
-                        (_, KeyCode::Esc) => {
-                            return Ok(SetupResult::Cancelled);
-                        }
-                        _ if custom_path_mode => match key.code {
-                            KeyCode::Enter if !custom_path_input.is_empty() => {
-                                signal_cli_path = custom_path_input.clone();
-                                signal_cli_found = false;
-                                custom_path_mode = false;
-                                // Will re-check on next loop
-                            }
-                            KeyCode::Backspace if custom_path_cursor > 0 => {
-                                custom_path_cursor -= 1;
-                                custom_path_input.remove(custom_path_cursor);
-                            }
-                            KeyCode::Left => {
-                                custom_path_cursor = custom_path_cursor.saturating_sub(1);
-                            }
-                            KeyCode::Right if custom_path_cursor < custom_path_input.len() => {
-                                custom_path_cursor += 1;
-                            }
-                            KeyCode::Char(c) => {
-                                custom_path_input.insert(custom_path_cursor, c);
-                                custom_path_cursor += 1;
-                            }
-                            _ => {}
-                        },
-                        (_, KeyCode::Enter) => {
-                            // Retry check
+                        SignalCliStepOutcome::Retry => {
+                            // Re-check signal-cli on the next loop.
                             signal_cli_found = false;
                         }
-                        (_, KeyCode::Char('p')) => {
-                            // Enter custom path mode
+                        SignalCliStepOutcome::EnterCustomPath => {
+                            // Buffer already cleared by the handler.
                             custom_path_mode = true;
-                            custom_path_input.clear();
-                            custom_path_cursor = 0;
                         }
-                        _ => {}
+                        SignalCliStepOutcome::ExitCustomPath => {
+                            custom_path_mode = false;
+                        }
+                        SignalCliStepOutcome::SetPath(path) => {
+                            signal_cli_path = path;
+                            signal_cli_found = false;
+                            custom_path_mode = false;
+                        }
                     }
                 }
             }
@@ -163,47 +149,28 @@ pub async fn run_setup(
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                    match handle_account_key(
+                        &mut phone_input,
+                        &mut phone_cursor,
+                        &mut phone_error,
+                        key.modifiers,
+                        key.code,
+                    ) {
+                        AccountStepOutcome::Continue => {}
+                        AccountStepOutcome::Cancel => {
                             return Ok(SetupResult::Cancelled);
                         }
-                        (_, KeyCode::Esc) => {
+                        AccountStepOutcome::Back => {
+                            // Phone state is cleared by the handler; reset the
+                            // signal-cli step flags so it re-checks on return.
                             step = Step::SignalCli;
                             signal_cli_found = false;
                             custom_path_mode = false;
-                            phone_input.clear();
-                            phone_cursor = 0;
-                            phone_error = None;
                         }
-                        (_, KeyCode::Enter) => match validate_phone(&phone_input) {
-                            Ok(()) => {
-                                working_config.account = phone_input.clone();
-                                phone_error = None;
-                                step = Step::Linking;
-                            }
-                            Err(msg) => {
-                                phone_error = Some(msg);
-                            }
-                        },
-                        (_, KeyCode::Backspace) => {
-                            if phone_cursor > 0 {
-                                phone_cursor -= 1;
-                                phone_input.remove(phone_cursor);
-                            }
-                            phone_error = None;
+                        AccountStepOutcome::Submit(account) => {
+                            working_config.account = account;
+                            step = Step::Linking;
                         }
-                        (_, KeyCode::Left) => {
-                            phone_cursor = phone_cursor.saturating_sub(1);
-                        }
-                        (_, KeyCode::Right) if phone_cursor < phone_input.len() => {
-                            phone_cursor += 1;
-                        }
-                        (_, KeyCode::Char(c)) => {
-                            phone_input.insert(phone_cursor, c);
-                            phone_cursor += 1;
-                            phone_error = None;
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -221,6 +188,56 @@ pub async fn run_setup(
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     step = Step::Preferences;
                     continue;
+                }
+
+                // Pre-flight (#603): if signal-cli already has local data for
+                // this number, a relink can fail with a server conflict. Offer
+                // to clear it first. Runs once (not on link retries), and only
+                // when local data actually exists.
+                if !reset_checked {
+                    reset_checked = true;
+                    if account_exists_locally(&working_config.account) {
+                        terminal.draw(|frame| {
+                            draw_relink_confirm(frame, &working_config.account);
+                        })?;
+                        let mut go_back = false;
+                        loop {
+                            if event::poll(Duration::from_millis(50))?
+                                && let Event::Key(key) = event::read()?
+                            {
+                                if key.kind != KeyEventKind::Press {
+                                    continue;
+                                }
+                                match key.code {
+                                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                        terminal.draw(|frame| {
+                                            draw_status_message(
+                                                frame,
+                                                "Clearing existing account data...",
+                                            );
+                                        })?;
+                                        // Best-effort: if the reset fails, fall
+                                        // through to linking anyway and let the
+                                        // normal error path report it.
+                                        let _ = delete_local_account_data(&working_config).await;
+                                        break;
+                                    }
+                                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
+                                        break;
+                                    }
+                                    KeyCode::Esc => {
+                                        go_back = true;
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        if go_back {
+                            step = Step::Account;
+                            continue;
+                        }
+                    }
                 }
 
                 // Run linking flow
@@ -323,7 +340,7 @@ pub async fn run_setup(
 /// let the wizard report success via the `where` fallback and then fail at the
 /// linking step when it re-tried the unspawnable bare name. We now verify that
 /// whatever path we return can actually be spawned.
-async fn check_signal_cli(path: &str) -> (bool, String, String) {
+pub(crate) async fn check_signal_cli(path: &str) -> (bool, String, String) {
     // Try the path as given.
     if let Some(display) = try_spawn_version(path).await {
         return (true, display, path.to_string());
@@ -404,6 +421,149 @@ fn validate_phone(input: &str) -> Result<(), String> {
         return Err("Only digits allowed after +".to_string());
     }
     Ok(())
+}
+
+/// What a key press on the signal-cli detection step decided (#503).
+#[derive(Debug, PartialEq, Eq)]
+enum SignalCliStepOutcome {
+    /// Stay on the step (custom-path text edited, or an ignored key).
+    Continue,
+    /// Ctrl-C, or Esc outside custom-path mode: cancel setup.
+    Cancel,
+    /// Enter outside custom-path mode: re-check for signal-cli.
+    Retry,
+    /// `p`: enter custom-path entry mode (buffer cleared by the handler).
+    EnterCustomPath,
+    /// Esc inside custom-path mode: leave it without applying.
+    ExitCustomPath,
+    /// Enter inside custom-path mode with a non-empty path (carries it).
+    SetPath(String),
+}
+
+/// Apply a key press to the signal-cli step. `custom_path_mode` selects between
+/// path-entry editing and the top-level keys. Pure: mutates only the custom-path
+/// buffers and returns the transition decision (#503).
+fn handle_signal_cli_key(
+    custom_path_mode: bool,
+    custom_path_input: &mut String,
+    custom_path_cursor: &mut usize,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> SignalCliStepOutcome {
+    if modifiers == KeyModifiers::CONTROL && code == KeyCode::Char('c') {
+        return SignalCliStepOutcome::Cancel;
+    }
+    if code == KeyCode::Esc {
+        return if custom_path_mode {
+            SignalCliStepOutcome::ExitCustomPath
+        } else {
+            SignalCliStepOutcome::Cancel
+        };
+    }
+    if custom_path_mode {
+        match code {
+            KeyCode::Enter if !custom_path_input.is_empty() => {
+                SignalCliStepOutcome::SetPath(custom_path_input.clone())
+            }
+            KeyCode::Backspace if *custom_path_cursor > 0 => {
+                *custom_path_cursor -= 1;
+                custom_path_input.remove(*custom_path_cursor);
+                SignalCliStepOutcome::Continue
+            }
+            KeyCode::Left => {
+                *custom_path_cursor = custom_path_cursor.saturating_sub(1);
+                SignalCliStepOutcome::Continue
+            }
+            KeyCode::Right if *custom_path_cursor < custom_path_input.len() => {
+                *custom_path_cursor += 1;
+                SignalCliStepOutcome::Continue
+            }
+            KeyCode::Char(c) => {
+                custom_path_input.insert(*custom_path_cursor, c);
+                *custom_path_cursor += 1;
+                SignalCliStepOutcome::Continue
+            }
+            _ => SignalCliStepOutcome::Continue,
+        }
+    } else {
+        match code {
+            KeyCode::Enter => SignalCliStepOutcome::Retry,
+            KeyCode::Char('p') => {
+                custom_path_input.clear();
+                *custom_path_cursor = 0;
+                SignalCliStepOutcome::EnterCustomPath
+            }
+            _ => SignalCliStepOutcome::Continue,
+        }
+    }
+}
+
+/// What a key press on the Account (phone-entry) step decided. Lets the pure
+/// input/transition logic be unit-tested without driving a real terminal (#503).
+#[derive(Debug, PartialEq, Eq)]
+enum AccountStepOutcome {
+    /// Stay on the step (text edited, cursor moved, or invalid submit).
+    Continue,
+    /// Ctrl-C: cancel setup entirely.
+    Cancel,
+    /// Esc: go back to the signal-cli step.
+    Back,
+    /// Enter with a valid phone number (carries the validated input).
+    Submit(String),
+}
+
+/// Apply a key press to the Account step's phone-entry state. Pure: mutates only
+/// the passed-in buffers and returns the transition decision. On `Back` it
+/// clears the phone state itself; the caller resets the signal-cli step flags.
+fn handle_account_key(
+    phone_input: &mut String,
+    phone_cursor: &mut usize,
+    phone_error: &mut Option<String>,
+    modifiers: KeyModifiers,
+    code: KeyCode,
+) -> AccountStepOutcome {
+    match (modifiers, code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => AccountStepOutcome::Cancel,
+        (_, KeyCode::Esc) => {
+            phone_input.clear();
+            *phone_cursor = 0;
+            *phone_error = None;
+            AccountStepOutcome::Back
+        }
+        (_, KeyCode::Enter) => match validate_phone(phone_input) {
+            Ok(()) => {
+                *phone_error = None;
+                AccountStepOutcome::Submit(phone_input.clone())
+            }
+            Err(msg) => {
+                *phone_error = Some(msg);
+                AccountStepOutcome::Continue
+            }
+        },
+        (_, KeyCode::Backspace) => {
+            if *phone_cursor > 0 {
+                *phone_cursor -= 1;
+                phone_input.remove(*phone_cursor);
+            }
+            *phone_error = None;
+            AccountStepOutcome::Continue
+        }
+        (_, KeyCode::Left) => {
+            *phone_cursor = phone_cursor.saturating_sub(1);
+            AccountStepOutcome::Continue
+        }
+        (_, KeyCode::Right) if *phone_cursor < phone_input.len() => {
+            *phone_cursor += 1;
+            AccountStepOutcome::Continue
+        }
+        (_, KeyCode::Char(c)) => {
+            phone_input.insert(*phone_cursor, c);
+            *phone_cursor += 1;
+            *phone_error = None;
+            AccountStepOutcome::Continue
+        }
+        _ => AccountStepOutcome::Continue,
+    }
 }
 
 fn step_label(current: Step) -> &'static str {
@@ -618,6 +778,69 @@ fn draw_account_step(
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
+/// Path to signal-cli's `accounts.json` index, replicating signal-cli's own
+/// default-location logic (`$XDG_DATA_HOME/signal-cli` or, failing that,
+/// `~/.local/share/signal-cli`). siggy never passes `--config` to signal-cli,
+/// so signal-cli always uses this default on every platform (including Windows,
+/// where it still uses `~/.local/share`, not `%APPDATA%`). Returns `None` only
+/// if the home directory cannot be resolved (#603).
+fn signal_cli_accounts_path() -> Option<std::path::PathBuf> {
+    let base = match std::env::var_os("XDG_DATA_HOME") {
+        Some(x) if !x.is_empty() => std::path::PathBuf::from(x),
+        _ => dirs::home_dir()?.join(".local").join("share"),
+    };
+    Some(base.join("signal-cli").join("data").join("accounts.json"))
+}
+
+/// Whether signal-cli's `accounts.json` already lists `account`. Pure so it can
+/// be unit-tested without touching the filesystem; returns false for malformed
+/// JSON so a parse failure never blocks linking (#603).
+fn accounts_json_contains(json: &str, account: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .as_ref()
+        .and_then(|v| v.get("accounts"))
+        .and_then(|a| a.as_array())
+        .is_some_and(|accounts| {
+            accounts
+                .iter()
+                .any(|a| a.get("number").and_then(|n| n.as_str()) == Some(account))
+        })
+}
+
+/// Whether `account` already has local signal-cli account data. Fails open: any
+/// error (no home dir, missing/unreadable/malformed file) returns false so the
+/// relink guard can only ever add a prompt, never block setup (#603).
+pub(crate) fn account_exists_locally(account: &str) -> bool {
+    signal_cli_accounts_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|contents| accounts_json_contains(&contents, account))
+}
+
+/// Run `signal-cli deleteLocalAccountData` to clear stale local data for a
+/// number before relinking. `--ignore-registered` lets it proceed even when
+/// signal-cli still considers the (now unlinked) account registered. Does not
+/// touch the Signal servers, so it is safe for the local-conflict case (#603).
+pub(crate) async fn delete_local_account_data(config: &Config) -> Result<()> {
+    let status = Command::new(&config.signal_cli_path)
+        .arg("-a")
+        .arg(&config.account)
+        .arg("deleteLocalAccountData")
+        .arg("--ignore-registered")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "signal-cli deleteLocalAccountData exited with {:?}",
+            status.code()
+        )
+    }
+}
+
 fn draw_registered_screen(frame: &mut ratatui::Frame, account: &str) {
     let area = frame.area();
 
@@ -665,12 +888,125 @@ fn draw_registered_screen(frame: &mut ratatui::Frame, account: &str) {
     frame.render_widget(paragraph, inner);
 }
 
-fn draw_link_error(frame: &mut ratatui::Frame, error: &str) {
+/// A centered single-line status message (e.g. shown briefly while a
+/// background step runs).
+fn draw_status_message(frame: &mut ratatui::Frame, message: &str) {
+    let area = frame.area();
+    let msg = Paragraph::new(format!("  {message}"))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::Yellow));
+    let [_, line, _] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .flex(Flex::Center)
+    .areas(area);
+    frame.render_widget(msg, line);
+}
+
+/// Confirm screen shown before linking when local signal-cli data already
+/// exists for this number (#603). Offers to clear it first, since a stale local
+/// registration is a common cause of a relink conflict.
+fn draw_relink_confirm(frame: &mut ratatui::Frame, account: &str) {
     let area = frame.area();
 
     let [_, content_area, _] = Layout::vertical([
         Constraint::Min(1),
-        Constraint::Length(10),
+        Constraint::Length(12),
+        Constraint::Min(1),
+    ])
+    .flex(Flex::Center)
+    .areas(area);
+
+    let [content] = Layout::horizontal([Constraint::Percentage(65)])
+        .flex(Flex::Center)
+        .areas(content_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Existing account data ")
+        .title_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(content);
+    frame.render_widget(block, content);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  signal-cli already has local data for {account}."),
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(Span::styled(
+            "  Relinking on top of it can fail with a server conflict.",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Reset the local data and continue linking?",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  If linking still fails afterwards, remove old devices on your",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            "  phone: Signal > Settings > Linked Devices.",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  y reset and continue | n keep and continue | Esc go back",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+/// Plain-English recovery guidance for known `signal-cli link` failures, shown
+/// under the raw signal-cli error in the linking-error box. Returns an empty
+/// slice for unrecognised errors (the raw message is still shown above).
+///
+/// A 409 / "Link request error" from the Signal server survives clearing local
+/// account data (the conflicting registration lives server-side), so the fix is
+/// on the phone -- remove stale linked devices -- plus keeping signal-cli
+/// current, not deleting local files.
+fn link_error_hint(error: &str) -> &'static [&'static str] {
+    let e = error.to_ascii_lowercase();
+    if e.contains("409") || e.contains("link request error") {
+        &[
+            "This number still has a previous link registered with Signal.",
+            "Clearing local data will not fix it. Instead:",
+            "  1. On your phone, open Signal > Settings > Linked Devices",
+            "     and remove any old or unused devices.",
+            "  2. Make sure signal-cli is up to date.",
+            "  3. Press Enter to retry.",
+        ]
+    } else {
+        &[]
+    }
+}
+
+fn draw_link_error(frame: &mut ratatui::Frame, error: &str) {
+    let area = frame.area();
+
+    let hint = link_error_hint(error);
+    // Size the box to its content: borders + a blank + the (wrapped) error
+    // + the footer, plus the hint block when present.
+    let hint_rows = if hint.is_empty() { 0 } else { hint.len() + 1 };
+    let content_height = ((8 + hint_rows) as u16).min(area.height.saturating_sub(2));
+
+    let [_, content_area, _] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(content_height),
         Constraint::Min(1),
     ])
     .flex(Flex::Center)
@@ -689,19 +1025,27 @@ fn draw_link_error(frame: &mut ratatui::Frame, error: &str) {
     let inner = block.inner(content);
     frame.render_widget(block, content);
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("  {error}"),
             Style::default().fg(Color::Red),
         )),
-        Line::from(""),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Enter to retry | Esc to go back",
-            Style::default().fg(Color::DarkGray),
-        )),
     ];
+    if !hint.is_empty() {
+        lines.push(Line::from(""));
+        for h in hint {
+            lines.push(Line::from(Span::styled(
+                format!("  {h}"),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter to retry | Esc to go back",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
@@ -882,5 +1226,286 @@ mod tests {
         assert!(display.is_some());
         let display = display.unwrap();
         assert!(display.starts_with("cargo"));
+    }
+
+    // --- accounts_json_contains (#603) ---
+
+    #[test]
+    fn accounts_json_contains_finds_matching_number() {
+        // The shape signal-cli writes (observed: data/accounts.json, version 2).
+        let json = r#"{
+            "accounts": [
+                { "path": "786736", "environment": "LIVE", "number": "+447588442858", "uuid": "abc" }
+            ],
+            "version": 2
+        }"#;
+        assert!(accounts_json_contains(json, "+447588442858"));
+        assert!(!accounts_json_contains(json, "+15551234567"));
+    }
+
+    #[test]
+    fn accounts_json_contains_handles_empty_and_missing() {
+        assert!(!accounts_json_contains(
+            r#"{"accounts": [], "version": 2}"#,
+            "+1"
+        ));
+        assert!(!accounts_json_contains(r#"{"version": 2}"#, "+1"));
+    }
+
+    #[test]
+    fn accounts_json_contains_fails_open_on_malformed_json() {
+        // Garbage must not match (and must not panic) so a bad file never blocks
+        // linking.
+        assert!(!accounts_json_contains("not json at all", "+447588442858"));
+        assert!(!accounts_json_contains("", "+447588442858"));
+    }
+
+    // --- link_error_hint ---
+
+    #[test]
+    fn link_error_hint_matches_409_conflict() {
+        // The real signal-cli failure text the user hits after an unlink.
+        let err = "signal-cli link failed (exit code: Some(3)): \
+            Link request error: StatusCode: 409";
+        let hint = link_error_hint(err);
+        assert!(!hint.is_empty(), "a 409 must produce recovery guidance");
+        assert!(
+            hint.iter().any(|l| l.contains("Linked Devices")),
+            "guidance should point the user at the phone's Linked Devices screen"
+        );
+    }
+
+    #[test]
+    fn link_error_hint_matches_link_request_error_without_code() {
+        assert!(!link_error_hint("Link request error: something").is_empty());
+    }
+
+    #[test]
+    fn link_error_hint_empty_for_unknown_errors() {
+        assert!(link_error_hint("Timed out waiting for linking URI").is_empty());
+        assert!(link_error_hint("some other failure").is_empty());
+    }
+
+    // --- validate_phone (#503) ---
+
+    #[test]
+    fn validate_phone_accepts_e164() {
+        assert!(validate_phone("+15551234567").is_ok());
+        // Leading/trailing whitespace is trimmed before validation.
+        assert!(validate_phone("  +15551234567  ").is_ok());
+        // Minimum accepted length is 8 chars including the '+'.
+        assert!(validate_phone("+1234567").is_ok());
+    }
+
+    #[test]
+    fn validate_phone_rejects_empty() {
+        assert_eq!(
+            validate_phone("   ").unwrap_err(),
+            "Phone number cannot be empty"
+        );
+    }
+
+    #[test]
+    fn validate_phone_requires_plus_prefix() {
+        assert_eq!(
+            validate_phone("15551234567").unwrap_err(),
+            "Must start with + (E.164 format)"
+        );
+    }
+
+    #[test]
+    fn validate_phone_rejects_too_short() {
+        assert_eq!(
+            validate_phone("+123").unwrap_err(),
+            "Phone number too short"
+        );
+    }
+
+    #[test]
+    fn validate_phone_rejects_non_digits() {
+        assert_eq!(
+            validate_phone("+1555abc4567").unwrap_err(),
+            "Only digits allowed after +"
+        );
+        // A second '+' after the first is also a non-digit.
+        assert_eq!(
+            validate_phone("+1555+234567").unwrap_err(),
+            "Only digits allowed after +"
+        );
+    }
+
+    // --- handle_account_key (#503) ---
+
+    fn account_key(
+        input: &str,
+        cursor: usize,
+        modifiers: KeyModifiers,
+        code: KeyCode,
+    ) -> (AccountStepOutcome, String, usize, Option<String>) {
+        let mut phone = input.to_string();
+        let mut cur = cursor;
+        let mut err: Option<String> = Some("stale".to_string());
+        let outcome = handle_account_key(&mut phone, &mut cur, &mut err, modifiers, code);
+        (outcome, phone, cur, err)
+    }
+
+    #[test]
+    fn account_key_typing_inserts_and_clears_error() {
+        let (outcome, phone, cur, err) =
+            account_key("+1", 2, KeyModifiers::NONE, KeyCode::Char('5'));
+        assert_eq!(outcome, AccountStepOutcome::Continue);
+        assert_eq!(phone, "+15");
+        assert_eq!(cur, 3);
+        assert_eq!(err, None);
+    }
+
+    #[test]
+    fn account_key_inserts_at_cursor() {
+        let (_, phone, cur, _) = account_key("+19", 1, KeyModifiers::NONE, KeyCode::Char('5'));
+        assert_eq!(phone, "+519");
+        assert_eq!(cur, 2);
+    }
+
+    #[test]
+    fn account_key_backspace_removes_before_cursor() {
+        let (outcome, phone, cur, err) =
+            account_key("+159", 4, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!(outcome, AccountStepOutcome::Continue);
+        assert_eq!(phone, "+15");
+        assert_eq!(cur, 3);
+        assert_eq!(err, None);
+        // Backspace at the start is a no-op.
+        let (_, phone, cur, _) = account_key("+15", 0, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!(phone, "+15");
+        assert_eq!(cur, 0);
+    }
+
+    #[test]
+    fn account_key_cursor_nav_is_bounded() {
+        let (_, _, cur, _) = account_key("+15", 0, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(cur, 0, "left saturates at 0");
+        let (_, _, cur, _) = account_key("+15", 3, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(cur, 3, "right past the end is a no-op");
+        let (_, _, cur, _) = account_key("+15", 1, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(cur, 2);
+    }
+
+    #[test]
+    fn account_key_esc_goes_back_and_clears_state() {
+        let (outcome, phone, cur, err) =
+            account_key("+15551234567", 5, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(outcome, AccountStepOutcome::Back);
+        assert_eq!(phone, "");
+        assert_eq!(cur, 0);
+        assert_eq!(err, None);
+    }
+
+    #[test]
+    fn account_key_ctrl_c_cancels() {
+        let (outcome, _, _, _) =
+            account_key("+15551234567", 0, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(outcome, AccountStepOutcome::Cancel);
+    }
+
+    #[test]
+    fn account_key_enter_invalid_sets_error_and_stays() {
+        let (outcome, phone, _, err) = account_key("123", 3, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(outcome, AccountStepOutcome::Continue);
+        assert_eq!(phone, "123", "input is preserved on invalid submit");
+        assert_eq!(err.as_deref(), Some("Must start with + (E.164 format)"));
+    }
+
+    #[test]
+    fn account_key_enter_valid_submits() {
+        let (outcome, _, _, err) =
+            account_key("+15551234567", 12, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(
+            outcome,
+            AccountStepOutcome::Submit("+15551234567".to_string())
+        );
+        assert_eq!(err, None);
+    }
+
+    // --- handle_signal_cli_key (#503) ---
+
+    fn signal_cli_key(
+        custom_mode: bool,
+        input: &str,
+        cursor: usize,
+        modifiers: KeyModifiers,
+        code: KeyCode,
+    ) -> (SignalCliStepOutcome, String, usize) {
+        let mut buf = input.to_string();
+        let mut cur = cursor;
+        let outcome = handle_signal_cli_key(custom_mode, &mut buf, &mut cur, modifiers, code);
+        (outcome, buf, cur)
+    }
+
+    #[test]
+    fn signal_cli_key_ctrl_c_cancels_in_either_mode() {
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(o, SignalCliStepOutcome::Cancel);
+        let (o, _, _) = signal_cli_key(true, "x", 1, KeyModifiers::CONTROL, KeyCode::Char('c'));
+        assert_eq!(o, SignalCliStepOutcome::Cancel);
+    }
+
+    #[test]
+    fn signal_cli_key_esc_cancels_normal_but_exits_custom() {
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(o, SignalCliStepOutcome::Cancel);
+        let (o, _, _) = signal_cli_key(true, "x", 1, KeyModifiers::NONE, KeyCode::Esc);
+        assert_eq!(o, SignalCliStepOutcome::ExitCustomPath);
+    }
+
+    #[test]
+    fn signal_cli_key_normal_enter_retries_and_p_enters_custom() {
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(o, SignalCliStepOutcome::Retry);
+        // 'p' enters custom mode and clears the buffer.
+        let (o, buf, cur) =
+            signal_cli_key(false, "stale", 5, KeyModifiers::NONE, KeyCode::Char('p'));
+        assert_eq!(o, SignalCliStepOutcome::EnterCustomPath);
+        assert_eq!(buf, "");
+        assert_eq!(cur, 0);
+        // Other normal-mode chars are ignored.
+        let (o, _, _) = signal_cli_key(false, "", 0, KeyModifiers::NONE, KeyCode::Char('x'));
+        assert_eq!(o, SignalCliStepOutcome::Continue);
+    }
+
+    #[test]
+    fn signal_cli_key_custom_path_editing() {
+        // Typing inserts at the cursor.
+        let (o, buf, cur) = signal_cli_key(true, "/usr", 4, KeyModifiers::NONE, KeyCode::Char('/'));
+        assert_eq!(o, SignalCliStepOutcome::Continue);
+        assert_eq!(buf, "/usr/");
+        assert_eq!(cur, 5);
+        // Backspace removes before the cursor; no-op at start.
+        let (_, buf, cur) = signal_cli_key(true, "/usr", 4, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!((buf.as_str(), cur), ("/us", 3));
+        let (_, buf, cur) = signal_cli_key(true, "/usr", 0, KeyModifiers::NONE, KeyCode::Backspace);
+        assert_eq!((buf.as_str(), cur), ("/usr", 0));
+        // Cursor nav is bounded.
+        let (_, _, cur) = signal_cli_key(true, "/usr", 0, KeyModifiers::NONE, KeyCode::Left);
+        assert_eq!(cur, 0);
+        let (_, _, cur) = signal_cli_key(true, "/usr", 4, KeyModifiers::NONE, KeyCode::Right);
+        assert_eq!(cur, 4);
+    }
+
+    #[test]
+    fn signal_cli_key_custom_enter_sets_path_only_when_nonempty() {
+        let (o, _, _) = signal_cli_key(
+            true,
+            "/opt/signal-cli",
+            0,
+            KeyModifiers::NONE,
+            KeyCode::Enter,
+        );
+        assert_eq!(
+            o,
+            SignalCliStepOutcome::SetPath("/opt/signal-cli".to_string())
+        );
+        // Empty input: Enter is ignored (stays on the step).
+        let (o, _, _) = signal_cli_key(true, "", 0, KeyModifiers::NONE, KeyCode::Enter);
+        assert_eq!(o, SignalCliStepOutcome::Continue);
     }
 }

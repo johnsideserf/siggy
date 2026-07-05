@@ -3,7 +3,25 @@
 //! Translates the user's typed input buffer into an [`InputAction`] enum
 //! consumed by the event loop. Slash commands (`/join`, `/part`, `/quit`,
 //! `/sidebar`, `/help`, ...) live in [`COMMANDS`] alongside their
-//! autocomplete metadata.
+//! autocomplete metadata. Also home to the composer's UTF-8 cursor-movement
+//! helpers, exported via `lib.rs` so the `fuzz_input_edit` harness drives the
+//! real code instead of a hand-copied duplicate.
+
+/// Find the byte position one character forward from `pos` in `buf`.
+pub fn next_char_pos(buf: &str, pos: usize) -> usize {
+    if pos >= buf.len() {
+        return buf.len();
+    }
+    pos + buf[pos..].chars().next().map_or(1, |c| c.len_utf8())
+}
+
+/// Find the byte position one character backward from `pos` in `buf`.
+pub fn prev_char_pos(buf: &str, pos: usize) -> usize {
+    if pos == 0 {
+        return 0;
+    }
+    pos - buf[..pos].chars().next_back().map_or(1, |c| c.len_utf8())
+}
 
 /// Metadata for a slash command (used for autocomplete + help)
 pub struct CommandInfo {
@@ -149,8 +167,26 @@ pub const COMMANDS: &[CommandInfo] = &[
     CommandInfo {
         name: "/export",
         alias: "",
-        args: "[n]",
-        description: "Export chat history to text file",
+        args: "[txt|md|json] [n]",
+        description: "Export chat history to a file",
+    },
+    CommandInfo {
+        name: "/archive",
+        alias: "",
+        args: "",
+        description: "Archive / unarchive the current conversation",
+    },
+    CommandInfo {
+        name: "/unread",
+        alias: "",
+        args: "",
+        description: "Mark the current conversation unread and close it",
+    },
+    CommandInfo {
+        name: "/preview",
+        alias: "",
+        args: "[url]",
+        description: "Fetch a link preview for your next message (no arg clears)",
     },
     CommandInfo {
         name: "/help",
@@ -239,8 +275,17 @@ pub enum InputAction {
     Keybindings,
     /// Open the emoji picker overlay (optional initial search filter)
     Emoji(String),
-    /// Export chat history to a text file (optional: last N messages)
-    Export(Option<usize>),
+    /// Export chat history to a file (optional format and last-N limit)
+    Export {
+        format: ExportFormat,
+        limit: Option<usize>,
+    },
+    /// Fetch a link preview to attach to the next message (None clears it)
+    Preview(Option<String>),
+    /// Toggle the archived flag on the current conversation
+    Archive,
+    /// Mark the current conversation unread and close it
+    MarkUnread,
     /// Unknown command
     Unknown(String),
 }
@@ -331,21 +376,69 @@ pub fn parse_input(input: &str) -> InputAction {
         "/profile" => InputAction::Profile,
         "/about" => InputAction::About,
         "/keybindings" | "/kb" => InputAction::Keybindings,
-        "/export" => {
+        "/export" => parse_export_args(&arg),
+        "/preview" => {
             if arg.is_empty() {
-                InputAction::Export(None)
+                InputAction::Preview(None)
             } else {
-                match arg.parse::<usize>() {
-                    Ok(n) => InputAction::Export(Some(n)),
-                    Err(_) => InputAction::Unknown(
-                        "/export takes an optional number (e.g. /export 100)".to_string(),
-                    ),
-                }
+                InputAction::Preview(Some(arg))
             }
         }
+        "/archive" => InputAction::Archive,
+        "/unread" => InputAction::MarkUnread,
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }
+}
+
+/// Output format for a conversation export. Rendering lives in
+/// `crate::export`; the enum lives here so the `/export` parser stays inside
+/// the fuzzable lib target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Text,
+    Markdown,
+    Json,
+}
+
+impl ExportFormat {
+    /// Parse a `/export` argument token; `None` if it is not a format name.
+    pub fn from_arg(arg: &str) -> Option<Self> {
+        match arg.to_ascii_lowercase().as_str() {
+            "txt" | "text" => Some(ExportFormat::Text),
+            "md" | "markdown" => Some(ExportFormat::Markdown),
+            "json" => Some(ExportFormat::Json),
+            _ => None,
+        }
+    }
+
+    /// File extension for the export file.
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Text => "txt",
+            ExportFormat::Markdown => "md",
+            ExportFormat::Json => "json",
+        }
+    }
+}
+
+/// Parse `/export` arguments: an optional format name (txt/md/json) and an
+/// optional last-N message count, in either order. Defaults to plain text.
+fn parse_export_args(arg: &str) -> InputAction {
+    let mut format = ExportFormat::Text;
+    let mut limit = None;
+    for token in arg.split_whitespace() {
+        if let Ok(n) = token.parse::<usize>() {
+            limit = Some(n);
+        } else if let Some(f) = ExportFormat::from_arg(token) {
+            format = f;
+        } else {
+            return InputAction::Unknown(
+                "Usage: /export [txt|md|json] [n] (e.g. /export md 100)".to_string(),
+            );
+        }
+    }
+    InputAction::Export { format, limit }
 }
 
 /// Parse `/poll` arguments: extract quoted strings and `--single` flag.
@@ -501,6 +594,57 @@ pub fn replace_shortcodes(input: &str) -> String {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    // --- Cursor helpers (fuzzed by fuzz_input_edit; #501) ---
+
+    #[test]
+    fn next_char_pos_steps_over_multibyte() {
+        // "a" + 4-byte emoji + "b"
+        let s = "a\u{1F600}b";
+        assert_eq!(next_char_pos(s, 0), 1); // past 'a'
+        assert_eq!(next_char_pos(s, 1), 5); // past the 4-byte emoji
+        assert_eq!(next_char_pos(s, 5), 6); // past 'b'
+        assert_eq!(next_char_pos(s, 6), 6); // clamps at end
+        assert_eq!(next_char_pos("", 0), 0);
+    }
+
+    #[test]
+    fn prev_char_pos_steps_over_multibyte() {
+        let s = "a\u{1F600}b";
+        assert_eq!(prev_char_pos(s, 6), 5); // before 'b'
+        assert_eq!(prev_char_pos(s, 5), 1); // before the emoji
+        assert_eq!(prev_char_pos(s, 1), 0); // before 'a'
+        assert_eq!(prev_char_pos(s, 0), 0); // clamps at start
+    }
+
+    // --- /export argument parsing ---
+
+    #[rstest]
+    #[case("/export", ExportFormat::Text, None)]
+    #[case("/export 100", ExportFormat::Text, Some(100))]
+    #[case("/export md", ExportFormat::Markdown, None)]
+    #[case("/export json 50", ExportFormat::Json, Some(50))]
+    #[case("/export 50 markdown", ExportFormat::Markdown, Some(50))]
+    #[case("/export TXT", ExportFormat::Text, None)]
+    fn parse_export_variants(
+        #[case] input: &str,
+        #[case] format: ExportFormat,
+        #[case] limit: Option<usize>,
+    ) {
+        assert_eq!(parse_input(input), InputAction::Export { format, limit });
+    }
+
+    #[test]
+    fn parse_export_rejects_unknown_tokens() {
+        assert!(matches!(
+            parse_input("/export csv"),
+            InputAction::Unknown(_)
+        ));
+        assert!(matches!(
+            parse_input("/export md extra nonsense"),
+            InputAction::Unknown(_)
+        ));
+    }
 
     // --- No-arg commands: 19 cases → 1 parameterized test ---
 

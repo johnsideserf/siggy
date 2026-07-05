@@ -1,0 +1,31 @@
+name: Dependabot auto-merge
+
+# Auto-merge low-risk dependabot bumps once required CI passes. "Low-risk" is
+# semver patch and minor (Cargo deps and GitHub Actions alike); major bumps are
+# left open for manual review. master's ruleset requires the CI status checks
+# but no approvals, so enabling auto-merge is enough -- the merge only happens
+# after those checks go green.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Fetch dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+
+      - name: Enable auto-merge for patch and minor updates
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

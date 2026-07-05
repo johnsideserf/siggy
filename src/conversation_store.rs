@@ -239,6 +239,8 @@ pub struct Conversation {
     pub expiration_timer: i64,
     /// Whether this conversation has been accepted (message requests are unaccepted)
     pub accepted: bool,
+    /// Hidden from the default sidebar view (#611). Any new message unarchives.
+    pub archived: bool,
 }
 
 impl Conversation {
@@ -329,6 +331,7 @@ impl ConversationStore {
                     is_group,
                     expiration_timer: 0,
                     accepted: true,
+                    archived: false,
                 },
             );
             self.conversation_order.push(id.to_string());

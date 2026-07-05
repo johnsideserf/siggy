@@ -11,6 +11,11 @@ use ratatui::layout::Rect;
 pub struct MouseState {
     /// Inner area of the sidebar List widget (`None` when the sidebar is hidden).
     pub sidebar_inner: Option<Rect>,
+    /// The conversation IDs actually rendered in the sidebar, top to bottom,
+    /// written each frame by `draw_sidebar`. Click handling indexes into this
+    /// so row -> conversation mapping stays correct when stale or archived
+    /// conversations are hidden from the list.
+    pub sidebar_display_order: Vec<String>,
     /// Inner area of the messages block.
     pub messages_area: Rect,
     /// Outer area of the composer input box (includes borders).

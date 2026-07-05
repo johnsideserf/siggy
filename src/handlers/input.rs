@@ -15,7 +15,7 @@ use crate::domain::EmojiPickerSource;
 use crate::image_render;
 use crate::input::{self, InputAction};
 use crate::mute::MuteState;
-use crate::signal::types::{IdentityInfo, Mention, MessageStatus, PollData, PollOption};
+use crate::signal::types::{IdentityInfo, Mention, MessageStatus, PollData, PollOption, StyleType};
 
 /// Handle a line of user input; returns Some(SendRequest) if a message
 /// must be sent to signal-cli.
@@ -23,7 +23,7 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
     let input = app.input.buffer.clone();
     let trimmed = input.trim();
     if !trimmed.is_empty() {
-        app.input.history.push(trimmed.to_string());
+        app.input.push_history(trimmed.to_string());
     }
     app.input.history_index = None;
     app.input.buffer.clear();
@@ -37,13 +37,7 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             None
         }
         InputAction::Part => {
-            app.save_scroll_position();
-            app.active_conversation = None;
-            app.scroll.offset = 0;
-            app.scroll.focused_index = None;
-            app.pending_attachment = None;
-            app.reset_typing_with_stop();
-            app.update_status();
+            close_active_conversation(app);
             None
         }
         InputAction::DeleteConversation => {
@@ -172,8 +166,20 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             allow_multiple,
         } => create_poll(app, question, options, allow_multiple),
         InputAction::Paste => app.handle_paste_command(),
-        InputAction::Export(limit) => {
-            app.export_chat_history(limit);
+        InputAction::Export { format, limit } => {
+            app.export_chat_history(format, limit);
+            None
+        }
+        InputAction::Preview(opt_url) => {
+            preview(app, opt_url);
+            None
+        }
+        InputAction::Archive => {
+            archive_toggle(app);
+            None
+        }
+        InputAction::MarkUnread => {
+            mark_unread(app);
             None
         }
         InputAction::Unknown(msg) => {
@@ -185,7 +191,11 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
 
 fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
     let text = input::replace_shortcodes(&raw_text);
-    if text.is_empty() && app.pending_attachment.is_none() && app.editing_message.is_none() {
+    if text.is_empty()
+        && app.pending_attachment.is_none()
+        && app.editing_message.is_none()
+        && app.media.pending_preview.is_none()
+    {
         return None;
     }
 
@@ -198,6 +208,20 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         return None;
     };
 
+    // Attach the pending /preview (#267). Signal requires the previewed URL
+    // to appear in the message body, so append it when the text lacks it.
+    let preview = app.media.pending_preview.take();
+    let text = match &preview {
+        Some(p) if !text.contains(&p.url) => {
+            if text.is_empty() {
+                p.url.clone()
+            } else {
+                format!("{text}\n{}", p.url)
+            }
+        }
+        _ => text,
+    };
+
     let attachment = app.pending_attachment.take();
     let is_group = app
         .store
@@ -206,8 +230,17 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         .map(|c| c.is_group)
         .unwrap_or(false);
 
+    let display_markup = crate::compose::parse_markup(&text);
     let (display_body, outgoing_image_lines, outgoing_image_path) =
-        build_outgoing_attachment_body(app, &text, attachment.as_deref());
+        build_outgoing_attachment_body(app, &display_markup.body, attachment.as_deref());
+    // The stripped text is a suffix of display_body (an attachment prefix may
+    // precede it), so display ranges shift by the prefix length.
+    let prefix_len = display_body.len() - display_markup.body.len();
+    let style_ranges: Vec<(usize, usize, StyleType)> = display_markup
+        .byte_ranges
+        .iter()
+        .map(|&(s, e, st)| (s + prefix_len, e + prefix_len, st))
+        .collect();
 
     let mut mention_ranges = Vec::new();
     for (name, _uuid) in &app.autocomplete.pending_mentions {
@@ -217,7 +250,7 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         }
     }
 
-    let (wire_body, wire_mentions) = app.prepare_outgoing_mentions(&text);
+    let wire = prepare_wire_text(app, &text);
     app.autocomplete.pending_mentions.clear();
 
     let now = Utc::now();
@@ -243,13 +276,14 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         timestamp_ms: local_ts_ms,
         reactions: Vec::new(),
         mention_ranges,
-        style_ranges: Vec::new(),
-        body_raw: if wire_mentions.is_empty() {
+        style_ranges,
+        body_raw: if wire.mentions.is_empty() {
             None
         } else {
-            Some(wire_body.clone())
+            Some(wire.body.clone())
         },
-        mentions: wire_mentions
+        mentions: wire
+            .mentions
             .iter()
             .map(|(start, uuid)| Mention {
                 start: *start,
@@ -266,7 +300,7 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         expiration_start_ms: out_expiry_start,
         poll_data: None,
         poll_votes: Vec::new(),
-        preview: None,
+        preview: preview.clone(),
         preview_image_lines: None,
         preview_image_path: None,
     };
@@ -285,15 +319,47 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
     app.reply_target = None;
     Some(SendRequest::Message {
         recipient: conv_id,
-        body: wire_body,
+        body: wire.body,
         is_group,
         local_ts_ms,
-        mentions: wire_mentions,
+        mentions: wire.mentions,
+        text_styles: wire.styles,
         attachment,
+        preview,
         quote_timestamp,
         quote_author,
         quote_body,
     })
+}
+
+/// The wire form of composer text: mention placeholders substituted, style
+/// markers stripped, and all offsets in wire-body coordinates.
+struct WireText {
+    body: String,
+    /// Mention (UTF-16 offset, uuid) pairs.
+    mentions: Vec<(usize, String)>,
+    /// UTF-16 (start, length, style) ranges.
+    styles: Vec<(usize, usize, StyleType)>,
+}
+
+/// Build the wire form of composer text. Mentions are substituted first, then
+/// markup is parsed on the substituted text; the mention offsets shift left by
+/// one UTF-16 unit per marker char removed before them (all markers are ASCII).
+fn prepare_wire_text(app: &App, text: &str) -> WireText {
+    let (marked_body, marked_mentions) = app.prepare_outgoing_mentions(text);
+    let markup = crate::compose::parse_markup(&marked_body);
+    let mentions = marked_mentions
+        .into_iter()
+        .map(|(off, uuid)| {
+            let shift = markup.removed_utf16.iter().filter(|&&r| r < off).count();
+            (off - shift, uuid)
+        })
+        .collect();
+    WireText {
+        body: markup.body,
+        mentions,
+        styles: markup.utf16_ranges,
+    }
 }
 
 fn try_send_edit(
@@ -314,29 +380,33 @@ fn try_send_edit(
         .and_then(|msg| msg.quote.as_ref())
         .map(|q| (q.timestamp_ms, q.author_id.clone(), q.body.clone()));
 
+    let display_markup = crate::compose::parse_markup(text);
     let conv = app.store.conversations.get_mut(&edit_conv_id)?;
     if let Some(idx) = conv
         .find_msg_idx(edit_ts)
         .filter(|&idx| conv.messages[idx].is_outgoing())
     {
-        conv.messages[idx].body = text.to_string();
+        conv.messages[idx].body = display_markup.body.clone();
+        conv.messages[idx].style_ranges = display_markup.byte_ranges.clone();
         conv.messages[idx].is_edited = true;
     }
     let is_group = conv.is_group;
-    let (wire_body, wire_mentions) = app.prepare_outgoing_mentions(text);
+    let wire = prepare_wire_text(app, text);
     app.autocomplete.pending_mentions.clear();
     app.db_warn_visible(
-        app.db.update_message_body(&edit_conv_id, edit_ts, text),
+        app.db
+            .update_message_body(&edit_conv_id, edit_ts, &display_markup.body),
         "update_message_body",
     );
     let now = Utc::now();
     Some(SendRequest::Edit {
         recipient: edit_conv_id,
-        body: wire_body,
+        body: wire.body,
         is_group,
         edit_timestamp: edit_ts,
         local_ts_ms: now.timestamp_millis(),
-        mentions: wire_mentions,
+        mentions: wire.mentions,
+        text_styles: wire.styles,
         quote_timestamp: original_quote.as_ref().map(|(ts, _, _)| *ts),
         quote_author: original_quote.as_ref().map(|(_, a, _)| a.clone()),
         quote_body: original_quote.map(|(_, _, b)| b),
@@ -415,6 +485,102 @@ fn build_outgoing_quote(app: &App) -> (Option<Quote>, Option<i64>, Option<String
         Some(author_phone.clone()),
         Some(body.clone()),
     )
+}
+
+/// Handle `/preview [url]` (#267): kick off a background metadata fetch for
+/// the URL, or clear the pending preview when no URL is given. The fetched
+/// preview attaches to the next message sent (which must contain the URL;
+/// send_text appends it if missing).
+fn preview(app: &mut App, opt_url: Option<String>) {
+    let Some(url) = opt_url else {
+        app.status_message = if app.media.pending_preview.take().is_some() {
+            "preview discarded".to_string()
+        } else if app.media.preview_rx.take().is_some() {
+            "preview fetch cancelled".to_string()
+        } else {
+            "no pending preview (use /preview <url>)".to_string()
+        };
+        return;
+    };
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        app.status_message = "/preview needs an http(s) URL".to_string();
+        return;
+    }
+    if app.media.preview_rx.is_some() {
+        app.status_message = "a preview fetch is already running".to_string();
+        return;
+    }
+    app.media.preview_rx = Some(crate::preview::spawn_fetch(url));
+    app.status_message = "fetching preview...".to_string();
+}
+
+/// Close the active conversation and reset per-conversation UI state
+/// (the `/part` behavior, shared by `/archive` and `/unread`).
+fn close_active_conversation(app: &mut App) {
+    app.save_scroll_position();
+    app.active_conversation = None;
+    app.scroll.offset = 0;
+    app.scroll.focused_index = None;
+    app.pending_attachment = None;
+    app.reset_typing_with_stop();
+    app.update_status();
+}
+
+/// Toggle the archived flag on the active conversation (#611). Archiving
+/// closes the conversation; it reappears in the sidebar on any new message,
+/// via the sidebar filter (`/_` shows everything), or by unarchiving.
+fn archive_toggle(app: &mut App) {
+    let Some(conv_id) = app.active_conversation.clone() else {
+        app.status_message = "no active conversation to archive".to_string();
+        return;
+    };
+    let Some(conv) = app.store.conversations.get_mut(&conv_id) else {
+        return;
+    };
+    conv.archived = !conv.archived;
+    let now_archived = conv.archived;
+    db_warn(app.db.set_archived(&conv_id, now_archived), "set_archived");
+    let name = app.conversation_name(&conv_id).to_string();
+    if now_archived {
+        close_active_conversation(app);
+        app.status_message = format!("archived {name}");
+    } else {
+        app.status_message = format!("unarchived {name}");
+    }
+}
+
+/// Mark the active conversation unread again and close it (#611). The newest
+/// incoming message becomes unread, so the sidebar badge shows 1.
+fn mark_unread(app: &mut App) {
+    let Some(conv_id) = app.active_conversation.clone() else {
+        app.status_message = "no active conversation to mark unread".to_string();
+        return;
+    };
+    let db_marked = match app.db.mark_unread(&conv_id) {
+        Ok(marked) => marked,
+        Err(e) => {
+            db_warn(Err::<(), _>(e), "mark_unread");
+            false
+        }
+    };
+    let mem_idx = app.store.conversations.get(&conv_id).and_then(|c| {
+        c.messages
+            .iter()
+            .rposition(|m| !m.is_system && !m.is_outgoing())
+    });
+    if !db_marked && mem_idx.is_none() {
+        app.status_message = "no incoming messages to mark unread".to_string();
+        return;
+    }
+    if let Some(i) = mem_idx {
+        app.store.last_read_index.insert(conv_id.clone(), i);
+    }
+    if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
+        conv.unread = conv.unread.max(1);
+    }
+    let name = app.conversation_name(&conv_id).to_string();
+    close_active_conversation(app);
+    app.status_message = format!("marked {name} unread");
 }
 
 fn toggle_bell(app: &mut App, target: Option<&str>) {

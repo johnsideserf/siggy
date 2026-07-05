@@ -17,6 +17,14 @@ linked devices) sync into the TUI automatically.
   Requires tmux 3.3+ with `set -g allow-passthrough on` plus the
   `SIGGY_IMAGE_PROTOCOL` env var to name the outer terminal (auto-detection
   cannot see through tmux). See the Troubleshooting page.
+- **Voice messages** -- audio attachments show as `[voice ▶ name 0:12]` (the
+  duration is read from the Ogg Opus file). Press `o` (open) on the focused
+  message to play it inline through a detected command-line player (`mpv`,
+  `ffplay`, `afplay`, `cvlc`, `paplay`, or `aplay`, in that order); the status
+  bar shows live progress (`playing name 0:05 / 0:12`) and pressing `o` again
+  stops playback. Set `audio_player` in the config to use a specific command
+  instead (see [Configuration](configuration.md)). If no player is available
+  it falls back to opening the file in your OS default app.
 - **Other files** -- shown as `[attachment: filename]` with the download path
 - **Send files** -- use `/attach` to open a file browser and attach a file to
   your next message
@@ -64,6 +72,22 @@ line marks where you left off. Read markers persist across restarts.
 Conversations automatically reorder to the top of the sidebar when messages
 are sent or received, so your most active chats are always visible.
 
+Use `/unread` to flip a read conversation back to unread: the newest incoming
+message counts as unread again, the conversation closes, and the sidebar shows
+a badge. The marker persists across restarts.
+
+## Archive
+
+Use `/archive` to hide the current conversation from the sidebar. Archived
+conversations behave like the official app:
+
+- Any new message (sent or received) automatically unarchives.
+- The sidebar footer shows `· N archived` when anything is hidden.
+- The sidebar filter (`/_`) lists every conversation including archived ones
+  (marked with a muted `a`); open one and run `/archive` again to unarchive.
+
+The archived flag persists in the local database.
+
 ## Notifications
 
 Terminal bell notifications fire when new messages arrive in background
@@ -90,6 +114,23 @@ and typing indicators.
 
 The sidebar auto-hides on narrow terminals (less than 60 columns). Use
 `Ctrl+Left` / `Ctrl+Right` to resize it, or `/sidebar` to toggle it.
+
+## Command palette
+
+Press `Ctrl+P` to open a fuzzy finder over everything: conversations and
+slash commands in one list. Type to filter (fuzzy subsequence matching, so
+`arc` finds `/archive` and `jke` finds `Jake`), navigate with `Up`/`Down`,
+and press Enter to:
+
+- **jump to a conversation**, or
+- **run a command** -- argument-less commands (like `/help` or `/settings`)
+  execute immediately; commands that take arguments (like `/join` or
+  `/export`) prefill the composer so you can finish typing them.
+
+With an empty query, your conversations are listed first (in sidebar order)
+followed by all commands. `Ctrl+P` is bound in the Default and Minimal
+keybinding profiles; in Emacs it is left unbound (`Ctrl+P` is line-up there)
+but can be bound via `command_palette` in a keybindings override.
 
 ## Sidebar filter
 
@@ -209,9 +250,30 @@ Signal formatting is rendered in the chat area:
 - **Italic** -- displayed with terminal italic
 - **Strikethrough** -- displayed with terminal strikethrough
 - **Monospace** -- displayed in gray
-- **Spoiler** -- hidden behind block characters (`████`)
+- **Spoiler** -- hidden behind block characters (`████`); focus the message
+  with `J`/`K` in Normal mode to reveal the text while focused
 
 Styles compose correctly with @mentions and link highlighting.
+
+### Sending formatted text
+
+Wrap text in markers as you type and siggy converts them to Signal style
+ranges on send (the markers are stripped from the delivered message):
+
+| Marker | Style |
+|--------|-------|
+| `*bold*` | Bold |
+| `_italic_` | Italic |
+| `~strikethrough~` | Strikethrough |
+| `` `monospace` `` | Monospace |
+| `\|\|spoiler\|\|` | Spoiler |
+
+Markers only take effect when they wrap text directly (no spaces inside) and
+sit on word boundaries, so `snake_case`, `2 * 3`, and URLs containing
+underscores are sent unchanged. A marker pair cannot span multiple lines.
+Unmatched markers are sent literally. Formatting also applies when editing a
+message, but note that editing re-opens the plain text without markers, so
+re-add them if you want the edit to stay formatted.
 
 ## Sticker messages
 
@@ -312,6 +374,18 @@ Open the theme picker with `/theme` (alias `/t`) or from `/settings` > Theme.
 Choose from built-in themes with customizable sidebar, chat, status bar, and
 accent colors.
 
+### Custom themes
+
+Drop a `*.toml` theme file in your themes directory and it appears in the picker:
+
+- **Linux / macOS:** `~/.config/siggy/themes/`
+- **Windows:** `%APPDATA%\siggy\themes\`
+
+The repo ships a fully-commented starting point at
+[`themes/custom-theme-template.toml`](https://github.com/johnsideserf/siggy/blob/master/themes/custom-theme-template.toml):
+copy it in, edit the colors (named 16-color values, `#rrggbb` hex, or
+`indexed(N)` 256-color), set a unique `name`, and pick it via `/theme`.
+
 ## Pinned messages
 
 Pin important messages to the top of a conversation. Press `p` in Normal mode
@@ -322,9 +396,27 @@ state syncs across all linked devices.
 
 ## Link previews
 
-Messages containing URLs display link preview cards with the page title,
-description, and thumbnail image (when available). Toggle via `/settings` >
-"Link previews" (enabled by default).
+Incoming messages containing URLs display link preview cards with the page
+title, description, and thumbnail image (when available). Toggle via
+`/settings` > "Link previews" (enabled by default).
+
+### Sending previews
+
+Signal previews are generated by the sender, so to send one, run:
+
+```
+/preview https://example.com/article
+```
+
+siggy fetches the page in the background, extracts the Open Graph metadata
+(title, description, thumbnail), and shows `preview: <title>` on the composer.
+Your next message in any conversation carries the preview card; if your text
+does not contain the URL, siggy appends it (Signal requires the URL in the
+message body). Run `/preview` with no argument to discard a pending preview.
+
+Previews are never fetched automatically while you type: fetching a URL
+reveals your IP address to that site, so it only happens on the explicit
+command.
 
 ## Polls
 
@@ -399,13 +491,20 @@ conversation. A filterable picker overlay lets you choose the destination.
 
 ## Export chat history
 
-Use `/export` to save the active conversation's messages as a plain text file.
-The file is saved to your Downloads directory as `siggy-export-<name>-<date>.txt`.
+Use `/export` to save the active conversation's messages to a file in your
+Downloads directory as `siggy-export-<name>-<date>.<ext>`. Three formats are
+available:
 
-Use `/export <n>` to export only the last N messages (e.g. `/export 100`).
+- `/export` or `/export txt` - plain text in a simple IRC-style format
+- `/export md` - Markdown, nicer for reading and sharing
+- `/export json` - structured output for scripting (pipe through `jq`)
 
-The output includes timestamps, sender names, message bodies, "(edited)" labels,
-quoted replies, and system messages in a simple IRC-style format.
+Add a number to export only the last N messages, in either order:
+`/export md 100` or `/export 100 md`.
+
+All formats include timestamps, sender names, message bodies, "(edited)"
+labels, quoted replies, and reactions. JSON additionally carries sender IDs,
+millisecond timestamps, and deleted/system flags.
 
 ## Demo mode
 
@@ -415,3 +514,50 @@ siggy --demo
 
 Launches with dummy conversations and messages. No signal-cli process is spawned.
 Useful for testing the UI, exploring keybindings, and taking screenshots.
+
+## Automation and scheduling
+
+siggy exposes a small non-interactive CLI (no TUI) for scripting. See the CLI
+flags table in [Configuration](configuration.md) for the full list; the
+automation-relevant ones are `--check` (guard), `--send`, `--list`, and
+`--receive`. Output is plain or tab-separated stdout with scriptable exit codes.
+
+```sh
+# guard, then send
+siggy --check && siggy --send +15551234567 "build passed"
+
+# stream incoming messages and auto-reply to a keyword
+siggy --receive | while IFS=$'\t' read -r ts from group body; do
+  case "$body" in *ping*) siggy --send "$from" "pong";; esac
+done
+```
+
+> **One instance per account.** signal-cli allows only one process per account
+> at a time, so `--send` and `--receive` cannot run while the siggy TUI is open
+> (or while another `--receive` is streaming). Close the running instance first.
+> If you forget, the command reports "another siggy or signal-cli instance is
+> using this account". `--check` and `--list` are unaffected: `--check` only
+> queries the signal-cli version (no account lock) and `--list` reads the cached
+> database.
+
+### Scheduled messages
+
+There is no built-in scheduler; use your OS scheduler with `siggy --send`, which
+keeps siggy dependency-free and reuses the scheduler you already trust.
+
+**cron (Linux / macOS)** - send a reminder every weekday at 9am:
+
+```cron
+0 9 * * 1-5  siggy --send +15551234567 "standup in 5"
+```
+
+**systemd timer (Linux)** - a `siggy-reminder.service` running
+`ExecStart=siggy --send +15551234567 "standup in 5"`, paired with a
+`siggy-reminder.timer` (`OnCalendar=Mon..Fri 09:00`).
+
+**Task Scheduler (Windows)** - schedule a task whose action runs
+`siggy.exe --send +15551234567 "standup in 5"`.
+
+`--send` exits 0 only once the message is confirmed sent, so a wrapping script
+can detect and retry failures. The account must already be linked (check with
+`siggy --check`).

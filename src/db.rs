@@ -212,6 +212,15 @@ const MIGRATIONS: &[Migration] = &[
             COMMIT;
         ",
     },
+    Migration {
+        version: 15,
+        sql: "
+            BEGIN;
+            ALTER TABLE conversations ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+            UPDATE schema_version SET version = 15;
+            COMMIT;
+        ",
+    },
 ];
 
 pub struct Database {
@@ -494,11 +503,11 @@ impl Database {
 
     /// Load all conversations with their most recent messages (up to `msg_limit`).
     pub fn load_conversations(&self, msg_limit: usize) -> Result<Vec<Conversation>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, is_group, expiration_timer, accepted FROM conversations")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, is_group, expiration_timer, accepted, archived FROM conversations",
+        )?;
 
-        let convs: Vec<(String, String, bool, i64, bool)> = stmt
+        let convs: Vec<(String, String, bool, i64, bool, bool)> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -506,13 +515,14 @@ impl Database {
                     row.get::<_, i32>(2)? != 0,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i32>(4)? != 0,
+                    row.get::<_, i32>(5)? != 0,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let mut result = Vec::with_capacity(convs.len());
 
-        for (id, name, is_group, expiration_timer, accepted) in convs {
+        for (id, name, is_group, expiration_timer, accepted, archived) in convs {
             let messages = self.load_messages_page(&id, msg_limit, 0)?;
             let unread = self.unread_count(&id).unwrap_or(0);
 
@@ -524,6 +534,7 @@ impl Database {
                 is_group,
                 expiration_timer,
                 accepted,
+                archived,
             });
         }
 
@@ -804,6 +815,11 @@ impl Database {
 
     /// Load all reactions for a conversation.
     /// Returns (target_ts_ms, target_author, emoji, sender) tuples.
+    ///
+    /// Test-only: production paging uses `load_reactions_in_range` (#488), so
+    /// the unbounded variant now exists purely as a convenience for tests that
+    /// assert reaction storage across a whole conversation.
+    #[cfg(test)]
     pub fn load_reactions(&self, conv_id: &str) -> Result<Vec<(i64, String, String, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT target_ts_ms, target_author, emoji, sender FROM reactions
@@ -990,6 +1006,40 @@ impl Database {
 
     // --- Blocked conversations ---
 
+    /// Set or clear the archived flag on a conversation.
+    pub fn set_archived(&self, conv_id: &str, archived: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE conversations SET archived = ?2 WHERE id = ?1",
+            params![conv_id, archived as i32],
+        )?;
+        Ok(())
+    }
+
+    /// Move the read marker back so exactly the newest incoming message counts
+    /// as unread again (#611). Returns false (and changes nothing) when the
+    /// conversation has no incoming messages to mark.
+    pub fn mark_unread(&self, conv_id: &str) -> Result<bool> {
+        let last_incoming: Option<i64> = self.conn.query_row(
+            "SELECT MAX(rowid) FROM messages
+             WHERE conversation_id = ?1 AND is_system = 0
+               AND status = 0 AND sender != 'you'",
+            params![conv_id],
+            |row| row.get(0),
+        )?;
+        let Some(last) = last_incoming else {
+            return Ok(false);
+        };
+        let prev: Option<i64> = self.conn.query_row(
+            "SELECT MAX(rowid) FROM messages
+             WHERE conversation_id = ?1 AND is_system = 0
+               AND status = 0 AND sender != 'you' AND rowid < ?2",
+            params![conv_id, last],
+            |row| row.get(0),
+        )?;
+        self.save_read_marker(conv_id, prev.unwrap_or(0))?;
+        Ok(true)
+    }
+
     pub fn set_blocked(&self, conv_id: &str, blocked: bool) -> Result<()> {
         self.conn.execute(
             "UPDATE conversations SET blocked = ?2 WHERE id = ?1",
@@ -1157,6 +1207,144 @@ mod tests {
         Database::open_in_memory().unwrap()
     }
 
+    /// Build an in-memory database migrated only up to schema version `k`, to
+    /// simulate an existing user's database before a later release. Mirrors
+    /// `Database::migrate`'s setup so a subsequent `migrate()` applies exactly
+    /// the migrations above `k` against populated tables (#502).
+    fn db_at_version(k: i32) -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        for m in MIGRATIONS.iter().filter(|m| m.version <= k) {
+            conn.execute_batch(m.sql).unwrap();
+        }
+        Database { conn }
+    }
+
+    // #502: migrations were only ever tested against fresh databases. These
+    // exercise the path every existing user hits on upgrade day: ALTER TABLE
+    // backfills and new-table creation against rows that already exist.
+
+    #[test]
+    fn db_at_version_stops_at_requested_version() {
+        let db = db_at_version(8);
+        let v: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 8);
+        // A column added after v8 must not exist yet.
+        assert!(
+            db.conn
+                .query_row("SELECT blocked FROM conversations LIMIT 1", [], |_| Ok(()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn upgrade_from_v1_backfills_columns_and_preserves_rows() {
+        let db = db_at_version(1);
+        // Insert using only columns that exist at v1.
+        db.conn
+            .execute(
+                "INSERT INTO conversations (id, name, is_group) VALUES ('+1', 'Alice', 0)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO messages (conversation_id, sender, timestamp, body)
+                 VALUES ('+1', 'Alice', '2025-01-01T00:00:00Z', 'hi')",
+                [],
+            )
+            .unwrap();
+
+        db.migrate().unwrap();
+
+        // Schema reaches the latest version.
+        let v: i64 = db
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v as usize, MIGRATIONS.len());
+        // The existing row survives the upgrade.
+        let msgs: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(msgs, 1);
+        // NOT NULL DEFAULT columns added later are backfilled on the old row.
+        let status: i64 = db
+            .conn
+            .query_row(
+                "SELECT status FROM messages WHERE conversation_id='+1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, 0); // v3 default
+        let (accepted, blocked): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT accepted, blocked FROM conversations WHERE id='+1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((accepted, blocked), (1, 0)); // v8 / v9 defaults
+        // Tables added later exist and coexist with the old data.
+        let reactions: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM reactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reactions, 0);
+    }
+
+    #[test]
+    fn upgrade_from_v8_preserves_existing_values_and_loads() {
+        let db = db_at_version(8);
+        // accepted=0 to confirm a later migration does not reset it.
+        db.conn
+            .execute(
+                "INSERT INTO conversations (id, name, is_group, accepted) VALUES ('+1', 'Alice', 0, 0)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO messages (conversation_id, sender, timestamp, body, status, timestamp_ms)
+                 VALUES ('+1', 'Alice', '2025-01-01T00:00:00Z', 'hi', 3, 1000)",
+                [],
+            )
+            .unwrap();
+
+        db.migrate().unwrap();
+
+        let (accepted, blocked): (i64, i64) = db
+            .conn
+            .query_row(
+                "SELECT accepted, blocked FROM conversations WHERE id='+1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((accepted, blocked), (0, 0)); // accepted preserved, blocked defaulted
+        let mute: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT mute_expires_at FROM conversations WHERE id='+1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(mute.is_none()); // v14 column present, NULL on the old row
+        // The real loader works against the upgraded schema (catches a
+        // migration that forgot a column the code selects).
+        let rows = db.load_messages_page("+1", 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
     // #484: your own sent messages are never "unread". Without the
     // incoming-only filter, sending N messages and restarting showed an
     // unread badge of N with the divider above your own messages.
@@ -1213,6 +1401,76 @@ mod tests {
         db.begin_batch();
         db.commit_batch();
         assert_eq!(db.load_messages_page("+1", 10, 0).unwrap().len(), 1);
+    }
+
+    #[rstest]
+    fn set_archived_round_trips_through_load(db: Database) {
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.upsert_conversation("+2", "Bob", false).unwrap();
+        db.set_archived("+1", true).unwrap();
+
+        let convs = db.load_conversations(10).unwrap();
+        let archived: Vec<bool> = {
+            let mut by_id: Vec<(&str, bool)> =
+                convs.iter().map(|c| (c.id.as_str(), c.archived)).collect();
+            by_id.sort();
+            by_id.into_iter().map(|(_, a)| a).collect()
+        };
+        assert_eq!(archived, vec![true, false]);
+
+        db.set_archived("+1", false).unwrap();
+        let convs = db.load_conversations(10).unwrap();
+        assert!(convs.iter().all(|c| !c.archived));
+    }
+
+    #[rstest]
+    fn mark_unread_restores_one_unread_incoming(db: Database) {
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.insert_message(
+            "+1",
+            "Alice",
+            "2025-01-01T00:00:00Z",
+            "first",
+            false,
+            None,
+            1000,
+        )
+        .unwrap();
+        let last = db
+            .insert_message(
+                "+1",
+                "Alice",
+                "2025-01-01T00:01:00Z",
+                "second",
+                false,
+                None,
+                2000,
+            )
+            .unwrap();
+
+        // Fully read, then mark unread: exactly the newest incoming counts again.
+        db.save_read_marker("+1", last).unwrap();
+        assert_eq!(db.unread_count("+1").unwrap(), 0);
+        assert!(db.mark_unread("+1").unwrap());
+        assert_eq!(db.unread_count("+1").unwrap(), 1);
+    }
+
+    #[rstest]
+    fn mark_unread_without_incoming_returns_false(db: Database) {
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        // Only an outgoing message: nothing can be marked unread.
+        db.insert_message(
+            "+1",
+            "you",
+            "2025-01-01T00:00:00Z",
+            "sent",
+            false,
+            Some(MessageStatus::Sent),
+            1000,
+        )
+        .unwrap();
+        assert!(!db.mark_unread("+1").unwrap());
+        assert_eq!(db.unread_count("+1").unwrap(), 0);
     }
 
     #[rstest]

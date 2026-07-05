@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create and publish (e.g. v1.9.1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,7 +18,7 @@ jobs:
     name: Lint & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -28,6 +34,8 @@ jobs:
     name: Build (${{ matrix.target }})
     needs: check
     runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     strategy:
       matrix:
         include:
@@ -44,7 +52,7 @@ jobs:
             runner: windows-latest
             archive: zip
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -66,25 +74,27 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../siggy-${{ github.ref_name }}-${{ matrix.target }}.tar.gz siggy
+          tar czf ../../../siggy-${TAG}-${{ matrix.target }}.tar.gz siggy
           cd ../../..
 
       - name: Package (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/siggy.exe" -DestinationPath "siggy-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/siggy.exe" -DestinationPath "siggy-${env:TAG}-${{ matrix.target }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: siggy-${{ matrix.target }}
-          path: siggy-${{ github.ref_name }}-${{ matrix.target }}.*
+          path: siggy-${{ env.TAG }}-${{ matrix.target }}.*
 
   release:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -93,6 +103,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
+          # On workflow_dispatch the tag does not exist yet; the action
+          # creates it at the workflow's checkout commit (default branch HEAD).
+          # On a tag push this matches the pushed tag (a no-op create).
+          tag_name: ${{ env.TAG }}
           generate_release_notes: true
           files: siggy-*
 
@@ -101,9 +115,9 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ./.github/actions/update-homebrew
         with:
-          tag: ${{ github.ref_name }}
+          tag: ${{ inputs.tag || github.ref_name }}
           tap-token: ${{ secrets.TAP_TOKEN }}

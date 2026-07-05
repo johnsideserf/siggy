@@ -58,7 +58,8 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     );
     let quit_key = dk(KeyAction::Quit);
     let lock_key = dk(KeyAction::Lock);
-    let shortcuts: Vec<(String, &str)> = vec![
+    let palette_key = dk(KeyAction::CommandPalette);
+    let mut shortcuts: Vec<(String, &str)> = vec![
         (nav_keys, "Next / prev conversation"),
         ("Up / Down".to_string(), "Recall input history"),
         ("@".to_string(), "Mention autocomplete"),
@@ -67,6 +68,11 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         (lock_key, "Lock the session"),
         (quit_key, "Quit"),
     ];
+    // Unbound in some profiles (e.g. Emacs, where Ctrl+P is line-up);
+    // display_key returns "?" for unbound actions.
+    if palette_key != "?" {
+        shortcuts.insert(0, (palette_key, "Command palette"));
+    }
 
     let cli: &[(&str, &str)] = &[
         ("--incognito", "No local message storage"),
@@ -153,11 +159,17 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         (dk(KeyAction::StartSearch), "Start command input"),
     ];
 
+    let formatting: [(&str, &str); 2] = [
+        ("*b* _i_ ~s~ `m`", "Bold / italic / strike / mono"),
+        ("||text||", "Spoiler"),
+    ];
+
     // Calculate popup size
     let key_col_width = 20;
     let desc_col_width = 28;
     let pref_width = (key_col_width + desc_col_width + 6) as u16;
-    let content_lines = commands.len() + shortcuts.len() + vim.len() + cli.len() + 7;
+    let content_lines =
+        commands.len() + shortcuts.len() + formatting.len() + vim.len() + cli.len() + 9;
     let pref_height = content_lines as u16 + 2;
 
     let (popup_area, block) = centered_popup(frame, area, pref_width, pref_height, " Help ", theme);
@@ -188,6 +200,12 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("  Shortcuts", header_style)));
     for (key, desc) in &shortcuts {
+        push_row(&mut lines, key, desc);
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  Formatting", header_style)));
+    for &(key, desc) in &formatting {
         push_row(&mut lines, key, desc);
     }
 

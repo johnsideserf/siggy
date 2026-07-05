@@ -92,6 +92,28 @@ pub fn append_footer(
     )));
 }
 
+/// Filter `(id, name)` pairs by a case-insensitive substring match on either
+/// field (an empty filter matches all), sorted by name. This is the shared
+/// body of the contacts / add-member / remove-member type-to-filter pickers
+/// (#499); callers pre-build the source pairs with their own exclusions
+/// (non-empty name, existing members, self) and pass them in.
+pub fn filter_name_number_pairs(
+    pairs: impl IntoIterator<Item = (String, String)>,
+    filter: &str,
+) -> Vec<(String, String)> {
+    let filter = filter.to_lowercase();
+    let mut out: Vec<(String, String)> = pairs
+        .into_iter()
+        .filter(|(number, name)| {
+            filter.is_empty()
+                || name.to_lowercase().contains(&filter)
+                || number.to_lowercase().contains(&filter)
+        })
+        .collect();
+    out.sort_by_key(|(_, name)| name.to_lowercase());
+    out
+}
+
 /// Clamp a selection index to stay within list bounds.
 pub fn clamp_index(index: &mut usize, list_len: usize) {
     if list_len == 0 {
@@ -107,6 +129,45 @@ pub fn selection_style(bg_selected: Color, fg: Color) -> Style {
         .bg(bg_selected)
         .fg(fg)
         .add_modifier(Modifier::BOLD)
+}
+
+/// Score `haystack` against a fuzzy `needle` (case-insensitive subsequence
+/// match, greedy left-to-right). Returns `None` when the needle is not a
+/// subsequence of the haystack; higher scores are better. Scoring favors
+/// consecutive runs, matches at word starts, and matches that begin early.
+/// An empty needle matches everything with score 0. Used by the command
+/// palette (#614).
+pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i64> {
+    if needle.trim().is_empty() {
+        return Some(0);
+    }
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let mut score: i64 = 0;
+    let mut hi = 0usize;
+    let mut prev_match: Option<usize> = None;
+    let mut first_match: Option<usize> = None;
+    for nc in needle.to_lowercase().chars().filter(|c| !c.is_whitespace()) {
+        while hi < hay.len() && hay[hi] != nc {
+            hi += 1;
+        }
+        if hi >= hay.len() {
+            return None;
+        }
+        score += 1;
+        if prev_match == Some(hi.wrapping_sub(1)) && hi > 0 {
+            score += 3; // consecutive-run bonus
+        }
+        if hi == 0 || !hay[hi - 1].is_alphanumeric() {
+            score += 2; // word-start bonus
+        }
+        first_match.get_or_insert(hi);
+        prev_match = Some(hi);
+        hi += 1;
+    }
+    // Prefer matches that start early and shorter haystacks overall.
+    score -= (first_match.unwrap_or(0) as i64).min(8);
+    score -= (hay.len() as i64) / 16;
+    Some(score)
 }
 
 #[cfg(test)]
@@ -144,6 +205,30 @@ mod tests {
         assert_eq!(
             classify_list_key(KeyCode::Enter, false),
             ListKeyAction::Select
+        );
+    }
+
+    #[test]
+    fn fuzzy_score_subsequence_and_ordering() {
+        // Non-subsequence rejects; subsequence matches.
+        assert_eq!(fuzzy_score("xyz", "contacts"), None);
+        assert!(fuzzy_score("cts", "contacts").is_some());
+        // Case-insensitive; empty needle matches everything.
+        assert!(fuzzy_score("ALI", "Alice").is_some());
+        assert_eq!(fuzzy_score("", "anything"), Some(0));
+        assert_eq!(fuzzy_score("   ", "anything"), Some(0));
+
+        // Prefix beats scattered subsequence.
+        assert!(
+            fuzzy_score("con", "/contacts").unwrap()
+                > fuzzy_score("con", "welcome once more").unwrap()
+        );
+        // Word-start match beats mid-word match.
+        assert!(fuzzy_score("al", "Alice").unwrap() > fuzzy_score("al", "Natalie").unwrap());
+        // Consecutive beats gapped.
+        assert!(
+            fuzzy_score("arch", "/archive").unwrap()
+                > fuzzy_score("arch", "a routine chore here").unwrap()
         );
     }
 
@@ -188,6 +273,31 @@ mod tests {
         let (visible, offset) = scroll_layout(10, 2, 10);
         assert_eq!(visible, 8);
         assert_eq!(offset, 3); // 10 - 8 + 1
+    }
+
+    #[test]
+    fn filter_name_number_pairs_matches_name_or_number_and_sorts() {
+        let pairs = vec![
+            ("+199".to_string(), "Zoe".to_string()),
+            ("+1234".to_string(), "Alice".to_string()),
+            ("+1999".to_string(), "Bob".to_string()),
+        ];
+        // Empty filter: all, sorted by name.
+        let all = filter_name_number_pairs(pairs.clone(), "");
+        assert_eq!(
+            all.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            ["Alice", "Bob", "Zoe"]
+        );
+        // Name match (case-insensitive).
+        let by_name = filter_name_number_pairs(pairs.clone(), "ALI");
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].1, "Alice");
+        // Number match: "+199" appears in Zoe (+199) and Bob (+1999).
+        let by_num = filter_name_number_pairs(pairs, "+199");
+        assert_eq!(
+            by_num.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            ["Bob", "Zoe"]
+        );
     }
 
     #[test]

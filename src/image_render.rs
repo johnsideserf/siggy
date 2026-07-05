@@ -506,6 +506,59 @@ pub fn render_image_with_limits(
     let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
     let rgba = resized.to_rgba8();
 
+    // Diagnostics for the "black square" render reports (#443). A favicon that is
+    // a dark/opaque shape on a transparent field renders every transparent cell
+    // as Reset/Reset (terminal default), so on a dark terminal the whole tile
+    // reads as a featureless dark square. Record how transparent the resized
+    // image actually is so a user repro (run with --debug) is diagnosable.
+    let total_px = rgba.pixels().len().max(1);
+    let transparent_px = rgba.pixels().filter(|p| p[3] < 128).count();
+    crate::debug_log::logf(format_args!(
+        "render_image alpha: path={} transparent_px={transparent_px}/{total_px} ({}%)",
+        path.display(),
+        transparent_px * 100 / total_px
+    ));
+
+    let lines = halfblock_lines(&rgba);
+
+    let elapsed_ms = start.elapsed().as_millis();
+    crate::debug_log::logf(format_args!(
+        "render_image done: path={} elapsed_ms={elapsed_ms} src={}x{} out={}x{}",
+        path.display(),
+        orig_w,
+        orig_h,
+        new_w,
+        new_h
+    ));
+    if elapsed_ms > SLOW_DECODE_WARN_MS {
+        // Always-on warning regardless of --debug: a pathologically slow
+        // decode is the symptom of a hostile or broken file, and the user
+        // needs the path + size to triage even without opting into the
+        // full debug log. See issue #444.
+        crate::debug_log::warnf(format_args!(
+            "slow image decode: path={} elapsed_ms={elapsed_ms} src={}x{} out={}x{}",
+            path.display(),
+            orig_w,
+            orig_h,
+            new_w,
+            new_h
+        ));
+    }
+    Some(lines)
+}
+
+/// Threshold (ms) above which `render_image` emits an always-on warning,
+/// independent of the --debug flag. 5s is roughly the point at which the
+/// user notices a stall and starts wondering what is hung.
+const SLOW_DECODE_WARN_MS: u128 = 5_000;
+
+/// Convert an already-resized RGBA image into halfblock (`▀`) lines: each cell
+/// row packs two pixel rows, the top pixel as the glyph foreground and the
+/// bottom pixel as the background. Pixels with alpha < 128 become
+/// [`Color::Reset`] so transparent regions blend with the terminal background
+/// rather than painting black. Pure (no I/O) so the pixel-to-cell mapping can be
+/// unit-tested directly. See issue #443.
+fn halfblock_lines(rgba: &image::RgbaImage) -> Vec<Line<'static>> {
     let (w, h) = rgba.dimensions();
     // Process pixel rows in pairs (top/bottom per cell row)
     let row_pairs = h.div_ceil(2);
@@ -545,40 +598,66 @@ pub fn render_image_with_limits(
         lines.push(Line::from(spans));
     }
 
-    let elapsed_ms = start.elapsed().as_millis();
-    crate::debug_log::logf(format_args!(
-        "render_image done: path={} elapsed_ms={elapsed_ms} src={}x{} out={}x{}",
-        path.display(),
-        orig_w,
-        orig_h,
-        new_w,
-        new_h
-    ));
-    if elapsed_ms > SLOW_DECODE_WARN_MS {
-        // Always-on warning regardless of --debug: a pathologically slow
-        // decode is the symptom of a hostile or broken file, and the user
-        // needs the path + size to triage even without opting into the
-        // full debug log. See issue #444.
-        crate::debug_log::warnf(format_args!(
-            "slow image decode: path={} elapsed_ms={elapsed_ms} src={}x{} out={}x{}",
-            path.display(),
-            orig_w,
-            orig_h,
-            new_w,
-            new_h
-        ));
-    }
-    Some(lines)
+    lines
 }
-
-/// Threshold (ms) above which `render_image` emits an always-on warning,
-/// independent of the --debug flag. 5s is roughly the point at which the
-/// user notices a stall and starts wondering what is hung.
-const SLOW_DECODE_WARN_MS: u128 = 5_000;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Collect the (fg, bg) of every halfblock glyph cell, skipping the leading
+    /// indent span, across all rows.
+    fn glyph_cells(lines: &[Line<'static>]) -> Vec<(Color, Color)> {
+        let mut cells = Vec::new();
+        for line in lines {
+            for span in line.spans.iter().filter(|s| s.content == "▀") {
+                cells.push((
+                    span.style.fg.unwrap_or(Color::Reset),
+                    span.style.bg.unwrap_or(Color::Reset),
+                ));
+            }
+        }
+        cells
+    }
+
+    #[test]
+    fn halfblock_transparent_image_is_all_reset() {
+        // A fully transparent tile (e.g. the empty field around a small favicon)
+        // renders every cell as Reset/Reset. On a dark terminal this reads as a
+        // featureless dark square - the #443 "black square" mechanism. Pin it so
+        // any change to the alpha handling is a deliberate, reviewed decision.
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 0]));
+        let cells = glyph_cells(&halfblock_lines(&img));
+        assert_eq!(cells.len(), 4 * 2); // 4 wide x (4/2) cell-rows
+        assert!(
+            cells
+                .iter()
+                .all(|&(fg, bg)| fg == Color::Reset && bg == Color::Reset)
+        );
+    }
+
+    #[test]
+    fn halfblock_opaque_image_uses_rgb() {
+        // An opaque red tile maps to Rgb cells (top pixel -> fg, bottom -> bg).
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([200, 10, 20, 255]));
+        let cells = glyph_cells(&halfblock_lines(&img));
+        assert_eq!(cells.len(), 2); // 2 wide x 1 cell-row
+        assert!(
+            cells
+                .iter()
+                .all(|&(fg, bg)| fg == Color::Rgb(200, 10, 20) && bg == Color::Rgb(200, 10, 20))
+        );
+    }
+
+    #[test]
+    fn halfblock_odd_height_last_row_bg_reset() {
+        // Odd pixel height: the final cell row has no bottom pixel, so bg=Reset.
+        let img = image::RgbaImage::from_pixel(1, 3, image::Rgba([5, 6, 7, 255]));
+        let lines = halfblock_lines(&img);
+        assert_eq!(lines.len(), 2); // ceil(3/2)
+        let last = glyph_cells(&[lines[1].clone()]);
+        assert_eq!(last, vec![(Color::Rgb(5, 6, 7), Color::Reset)]);
+    }
 
     /// Build a synthetic Sixel DCS string with the given number of bands.
     /// Each band is a simple pixel row for testing.

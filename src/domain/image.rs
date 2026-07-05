@@ -13,11 +13,51 @@ use std::collections::{HashMap, HashSet};
 
 use std::sync::mpsc;
 
+use ratatui::style::Color;
+use ratatui::text::Line;
+
 pub use crate::config::ImageMode;
 
-use crate::app::{ImageRenderResult, VisibleImage};
 use crate::image_render::{ImageProtocol, SixelEncodeSettings};
-use crate::ui::LinkRegion;
+
+/// An image visible on screen, for native protocol overlay rendering.
+#[derive(PartialEq, Eq)]
+pub struct VisibleImage {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    /// Total image height in cells (before viewport clipping).
+    pub full_height: u16,
+    /// Cells cropped from the top when the image is partially scrolled out.
+    pub crop_top: u16,
+    pub path: String,
+}
+
+/// Result from a background image render task.
+pub struct ImageRenderResult {
+    pub conv_id: String,
+    pub timestamp_ms: i64,
+    pub is_preview: bool,
+    pub lines: Option<Vec<Line<'static>>>,
+    pub image_path: Option<String>,
+    /// Pre-encoded PNG for native_image_cache: (path, base64, pixel_w, pixel_h)
+    pub pre_native_png: Option<(String, String, u32, u32)>,
+    /// Pre-encoded full Sixel for sixel_cache: (path, sixel_string)
+    pub pre_sixel: Option<(String, String)>,
+}
+
+/// A clickable link region detected in the rendered buffer.
+pub struct LinkRegion {
+    pub x: u16,
+    pub y: u16,
+    pub url: String,
+    pub text: String,
+    /// Display width in terminal columns (may differ from text.len() for Unicode).
+    pub width: u16,
+    /// Background color from the buffer cell, if non-default (e.g. highlight).
+    pub bg: Option<Color>,
+}
 
 /// State for image rendering, caching, and link overlay tracking.
 pub struct ImageState {
@@ -69,6 +109,11 @@ pub struct ImageState {
     pub image_render_rx: mpsc::Receiver<ImageRenderResult>,
     /// In-flight background renders: (conv_id, timestamp, is_preview)
     pub image_render_in_flight: HashSet<(String, i64, bool)>,
+    /// Cached inputs of the last viewport scan in `ensure_active_images`:
+    /// (conv_id, scroll_offset, message_count, image_mode, show_link_previews).
+    /// When unchanged and no render just completed, the per-tick scan is
+    /// skipped to avoid idle CPU churn (#492).
+    pub scan_signature: Option<(String, usize, usize, ImageMode, bool, u32)>,
 }
 
 impl ImageState {
@@ -103,6 +148,63 @@ impl ImageState {
             image_render_tx,
             image_render_rx,
             image_render_in_flight: HashSet::new(),
+            scan_signature: None,
         }
+    }
+
+    /// Bound the encode caches so they can't grow without limit (#492). Called
+    /// once per frame. At these caps anything evicted is off-screen and
+    /// regenerates lazily via the background render path, so a crude cap (rather
+    /// than true LRU) is enough and avoids per-insert bookkeeping. Sixel strings
+    /// are large (0.5-3MB each) so that cache gets a smaller entry budget.
+    pub fn enforce_cache_caps(&mut self) {
+        const NATIVE_CACHE_CAP: usize = 256;
+        const ITERM2_CACHE_CAP: usize = 256;
+        const SIXEL_CACHE_CAP: usize = 64;
+        cap_map(&mut self.native_image_cache, NATIVE_CACHE_CAP);
+        cap_map(&mut self.iterm2_crop_cache, ITERM2_CACHE_CAP);
+        cap_map(&mut self.sixel_cache, SIXEL_CACHE_CAP);
+    }
+}
+
+/// Drop arbitrary entries from `map` until it holds at most `cap`. A no-op when
+/// already within budget. Eviction order is unspecified (HashMap iteration); at
+/// the call sites' caps the working set is far smaller than `cap`, so only stale
+/// off-screen entries are ever removed.
+fn cap_map<K: Eq + std::hash::Hash + Clone, V>(map: &mut HashMap<K, V>, cap: usize) {
+    if map.len() <= cap {
+        return;
+    }
+    let excess = map.len() - cap;
+    let victims: Vec<K> = map.keys().take(excess).cloned().collect();
+    for k in victims {
+        map.remove(&k);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cap_map;
+    use std::collections::HashMap;
+
+    #[test]
+    fn cap_map_is_noop_within_budget() {
+        let mut m: HashMap<u32, u32> = (0..5).map(|i| (i, i)).collect();
+        cap_map(&mut m, 10);
+        assert_eq!(m.len(), 5);
+    }
+
+    #[test]
+    fn cap_map_trims_to_cap() {
+        let mut m: HashMap<u32, u32> = (0..100).map(|i| (i, i)).collect();
+        cap_map(&mut m, 16);
+        assert_eq!(m.len(), 16);
+    }
+
+    #[test]
+    fn cap_map_exact_cap_unchanged() {
+        let mut m: HashMap<u32, u32> = (0..8).map(|i| (i, i)).collect();
+        cap_map(&mut m, 8);
+        assert_eq!(m.len(), 8);
     }
 }

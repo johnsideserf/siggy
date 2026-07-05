@@ -1,12 +1,24 @@
 [package]
 name = "siggy"
-version = "1.8.0"
+version = "1.11.0"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Terminal-based Signal messenger client with vim keybindings"
 repository = "https://github.com/johnsideserf/siggy"
 keywords = ["signal", "tui", "terminal", "messenger", "ratatui"]
 categories = ["command-line-utilities"]
+# Ship only what's needed to build and install. Without this allowlist the
+# package balloons to ~5.5 MiB (docs/ screenshots, banner/logos, translations,
+# CI config), which both wastes every `cargo install` and stalls the upload at
+# the crates.io CDN edge.
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "rust-toolchain.toml",
+]
 
 [dependencies]
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
@@ -29,8 +41,9 @@ notify-rust = "4"
 argon2 = "0.5"
 rand_core = { version = "0.6", features = ["getrandom"] }
 
-emojis = "0.8"
+emojis = "0.9"
 icy_sixel = "0.5"
+ureq = "3.3.0"
 
 [dev-dependencies]
 insta = "1"

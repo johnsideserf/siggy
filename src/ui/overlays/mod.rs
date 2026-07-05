@@ -20,6 +20,7 @@ pub(super) mod help;
 pub(super) mod keybindings;
 pub(super) mod lock_screen;
 pub(super) mod message_request;
+pub(super) mod palette;
 pub(super) mod pin_duration;
 pub(super) mod poll_vote;
 pub(super) mod profile;
