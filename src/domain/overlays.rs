@@ -68,6 +68,44 @@ pub struct SettingsOverlayState {
     pub mouse_snapshot: bool,
 }
 
+/// State for the sidebar type-to-filter overlay (`/_`).
+#[derive(Default)]
+pub struct SidebarFilterState {
+    /// Current filter text.
+    pub query: String,
+    /// Conversation IDs matching the filter.
+    pub filtered: Vec<String>,
+}
+
+/// One selectable row in the command palette (#614).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PaletteItem {
+    /// A slash command; `args` is its usage hint (empty = runs immediately
+    /// on select, non-empty = prefills the composer).
+    Command {
+        name: &'static str,
+        args: &'static str,
+        description: &'static str,
+    },
+    /// Jump to a conversation.
+    Conversation {
+        id: String,
+        name: String,
+        is_group: bool,
+    },
+}
+
+/// State for the fuzzy command palette overlay (#614).
+#[derive(Default)]
+pub struct PaletteState {
+    /// Type-to-filter query.
+    pub query: String,
+    /// Cursor position in the filtered list.
+    pub index: usize,
+    /// Filtered items, best match first.
+    pub filtered: Vec<PaletteItem>,
+}
+
 /// State for the contacts list overlay.
 #[derive(Default)]
 pub struct ContactsOverlayState {

@@ -26,10 +26,10 @@ pub(super) fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     // including archived ones). In normal view, hide stale conversations
     // (empty groups, unresolvable contacts) and archived conversations (#611).
     let display_order: Vec<String> = if app.is_overlay(OverlayKind::SidebarFilter) {
-        if app.sidebar_filter.is_empty() {
+        if app.sidebar_filter.query.is_empty() {
             app.store.conversation_order.clone()
         } else {
-            app.sidebar_filtered.clone()
+            app.sidebar_filter.filtered.clone()
         }
     } else {
         app.store
@@ -150,10 +150,10 @@ pub(super) fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         Borders::RIGHT
     };
     let title = if app.is_overlay(OverlayKind::SidebarFilter) {
-        if app.sidebar_filter.is_empty() {
+        if app.sidebar_filter.query.is_empty() {
             " /_ ".to_string()
         } else {
-            format!(" /{} ", app.sidebar_filter)
+            format!(" /{} ", app.sidebar_filter.query)
         }
     } else {
         " Chats ".to_string()

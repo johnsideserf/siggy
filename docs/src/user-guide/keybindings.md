@@ -65,11 +65,13 @@ Arrays are supported for binding multiple keys to the same action.
 
 ### Command actions
 
-Five commands are also exposed as bindable actions, so you can open overlays
+Six commands are also exposed as bindable actions, so you can open overlays
 directly from a key instead of typing the slash command: `open_contacts`,
-`open_settings`, `open_help`, `toggle_sidebar`, and `attach`. They are
-unbound by default (so they never conflict with profile defaults); bind them
-like any other action:
+`open_settings`, `open_help`, `toggle_sidebar`, `attach`, and
+`command_palette`. The palette is bound to `Ctrl+P` in the Default and
+Minimal profiles (unbound in Emacs, where `Ctrl+P` is line-up); the others
+are unbound by default so they never conflict with profile defaults. Bind
+them like any other action:
 
 ```toml
 [global]
@@ -94,6 +96,7 @@ The tables below show the Default profile bindings.
 | Key | Action |
 |---|---|
 | `Ctrl+C` | Quit |
+| `Ctrl+P` | Command palette (fuzzy finder over conversations and commands) |
 | `Tab` / `Shift+Tab` | Next / previous conversation |
 | `PgUp` / `PgDn` | Scroll messages (5 lines) |
 | `Ctrl+Left` / `Ctrl+Right` | Resize sidebar |

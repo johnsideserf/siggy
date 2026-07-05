@@ -131,6 +131,45 @@ pub fn selection_style(bg_selected: Color, fg: Color) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// Score `haystack` against a fuzzy `needle` (case-insensitive subsequence
+/// match, greedy left-to-right). Returns `None` when the needle is not a
+/// subsequence of the haystack; higher scores are better. Scoring favors
+/// consecutive runs, matches at word starts, and matches that begin early.
+/// An empty needle matches everything with score 0. Used by the command
+/// palette (#614).
+pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i64> {
+    if needle.trim().is_empty() {
+        return Some(0);
+    }
+    let hay: Vec<char> = haystack.to_lowercase().chars().collect();
+    let mut score: i64 = 0;
+    let mut hi = 0usize;
+    let mut prev_match: Option<usize> = None;
+    let mut first_match: Option<usize> = None;
+    for nc in needle.to_lowercase().chars().filter(|c| !c.is_whitespace()) {
+        while hi < hay.len() && hay[hi] != nc {
+            hi += 1;
+        }
+        if hi >= hay.len() {
+            return None;
+        }
+        score += 1;
+        if prev_match == Some(hi.wrapping_sub(1)) && hi > 0 {
+            score += 3; // consecutive-run bonus
+        }
+        if hi == 0 || !hay[hi - 1].is_alphanumeric() {
+            score += 2; // word-start bonus
+        }
+        first_match.get_or_insert(hi);
+        prev_match = Some(hi);
+        hi += 1;
+    }
+    // Prefer matches that start early and shorter haystacks overall.
+    score -= (first_match.unwrap_or(0) as i64).min(8);
+    score -= (hay.len() as i64) / 16;
+    Some(score)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +205,30 @@ mod tests {
         assert_eq!(
             classify_list_key(KeyCode::Enter, false),
             ListKeyAction::Select
+        );
+    }
+
+    #[test]
+    fn fuzzy_score_subsequence_and_ordering() {
+        // Non-subsequence rejects; subsequence matches.
+        assert_eq!(fuzzy_score("xyz", "contacts"), None);
+        assert!(fuzzy_score("cts", "contacts").is_some());
+        // Case-insensitive; empty needle matches everything.
+        assert!(fuzzy_score("ALI", "Alice").is_some());
+        assert_eq!(fuzzy_score("", "anything"), Some(0));
+        assert_eq!(fuzzy_score("   ", "anything"), Some(0));
+
+        // Prefix beats scattered subsequence.
+        assert!(
+            fuzzy_score("con", "/contacts").unwrap()
+                > fuzzy_score("con", "welcome once more").unwrap()
+        );
+        // Word-start match beats mid-word match.
+        assert!(fuzzy_score("al", "Alice").unwrap() > fuzzy_score("al", "Natalie").unwrap());
+        // Consecutive beats gapped.
+        assert!(
+            fuzzy_score("arch", "/archive").unwrap()
+                > fuzzy_score("arch", "a routine chore here").unwrap()
         );
     }
 

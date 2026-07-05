@@ -113,6 +113,23 @@ and typing indicators.
 The sidebar auto-hides on narrow terminals (less than 60 columns). Use
 `Ctrl+Left` / `Ctrl+Right` to resize it, or `/sidebar` to toggle it.
 
+## Command palette
+
+Press `Ctrl+P` to open a fuzzy finder over everything: conversations and
+slash commands in one list. Type to filter (fuzzy subsequence matching, so
+`arc` finds `/archive` and `jke` finds `Jake`), navigate with `Up`/`Down`,
+and press Enter to:
+
+- **jump to a conversation**, or
+- **run a command** -- argument-less commands (like `/help` or `/settings`)
+  execute immediately; commands that take arguments (like `/join` or
+  `/export`) prefill the composer so you can finish typing them.
+
+With an empty query, your conversations are listed first (in sidebar order)
+followed by all commands. `Ctrl+P` is bound in the Default and Minimal
+keybinding profiles; in Emacs it is left unbound (`Ctrl+P` is line-up there)
+but can be bound via `command_palette` in a keybindings override.
+
 ## Sidebar filter
 
 Press `s` in Normal mode to activate the sidebar filter. Type to narrow
