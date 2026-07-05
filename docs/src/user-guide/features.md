@@ -217,6 +217,26 @@ Signal formatting is rendered in the chat area:
 
 Styles compose correctly with @mentions and link highlighting.
 
+### Sending formatted text
+
+Wrap text in markers as you type and siggy converts them to Signal style
+ranges on send (the markers are stripped from the delivered message):
+
+| Marker | Style |
+|--------|-------|
+| `*bold*` | Bold |
+| `_italic_` | Italic |
+| `~strikethrough~` | Strikethrough |
+| `` `monospace` `` | Monospace |
+| `\|\|spoiler\|\|` | Spoiler |
+
+Markers only take effect when they wrap text directly (no spaces inside) and
+sit on word boundaries, so `snake_case`, `2 * 3`, and URLs containing
+underscores are sent unchanged. A marker pair cannot span multiple lines.
+Unmatched markers are sent literally. Formatting also applies when editing a
+message, but note that editing re-opens the plain text without markers, so
+re-add them if you want the edit to stay formatted.
+
 ## Sticker messages
 
 Incoming stickers display as `[Sticker: emoji]` in the chat area (e.g.

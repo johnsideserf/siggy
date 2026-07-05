@@ -509,6 +509,20 @@ pub enum StyleType {
     Spoiler,
 }
 
+impl StyleType {
+    /// The style name signal-cli uses in `textStyle` range strings
+    /// ("start:length:STYLE"), the inverse of `parse_text_styles`.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            StyleType::Bold => "BOLD",
+            StyleType::Italic => "ITALIC",
+            StyleType::Strikethrough => "STRIKETHROUGH",
+            StyleType::Monospace => "MONOSPACE",
+            StyleType::Spoiler => "SPOILER",
+        }
+    }
+}
+
 /// Contact info from signal-cli
 #[derive(Debug, Clone)]
 pub struct Contact {

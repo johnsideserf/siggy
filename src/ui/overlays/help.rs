@@ -153,11 +153,17 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         (dk(KeyAction::StartSearch), "Start command input"),
     ];
 
+    let formatting: [(&str, &str); 2] = [
+        ("*b* _i_ ~s~ `m`", "Bold / italic / strike / mono"),
+        ("||text||", "Spoiler"),
+    ];
+
     // Calculate popup size
     let key_col_width = 20;
     let desc_col_width = 28;
     let pref_width = (key_col_width + desc_col_width + 6) as u16;
-    let content_lines = commands.len() + shortcuts.len() + vim.len() + cli.len() + 7;
+    let content_lines =
+        commands.len() + shortcuts.len() + formatting.len() + vim.len() + cli.len() + 9;
     let pref_height = content_lines as u16 + 2;
 
     let (popup_area, block) = centered_popup(frame, area, pref_width, pref_height, " Help ", theme);
@@ -188,6 +194,12 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled("  Shortcuts", header_style)));
     for (key, desc) in &shortcuts {
+        push_row(&mut lines, key, desc);
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  Formatting", header_style)));
+    for &(key, desc) in &formatting {
         push_row(&mut lines, key, desc);
     }
 

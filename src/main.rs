@@ -8,6 +8,7 @@
 mod app;
 mod audio;
 mod autocomplete;
+mod compose;
 mod config;
 mod conversation_store;
 mod db;
@@ -108,7 +109,7 @@ async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Resul
     let mut client = SignalClient::spawn(config).await?;
     let is_group = !recipient.starts_with('+');
     let rpc_id = client
-        .send_message(recipient, body, is_group, &[], &[], None)
+        .send_message(recipient, body, is_group, &[], &[], &[], None)
         .await?;
 
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
@@ -1089,6 +1090,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             is_group,
             local_ts_ms,
             mentions,
+            text_styles,
             attachment,
             quote_timestamp,
             quote_author,
@@ -1106,6 +1108,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                     &body,
                     is_group,
                     &mentions,
+                    &text_styles,
                     &att_refs,
                     quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str())),
                 )
@@ -1176,6 +1179,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             edit_timestamp,
             local_ts_ms,
             mentions,
+            text_styles,
             quote_timestamp,
             quote_author,
             quote_body,
@@ -1191,6 +1195,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                     is_group,
                     edit_timestamp,
                     &mentions,
+                    &text_styles,
                     quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str())),
                 )
                 .await

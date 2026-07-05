@@ -15,7 +15,7 @@ use crate::domain::EmojiPickerSource;
 use crate::image_render;
 use crate::input::{self, InputAction};
 use crate::mute::MuteState;
-use crate::signal::types::{IdentityInfo, Mention, MessageStatus, PollData, PollOption};
+use crate::signal::types::{IdentityInfo, Mention, MessageStatus, PollData, PollOption, StyleType};
 
 /// Handle a line of user input; returns Some(SendRequest) if a message
 /// must be sent to signal-cli.
@@ -206,8 +206,17 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         .map(|c| c.is_group)
         .unwrap_or(false);
 
+    let display_markup = crate::compose::parse_markup(&text);
     let (display_body, outgoing_image_lines, outgoing_image_path) =
-        build_outgoing_attachment_body(app, &text, attachment.as_deref());
+        build_outgoing_attachment_body(app, &display_markup.body, attachment.as_deref());
+    // The stripped text is a suffix of display_body (an attachment prefix may
+    // precede it), so display ranges shift by the prefix length.
+    let prefix_len = display_body.len() - display_markup.body.len();
+    let style_ranges: Vec<(usize, usize, StyleType)> = display_markup
+        .byte_ranges
+        .iter()
+        .map(|&(s, e, st)| (s + prefix_len, e + prefix_len, st))
+        .collect();
 
     let mut mention_ranges = Vec::new();
     for (name, _uuid) in &app.autocomplete.pending_mentions {
@@ -217,7 +226,7 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         }
     }
 
-    let (wire_body, wire_mentions) = app.prepare_outgoing_mentions(&text);
+    let wire = prepare_wire_text(app, &text);
     app.autocomplete.pending_mentions.clear();
 
     let now = Utc::now();
@@ -243,13 +252,14 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         timestamp_ms: local_ts_ms,
         reactions: Vec::new(),
         mention_ranges,
-        style_ranges: Vec::new(),
-        body_raw: if wire_mentions.is_empty() {
+        style_ranges,
+        body_raw: if wire.mentions.is_empty() {
             None
         } else {
-            Some(wire_body.clone())
+            Some(wire.body.clone())
         },
-        mentions: wire_mentions
+        mentions: wire
+            .mentions
             .iter()
             .map(|(start, uuid)| Mention {
                 start: *start,
@@ -285,15 +295,46 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
     app.reply_target = None;
     Some(SendRequest::Message {
         recipient: conv_id,
-        body: wire_body,
+        body: wire.body,
         is_group,
         local_ts_ms,
-        mentions: wire_mentions,
+        mentions: wire.mentions,
+        text_styles: wire.styles,
         attachment,
         quote_timestamp,
         quote_author,
         quote_body,
     })
+}
+
+/// The wire form of composer text: mention placeholders substituted, style
+/// markers stripped, and all offsets in wire-body coordinates.
+struct WireText {
+    body: String,
+    /// Mention (UTF-16 offset, uuid) pairs.
+    mentions: Vec<(usize, String)>,
+    /// UTF-16 (start, length, style) ranges.
+    styles: Vec<(usize, usize, StyleType)>,
+}
+
+/// Build the wire form of composer text. Mentions are substituted first, then
+/// markup is parsed on the substituted text; the mention offsets shift left by
+/// one UTF-16 unit per marker char removed before them (all markers are ASCII).
+fn prepare_wire_text(app: &App, text: &str) -> WireText {
+    let (marked_body, marked_mentions) = app.prepare_outgoing_mentions(text);
+    let markup = crate::compose::parse_markup(&marked_body);
+    let mentions = marked_mentions
+        .into_iter()
+        .map(|(off, uuid)| {
+            let shift = markup.removed_utf16.iter().filter(|&&r| r < off).count();
+            (off - shift, uuid)
+        })
+        .collect();
+    WireText {
+        body: markup.body,
+        mentions,
+        styles: markup.utf16_ranges,
+    }
 }
 
 fn try_send_edit(
@@ -314,29 +355,33 @@ fn try_send_edit(
         .and_then(|msg| msg.quote.as_ref())
         .map(|q| (q.timestamp_ms, q.author_id.clone(), q.body.clone()));
 
+    let display_markup = crate::compose::parse_markup(text);
     let conv = app.store.conversations.get_mut(&edit_conv_id)?;
     if let Some(idx) = conv
         .find_msg_idx(edit_ts)
         .filter(|&idx| conv.messages[idx].is_outgoing())
     {
-        conv.messages[idx].body = text.to_string();
+        conv.messages[idx].body = display_markup.body.clone();
+        conv.messages[idx].style_ranges = display_markup.byte_ranges.clone();
         conv.messages[idx].is_edited = true;
     }
     let is_group = conv.is_group;
-    let (wire_body, wire_mentions) = app.prepare_outgoing_mentions(text);
+    let wire = prepare_wire_text(app, text);
     app.autocomplete.pending_mentions.clear();
     app.db_warn_visible(
-        app.db.update_message_body(&edit_conv_id, edit_ts, text),
+        app.db
+            .update_message_body(&edit_conv_id, edit_ts, &display_markup.body),
         "update_message_body",
     );
     let now = Utc::now();
     Some(SendRequest::Edit {
         recipient: edit_conv_id,
-        body: wire_body,
+        body: wire.body,
         is_group,
         edit_timestamp: edit_ts,
         local_ts_ms: now.timestamp_millis(),
-        mentions: wire_mentions,
+        mentions: wire.mentions,
+        text_styles: wire.styles,
         quote_timestamp: original_quote.as_ref().map(|(ts, _, _)| *ts),
         quote_author: original_quote.as_ref().map(|(_, a, _)| a.clone()),
         quote_body: original_quote.map(|(_, _, b)| b),
