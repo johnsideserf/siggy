@@ -493,9 +493,17 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(spans));
                 line_msg_idx.push(Some(msg_index));
             } else {
-                // Style URIs and @mentions
-                let (body_spans, hidden_url) =
-                    styled_uri_spans(&msg.body, &msg.mention_ranges, &msg.style_ranges, theme);
+                // Style URIs and @mentions. Spoilers unmask while the message
+                // is explicitly focused via J/K in Normal mode (#616).
+                let reveal_spoilers =
+                    app.mode == InputMode::Normal && app.scroll.focused_index == Some(msg_index);
+                let (body_spans, hidden_url) = styled_uri_spans(
+                    &msg.body,
+                    &msg.mention_ranges,
+                    &msg.style_ranges,
+                    theme,
+                    reveal_spoilers,
+                );
                 if let Some(url) = hidden_url {
                     // Collect display text for link_url_map lookup
                     let display_text: String =
