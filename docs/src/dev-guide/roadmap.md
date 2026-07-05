@@ -87,19 +87,20 @@
 - [x] Supervised signal-cli reconnect with backoff
 - [x] README translations (11 languages)
 - [x] Voice message playback (inline via a detected CLI player, `audio_player` override)
+- [x] Voice message duration + live playback progress (`o` toggles stop)
 - [x] Compose text formatting (`*bold*`, `_italic_`, `~strike~`, `` `mono` ``, `||spoiler||`)
 - [x] Spoiler reveal on focus (`J`/`K` unmasks while focused)
 - [x] Archive conversations + mark-as-unread (`/archive`, `/unread`)
+- [x] Fuzzy command palette (`Ctrl+P` over conversations and commands)
+- [x] Outgoing link previews (`/preview <url>`, explicit fetch only)
+- [x] Inline sticker rendering (cached packs via the image pipeline)
+- [x] Sixel image tuning (sizing config, palette/dithering options, guard row) -- thanks @justinledwards
 
 ## Future
 
 Tracked in GitHub issues:
 
-- [Outgoing link previews (#267)](https://github.com/johnsideserf/siggy/issues/267) -- generate preview cards for links you send (incoming previews already render)
-- [Render sticker images inline (#610)](https://github.com/johnsideserf/siggy/issues/610)
 - [Signal username support (#612)](https://github.com/johnsideserf/siggy/issues/612)
-- [Fuzzy command palette (#614)](https://github.com/johnsideserf/siggy/issues/614)
 - [Scriptable message triggers / auto-responder (#615)](https://github.com/johnsideserf/siggy/issues/615)
-- [Voice message duration + progress indicator (#618)](https://github.com/johnsideserf/siggy/issues/618)
 
 Have an idea? [Open an issue](https://github.com/johnsideserf/siggy/issues).

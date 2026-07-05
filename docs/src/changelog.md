@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.12.0
+
+The power-user release: a fuzzy command palette, sender-generated link
+previews, voice playback progress, inline stickers, and the long-awaited
+Sixel tuning contribution.
+
+### New features
+
+- **Command palette** -- `Ctrl+P` opens a fuzzy finder over conversations
+  and slash commands in one list. Type to filter (fuzzy subsequence
+  matching, so names containing `j`/`k` stay typeable; navigate with
+  Up/Down), Enter jumps to the conversation, runs argument-less commands
+  immediately, or prefills the composer for commands that take arguments.
+  Bound in the Default and Minimal profiles; bindable as `command_palette`
+  in Emacs, where `Ctrl+P` stays line-up (closes #614).
+- **Outgoing link previews** -- `/preview <url>` fetches the page in the
+  background, extracts Open Graph metadata (title, description, thumbnail),
+  and attaches the preview card to your next message; `/preview` with no
+  argument discards it. Previews are never fetched automatically while
+  typing: fetching a URL reveals your IP to that site, so it only happens
+  on the explicit command (closes #267).
+- **Voice playback progress** -- voice labels show the note's length
+  (`[voice ▶ name 0:12]`, parsed from the Ogg Opus container with no
+  decoder dependency), the status bar ticks live progress while playing,
+  pressing `o` on the playing message stops it, and quitting siggy kills
+  the player (closes #618).
+- **Inline stickers** -- stickers render as inline images through the
+  regular image pipeline when signal-cli has the pack cached locally,
+  falling back to the `[Sticker: emoji]` placeholder otherwise. Wire-
+  controlled pack ids are hex-validated as a path-traversal guard
+  (closes #610).
+- **Sixel image tuning** -- image sizing config (`image_max_width`,
+  `preview_image_max_width`, `image_max_height`) with a no-upscale clamp
+  against the actual pane width, plus Sixel encode options
+  (`sixel_max_colors`, `sixel_diffusion`) and browser-terminal flicker
+  improvements. A blank guard row below each Sixel image keeps sub-row
+  pixel overflow from bleeding into the next text line. Thanks to
+  [@justinledwards](https://github.com/justinledwards) for this
+  contribution (closes #520).
+
+### Internal
+
+- New dependency: `ureq` (minimal HTTP client) for `/preview` fetches.
+- New shared fuzzy scorer in `list_overlay`; the loose sidebar-filter
+  fields moved into a `domain` sub-struct.
+- +100 tests since v1.11.0 (1,020 total).
+
+---
+
 ## v1.11.0
 
 The messaging-parity release: voice messages play inline, you can compose
