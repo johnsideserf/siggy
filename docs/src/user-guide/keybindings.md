@@ -63,6 +63,22 @@ insert_newline = ["shift+enter", "alt+enter"]
 
 Arrays are supported for binding multiple keys to the same action.
 
+### Command actions
+
+Five commands are also exposed as bindable actions, so you can open overlays
+directly from a key instead of typing the slash command: `open_contacts`,
+`open_settings`, `open_help`, `toggle_sidebar`, and `attach`. They are
+unbound by default (so they never conflict with profile defaults); bind them
+like any other action:
+
+```toml
+[global]
+open_contacts = "ctrl+b"
+open_help = "f1"
+```
+
+They also appear in the `/keybindings` overlay for in-app rebinding.
+
 ### In-app rebinding
 
 Open the keybindings overlay with `/keybindings` (alias `/kb`). Navigate

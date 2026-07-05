@@ -67,25 +67,39 @@
 - [x] Multi-line message input (Alt+Enter / Shift+Enter for newlines)
 - [x] Message history pagination (scroll-up to load older messages)
 - [x] Configurable keybindings (profiles, in-app rebinding, TOML overrides)
-- [x] Export chat history (`/export` to a plain text file)
+- [x] Export chat history (`/export` to plain text, Markdown, or JSON)
 - [x] Sidebar filter (type-to-filter from Normal mode)
 - [x] Jump to quoted message (`Q` to jump, `Ctrl+O` to jump back)
 - [x] Delete conversations (`/delete` removes locally + declines message requests)
 - [x] Session lock + boss key (`Ctrl-L`, `/lock`, `/lock-reset`, `--reset-lock`)
 - [x] Native inline images inside tmux (DCS passthrough wrapping, `SIGGY_IMAGE_PROTOCOL` override) -- thanks @cultlead3r
+- [x] Sixel image protocol (Windows Terminal and other Sixel terminals)
+- [x] Open attachments and URLs from the action menu
+- [x] Multiple concurrent typing indicators per group
+- [x] Enhanced emoji shortcode coverage -- thanks @shwoop
+- [x] Custom themes (drop-in TOML files + shipped template)
+- [x] Auto-lock idle timer (`lock_timeout` config)
+- [x] Bindable command actions (`open_contacts`, `open_settings`, `open_help`, `toggle_sidebar`, `attach`)
+- [x] Non-interactive CLI for scripting (`--version`, `--check`, `--send`, `--list`, `--receive`)
+- [x] Claude Code skill for the siggy CLI
+- [x] Scheduled messages via the OS scheduler (documented pattern)
+- [x] Side-by-side accounts via `db_path` config override
+- [x] Supervised signal-cli reconnect with backoff
+- [x] README translations (11 languages)
+- [x] Voice message playback (inline via a detected CLI player, `audio_player` override)
+- [x] Compose text formatting (`*bold*`, `_italic_`, `~strike~`, `` `mono` ``, `||spoiler||`)
+- [x] Spoiler reveal on focus (`J`/`K` unmasks while focused)
+- [x] Archive conversations + mark-as-unread (`/archive`, `/unread`)
 
 ## Future
 
 Tracked in GitHub issues:
 
-- [Auto-lock idle timer (#438)](https://github.com/johnsideserf/siggy/issues/438) -- round out the session-lock feature with a configurable idle timeout
-- [Multi-account switching (#260)](https://github.com/johnsideserf/siggy/issues/260)
-- [Voice message playback (#199)](https://github.com/johnsideserf/siggy/issues/199)
-- [Scheduled messages via OS scheduler (#259)](https://github.com/johnsideserf/siggy/issues/259)
-- [Non-interactive CLI mode for scripting (#257)](https://github.com/johnsideserf/siggy/issues/257)
-- [Claude Code skill for siggy CLI (#258)](https://github.com/johnsideserf/siggy/issues/258)
-- [Bridge keybinding system to support command actions (#202)](https://github.com/johnsideserf/siggy/issues/202)
-- [Link Previews enhancement (#267)](https://github.com/johnsideserf/siggy/issues/267)
-- [Translations of README and docs site (#353)](https://github.com/johnsideserf/siggy/issues/353)
+- [Outgoing link previews (#267)](https://github.com/johnsideserf/siggy/issues/267) -- generate preview cards for links you send (incoming previews already render)
+- [Render sticker images inline (#610)](https://github.com/johnsideserf/siggy/issues/610)
+- [Signal username support (#612)](https://github.com/johnsideserf/siggy/issues/612)
+- [Fuzzy command palette (#614)](https://github.com/johnsideserf/siggy/issues/614)
+- [Scriptable message triggers / auto-responder (#615)](https://github.com/johnsideserf/siggy/issues/615)
+- [Voice message duration + progress indicator (#618)](https://github.com/johnsideserf/siggy/issues/618)
 
 Have an idea? [Open an issue](https://github.com/johnsideserf/siggy/issues).

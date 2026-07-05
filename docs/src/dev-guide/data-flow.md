@@ -32,7 +32,7 @@ sequenceDiagram
     participant SR as stdout reader
     participant A as App
     participant DB as SQLite
-    participant UI as ui.rs
+    participant UI as ui/
 
     CLI->>SR: JSON-RPC notification<br/>(method: "receive")
     SR->>A: SignalEvent::MessageReceived<br/>(mpsc channel)

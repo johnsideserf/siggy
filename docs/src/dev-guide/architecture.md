@@ -10,8 +10,8 @@ It is built on a Tokio async runtime with Ratatui for rendering.
 graph TB
     subgraph main["Main Thread"]
         KB["Keyboard Input<br/><i>crossterm poll 50ms</i>"]
-        APP["App State<br/><i>app.rs</i>"]
-        UI["Ratatui Renderer<br/><i>ui.rs</i>"]
+        APP["App State<br/><i>app.rs + domain/</i>"]
+        UI["Ratatui Renderer<br/><i>ui/</i>"]
         DB["SQLite<br/><i>db.rs · WAL mode</i>"]
     end
 
@@ -23,7 +23,7 @@ graph TB
     CLI["signal-cli<br/><i>child process</i>"]
 
     KB -- "InputAction" --> APP
-    APP -- "&App" --> UI
+    APP -- "&mut App" --> UI
     APP -- "persist" --> DB
     DB -- "load" --> APP
     APP -- "JsonRpcRequest<br/>(mpsc)" --> SW
@@ -84,16 +84,21 @@ sequenceDiagram
 
 | Crate | Purpose |
 |---|---|
-| `ratatui` 0.29 | Terminal UI framework |
-| `crossterm` 0.28 | Cross-platform terminal I/O |
+| `ratatui` 0.30 | Terminal UI framework |
+| `crossterm` 0.29 | Cross-platform terminal I/O |
 | `tokio` 1.x | Async runtime |
 | `serde` / `serde_json` | JSON serialization for signal-cli RPC |
-| `rusqlite` 0.32 | SQLite database (bundled) |
+| `rusqlite` 0.40 | SQLite database (bundled) |
 | `chrono` 0.4 | Timestamp handling |
 | `qrcode` 0.14 | QR code generation for device linking |
 | `image` 0.25 | Image decoding for inline previews |
-| `arboard` 3.x | Clipboard access for /paste |
+| `icy_sixel` 0.5 | Sixel image encoding |
+| `arboard` 3.x | Clipboard access for /paste (with Wayland data-control) |
+| `argon2` 0.5 | Session-lock passphrase hashing |
+| `notify-rust` 4.x | Desktop notifications |
+| `emojis` 0.9 | Emoji lookup and shortcodes |
+| `open` 5.x | Open attachments/URLs in the OS default app |
 | `anyhow` 1.x | Error handling |
-| `toml` 0.8 | Config file parsing |
+| `toml` 1.x | Config file parsing |
 | `dirs` 6.x | Platform-specific directory paths |
 | `uuid` 1.x | RPC request ID generation |

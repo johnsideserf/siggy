@@ -1,5 +1,122 @@
 # Changelog
 
+## v1.10.0
+
+The automation-and-hardening release: a non-interactive CLI for scripting,
+supervised signal-cli reconnect, auto-lock, custom theme files, and the
+completion of the deep-review sweep (#492-#504) that finished moving every
+key handler out of `app.rs`.
+
+### New features
+
+- **Non-interactive CLI** -- `--version`, `--check` (setup health report),
+  `--send` (one-shot send), `--list` (conversations), and `--receive`
+  (streaming JSON) run without the TUI for scripts and automation (closes
+  #257). Companion docs cover scheduling messages via the OS scheduler
+  (closes #259), and the repo ships a Claude Code skill for the CLI
+  (closes #258).
+- **Supervised signal-cli reconnect** -- if the signal-cli child exits,
+  siggy now emits an explicit Disconnected state, fails in-flight sends
+  instead of leaving them stuck in Sending, and respawns the process with
+  backoff (closes #497).
+- **Auto-lock idle timer** -- new `lock_timeout` config locks the session
+  after N minutes of keyboard inactivity, rounding out the v1.8.0 session
+  lock (closes #438).
+- **Custom theme template** -- drop a `*.toml` in the themes directory and
+  it appears in `/theme`; the repo ships a fully-commented
+  `themes/custom-theme-template.toml` starting point (closes #476).
+- **Bindable command actions** -- `open_contacts`, `open_settings`,
+  `open_help`, `toggle_sidebar`, and `attach` are exposed as keybinding
+  actions (unbound by default) so overlay opens can be driven from custom
+  keys (closes #202).
+- **Side-by-side accounts** -- new `db_path` config override lets a second
+  config file point at its own message database (closes #260).
+- **Clearer signal-cli failure hints** -- outdated or failing signal-cli
+  now produces actionable errors, device-link failures surface signal-cli's
+  stderr, and a 409 "device limit / relink conflict" gets step-by-step
+  recovery guidance.
+
+### Bug fixes
+
+- **Control-character sanitization** -- exports, the debug log, and desktop
+  notifications strip terminal escape sequences from remote-controlled text
+  (message bodies, names) so a malicious message cannot inject escapes.
+- **Startup spinner hang** -- the "Loading identities..." phase can no
+  longer spin forever; a 20s watchdog surfaces the app with a warning
+  instead. The splash-screen composer hint no longer suggests messaging
+  before a conversation is open.
+- **CLI lock contention** -- `--send`/`--receive` report "another instance
+  is using this account" instead of timing out when the TUI is running.
+- **Black-square image diagnosis** -- transparency mapping in the halfblock
+  renderer is pinned by tests and `--debug` logs each image's transparency
+  ratio to make the favicon black-square report (#443) diagnosable.
+
+### Performance
+
+- Message-pane line heights cached across frames, per-tick image viewport
+  scans gated behind a signature, image encode caches bounded, off-window
+  `image_lines` evicted, message search debounced, and composer input
+  history capped (#490, #492).
+
+### Refactors and internal
+
+- Every remaining overlay, mode, and global key handler moved from `app.rs`
+  into `handlers/keys.rs`, and the inline test module split into
+  `app_tests.rs` (#494). `domain/` made a leaf layer (#495). The
+  `ui::draw()` mutation contract documented (#496).
+- New test coverage on the setup-wizard seams, the client stdout reader, DB
+  migration upgrade paths on populated databases, scrolled-state render
+  snapshots, and two new fuzz targets (cursor helpers, theme TOML) (#503).
+
+---
+
+## v1.9.1
+
+Patch release: `install.sh` now locates the signal-cli binary in the native
+tarball root (fixes fresh installs), and the release workflow supports manual
+dispatch with a tag input.
+
+---
+
+## v1.9.0
+
+A correctness-and-integrity release driven by a structured review sweep, plus
+README translations.
+
+### Bug fixes
+
+- **Send-status integrity** -- failed sends can no longer display as sent;
+  status transitions are guarded to be monotonic.
+- **Author verification** -- incoming edits and remote-deletes are applied
+  only when the sender is the original author.
+- **Receipt and read-marker integrity** -- a cluster of fixes around receipt
+  matching and read markers.
+- **Poll routing and buffering** -- poll events route to the correct
+  conversation and buffer correctly during sync.
+- **Scrollback pagination** -- stopped a pagination runaway and made older
+  history reachable again.
+- **Message ordering** -- messages re-sort after the server-timestamp
+  rewrite on send confirmation.
+- **Attachment-open vetting** -- `o` (open attachment) validates the target
+  path before shell-opening it.
+- **Theme parsing** -- multibyte hex colors in theme files are rejected
+  instead of panicking.
+- **Composer state** -- edit/reply targets clear when switching
+  conversations.
+- **Expiry sweep** -- positional indices shift correctly when disappearing
+  messages are removed.
+
+### Performance
+
+- SQLite `synchronous=NORMAL` plus batched drain-loop transactions
+  eliminate per-message fsyncs during sync bursts.
+
+### Docs
+
+- README translated into 11 languages under `translations/`.
+
+---
+
 ## v1.8.0
 
 A maintenance-and-cleanup release: one big new feature (session lock + boss key), one notable contributor PR (native inline images inside tmux), substantial idle-CPU and image-decode fixes, plus a deep tech-debt sweep across the codebase.
@@ -110,6 +227,91 @@ Thanks to:
   after the original incident.
 - [@shwoop](https://github.com/shwoop) for the passphrase-recovery review
   feedback on #437 that led directly to the `--reset-lock` flag.
+
+---
+
+## v1.7.1
+
+Patch release: the setup wizard verifies the signal-cli path is actually
+spawnable before advancing, instead of failing later with a confusing error.
+
+---
+
+## v1.7.0
+
+### New features
+
+- **Settings categories** -- the settings overlay groups toggles under
+  section headers instead of one flat list.
+- **Newline rendering** -- multi-line message bodies render their line
+  breaks (closes #318), and Shift+Enter newline input is documented
+  (closes #334).
+
+### Bug fixes
+
+- **UUID-only contacts** -- messages route correctly to contacts that have
+  no phone number visible (closes #315).
+- **@mention re-resolution** -- mentions re-resolve when the contact/group
+  list arrives after the message (closes #283).
+- **Viewport stability** -- the message viewport no longer jumps around
+  during the initial sync burst.
+- **Native image placement** -- aligned with Paragraph's actual word wrap,
+  fixing images drawn at the wrong row.
+
+### Performance
+
+- PNG pre-encoding moved to a background thread for all native image
+  protocols.
+
+### Internal
+
+- `ConversationStore` extracted from the `App` god object -- thanks to
+  [@Dowsley](https://github.com/Dowsley) for this contribution.
+- Rust toolchain pinned (1.95.0) and `cargo fmt` enforced in CI.
+
+---
+
+## v1.6.0
+
+### New features
+
+- **Sixel image protocol** -- native inline images on Windows Terminal and
+  other Sixel-capable terminals (closes #272).
+- **Open attachments and URLs from the action menu** -- `o` on a focused
+  message opens the attachment or link (closes #188).
+- **Multiple concurrent typing indicators** -- group chats show every
+  member currently typing, not just one (closes #218).
+- **Enhanced emoji support** -- broader shortcode coverage -- thanks to
+  [@shwoop](https://github.com/shwoop).
+- **Sidebar width persistence** -- the sidebar width setting survives
+  restarts.
+- **Stale conversation filtering** -- empty groups and unresolvable
+  contacts are hidden from the default sidebar view.
+
+### Bug fixes
+
+- **Wayland clipboard** -- enabled the data-control backend so copy works
+  on Wayland without a focused window -- thanks to
+  [@clinta](https://github.com/clinta).
+- **Vim normal-mode keybindings** -- a cluster of navigation fixes
+  (closes #288, #289, #290, #291).
+- **Redundant redraws** -- mouse-move events no longer trigger full
+  redraws (closes #281).
+- **JVM spawn** -- eliminated a redundant signal-cli JVM spawn on startup.
+- **Native image caches** -- preserved across conversation switches.
+
+### Internal
+
+- Began extracting domain state structs from the `App` god object; shared
+  list-overlay helpers introduced.
+
+---
+
+## v1.5.1
+
+Patch release: fixed the signal-cli native archive naming in `install.sh`
+(fresh installs failed to download signal-cli), plus major dependency bumps
+(ratatui 0.30, crossterm 0.29, rusqlite 0.38, toml 1.0).
 
 ---
 
