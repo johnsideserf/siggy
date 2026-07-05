@@ -3,6 +3,50 @@
 
 use crate::signal::types::*;
 
+/// Relative path of a sticker inside signal-cli's data dir, or `None` when
+/// the pack id is not plain lowercase hex. Pack ids come off the wire, so
+/// the hex check doubles as a path-traversal guard (#610).
+pub(super) fn sticker_relative_path(pack_id: &str, sticker_id: i64) -> Option<std::path::PathBuf> {
+    if pack_id.is_empty()
+        || sticker_id < 0
+        || !pack_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return None;
+    }
+    Some(
+        std::path::PathBuf::from("signal-cli")
+            .join("stickers")
+            .join(pack_id)
+            .join(sticker_id.to_string()),
+    )
+}
+
+/// Absolute path of a locally cached sticker file, or `None` when it is not
+/// on disk. signal-cli caches sticker packs as WebP files under
+/// `{data_dir}/signal-cli/stickers/<packId>/<stickerId>`; like
+/// `find_signal_cli_attachment`, both the platform-native data dir and the
+/// POSIX-style `~/.local/share` are checked (plus `XDG_DATA_HOME`).
+pub(super) fn sticker_local_path(pack_id: &str, sticker_id: i64) -> Option<String> {
+    let relative = sticker_relative_path(pack_id, sticker_id)?;
+    let mut bases = Vec::new();
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME").filter(|x| !x.is_empty()) {
+        bases.push(std::path::PathBuf::from(x));
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        bases.push(data_dir);
+    }
+    if let Some(home) = dirs::home_dir() {
+        bases.push(home.join(".local").join("share"));
+    }
+    bases
+        .into_iter()
+        .map(|base| base.join(&relative))
+        .find(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
 pub(super) fn parse_attachment(
     value: &serde_json::Value,
     download_dir: &std::path::Path,
@@ -283,4 +327,25 @@ pub(super) fn parse_text_styles(data: &serde_json::Value) -> Vec<TextStyle> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sticker_relative_path_builds_hex_paths_only() {
+        assert_eq!(
+            sticker_relative_path("3044281a51307306e5442f2e9070953a", 5),
+            Some(std::path::PathBuf::from(
+                "signal-cli/stickers/3044281a51307306e5442f2e9070953a/5"
+            ))
+        );
+        // Wire-controlled pack ids must not escape the stickers directory.
+        assert_eq!(sticker_relative_path("../../../etc", 0), None);
+        assert_eq!(sticker_relative_path("abc/def", 0), None);
+        assert_eq!(sticker_relative_path("ABCDEF", 0), None); // uppercase
+        assert_eq!(sticker_relative_path("", 0), None);
+        assert_eq!(sticker_relative_path("abcdef", -1), None);
+    }
 }

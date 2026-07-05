@@ -277,9 +277,11 @@ re-add them if you want the edit to stay formatted.
 
 ## Sticker messages
 
-Incoming stickers display as `[Sticker: emoji]` in the chat area (e.g.
-`[Sticker: 👍]`). If the sticker has no associated emoji, it shows as
-`[Sticker]`.
+Incoming stickers render as inline images (like photo attachments) when
+signal-cli has the sticker pack cached locally, using your configured
+`image_mode`. When the pack is not cached, they fall back to a
+`[Sticker: emoji]` placeholder (e.g. `[Sticker: 👍]`), or `[Sticker]` when
+the sticker has no associated emoji.
 
 ## View-once messages
 

@@ -186,13 +186,34 @@ fn parse_common_message_fields(
     let timestamp_ms = data.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
     let timestamp = DateTime::from_timestamp_millis(timestamp_ms).unwrap_or_default();
 
-    let sticker_body =
-        data.get("sticker").map(
-            |sticker| match sticker.get("emoji").and_then(|v| v.as_str()) {
-                Some(emoji) => format!("[Sticker: {}]", emoji),
-                None => "[Sticker]".to_string(),
-            },
-        );
+    // Stickers render as inline images when signal-cli has the pack cached
+    // locally (#610); otherwise fall back to the [Sticker: emoji] placeholder.
+    let sticker = data.get("sticker");
+    let sticker_emoji = sticker
+        .and_then(|s| s.get("emoji"))
+        .and_then(|v| v.as_str());
+    let sticker_attachment = sticker.and_then(|s| {
+        let pack_id = s.get("packId").and_then(|v| v.as_str())?;
+        let sticker_id = s.get("stickerId").and_then(|v| v.as_i64())?;
+        let local_path = super::helpers::sticker_local_path(pack_id, sticker_id)?;
+        Some(crate::signal::types::Attachment {
+            id: format!("sticker:{pack_id}:{sticker_id}"),
+            content_type: "image/webp".to_string(),
+            filename: Some(match sticker_emoji {
+                Some(emoji) => format!("sticker {emoji}"),
+                None => "sticker".to_string(),
+            }),
+            local_path: Some(local_path),
+        })
+    });
+    let sticker_body = if sticker_attachment.is_some() {
+        None
+    } else {
+        sticker.map(|_| match sticker_emoji {
+            Some(emoji) => format!("[Sticker: {emoji}]"),
+            None => "[Sticker]".to_string(),
+        })
+    };
 
     let mut body = data
         .get("message")
@@ -212,7 +233,7 @@ fn parse_common_message_fields(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let mut attachments = data
+    let mut attachments: Vec<crate::signal::types::Attachment> = data
         .get("attachments")
         .and_then(|v| v.as_array())
         .map(|arr| {
@@ -221,6 +242,10 @@ fn parse_common_message_fields(
                 .collect()
         })
         .unwrap_or_default();
+    // A locally cached sticker joins the attachments so the existing image
+    // pipeline (halfblock / native protocols) renders it (#610). Placed
+    // before the view-once check so ephemeral stickers stay suppressed.
+    attachments.extend(sticker_attachment);
 
     let mut previews = parse_link_previews(data, download_dir);
 
