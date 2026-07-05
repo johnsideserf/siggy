@@ -1630,7 +1630,8 @@ async fn run_app(
     app.notifications.clipboard_clear_seconds = config.clipboard_clear_seconds;
     app.image.image_mode = config.image_mode.unwrap_or_default();
     app.incognito = incognito;
-    app.download_dir = config.download_dir.clone();
+    app.media.download_dir = config.download_dir.clone();
+    app.media.audio_player = config.audio_player.clone();
     app.sidebar_width = config.sidebar_width.clamp(14, 40);
     if config.cell_pixel_width > 0 && config.cell_pixel_height > 0 {
         app.image.cell_px = (config.cell_pixel_width, config.cell_pixel_height);
