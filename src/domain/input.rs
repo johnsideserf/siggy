@@ -21,6 +21,8 @@ pub struct InputState {
     pub history_index: Option<usize>,
     /// Saves in-progress input when browsing history.
     pub history_draft: String,
+    /// `/quit` (or the quit key) pressed once; the next press confirms.
+    pub quit_confirm: bool,
 }
 
 impl InputState {

@@ -46,4 +46,7 @@ pub struct PendingState {
     pub typing_stop: Option<SendRequest>,
     /// Queued read receipts to dispatch: `(recipient_phone, timestamps)`.
     pub read_receipts: Vec<(String, Vec<i64>)>,
+    /// Auto-replies queued by message triggers (#615), drained by the main
+    /// loop into `dispatch_send` like any composer send.
+    pub trigger_sends: Vec<SendRequest>,
 }

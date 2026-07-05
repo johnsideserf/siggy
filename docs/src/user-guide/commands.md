@@ -16,6 +16,7 @@ All commands start with `/`. Type `/` in Insert mode to open the autocomplete po
 | `/preview` | | `[url]` | Fetch a link preview for your next message (no arg discards) |
 | `/archive` | | | Archive / unarchive current conversation |
 | `/unread` | | | Mark current conversation unread and close it |
+| `/triggers` | | | Reload message trigger rules from triggers.toml |
 | `/sidebar` | `/sb` | | Toggle sidebar visibility |
 | `/bell` | `/notify` | `[type]` | Toggle notifications (`direct`, `group`, or both) |
 | `/mute` | | | Mute/unmute current conversation |

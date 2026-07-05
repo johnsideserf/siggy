@@ -3429,6 +3429,62 @@ fn preview_command_validates_and_clears(mut app: App) {
 }
 
 #[rstest]
+fn trigger_reply_queues_send_and_echoes_locally(mut app: App) {
+    app.triggers = crate::trigger::TriggerEngine::from_toml_str(
+        r#"
+        [[trigger]]
+        match = "ping"
+        match_mode = "exact"
+        from = "+1"
+        reply = "pong"
+        "#,
+        0,
+    );
+
+    app.handle_signal_event(SignalEvent::MessageReceived(SignalMessage {
+        body: Some("ping".to_string()),
+        ..msg_from("+1")
+    }));
+
+    // The auto-reply is queued for the main loop's dispatch...
+    assert_eq!(app.pending.trigger_sends.len(), 1);
+    let SendRequest::Message {
+        recipient, body, ..
+    } = &app.pending.trigger_sends[0]
+    else {
+        panic!("expected a queued Message");
+    };
+    assert_eq!(recipient, "+1");
+    assert_eq!(body, "pong");
+    // ...and locally echoed as an outgoing message.
+    let last = app.store.conversations["+1"].messages.last().unwrap();
+    assert_eq!(last.body, "pong");
+    assert!(last.is_outgoing());
+
+    // Non-matching and repeat-within-cooldown messages queue nothing more.
+    app.handle_signal_event(SignalEvent::MessageReceived(SignalMessage {
+        body: Some("hello".to_string()),
+        ..msg_from("+1")
+    }));
+    app.handle_signal_event(SignalEvent::MessageReceived(SignalMessage {
+        body: Some("ping".to_string()),
+        ..msg_from("+1")
+    }));
+    assert_eq!(app.pending.trigger_sends.len(), 1);
+}
+
+#[rstest]
+fn trigger_engine_empty_by_default_in_app(mut app: App) {
+    // App::new never loads the user's triggers.toml (tests/demo isolation).
+    assert_eq!(app.triggers.rule_count(), 0);
+    app.handle_signal_event(SignalEvent::MessageReceived(SignalMessage {
+        body: Some("ping".to_string()),
+        ..msg_from("+1")
+    }));
+    assert!(app.pending.trigger_sends.is_empty());
+}
+
+#[rstest]
 fn palette_empty_query_lists_conversations_then_commands(mut app: App) {
     app.store
         .get_or_create_conversation("+1", "Alice", false, &app.db);

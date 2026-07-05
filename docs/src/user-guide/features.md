@@ -542,6 +542,46 @@ done
 > queries the signal-cli version (no account lock) and `--list` reads the cached
 > database.
 
+### Message triggers
+
+Rules in `triggers.toml` (next to `config.toml`) auto-respond to incoming
+messages: "on a message matching X from Y, reply Z and/or run a command".
+The same rules fire in two places: inside the TUI while you chat, and in a
+headless `siggy --watch` mode for always-on bots (remember: one signal-cli
+process per account, so `--watch` and the TUI cannot run simultaneously).
+
+```toml
+# Any run rule stays dormant without this explicit opt-in.
+allow_run = true
+
+[[trigger]]
+match = "ping"              # case-insensitive; also: match_mode = "exact" | "prefix"
+match_mode = "exact"
+from = "+15551234567"       # optional sender filter (recommended)
+reply = "pong"
+
+[[trigger]]
+match = "garage"
+conversation = "Home"       # conversation id or exact name
+run = ["C:/scripts/garage.ps1"]   # argv array - never a shell string
+rate_limit_secs = 60        # per rule per conversation (default 30)
+```
+
+Safety rails, because message bodies are controlled by whoever messages you:
+
+- `run` commands are spawned directly from the argv array (no shell), and
+  the message arrives as JSON on stdin - message content can never become
+  command arguments. `run` rules require the top-level `allow_run = true`.
+- Rules never fire on your own messages, nor on history replayed by the
+  initial sync (only messages newer than engine start).
+- Each rule is rate limited per conversation, so two auto-responders cannot
+  reply to each other forever.
+- Rules with no `from`/`conversation` filter load with a warning.
+
+In the TUI, `/triggers` reloads the file and reports the rule count;
+warnings go to the debug log. In `--watch` mode, each firing logs a
+tab-separated line to stdout.
+
 ### Scheduled messages
 
 There is no built-in scheduler; use your OS scheduler with `siggy --send`, which

@@ -22,7 +22,7 @@ pub(super) fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_
     let theme = &app.theme;
 
     // Override status bar with quit confirmation prompt
-    if app.quit_confirm {
+    if app.input.quit_confirm {
         let bar = Line::from(Span::styled(
             " Unsent message in buffer. Press quit again to confirm.",
             Style::default()

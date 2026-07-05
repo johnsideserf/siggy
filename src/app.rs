@@ -476,8 +476,9 @@ pub struct App {
     pub status_message: String,
     /// Whether the app should quit
     pub should_quit: bool,
-    /// Pending quit confirmation (unsent text in input buffer)
-    pub quit_confirm: bool,
+    /// Message trigger rules and cooldown state (#615). Empty in tests and
+    /// demo mode; loaded from triggers.toml at startup and by /triggers.
+    pub triggers: crate::trigger::TriggerEngine,
     /// Our own account number for identifying outgoing messages
     pub account: String,
     /// Resizable sidebar width (min 14, max 40)
@@ -2003,7 +2004,7 @@ impl App {
             scroll: ScrollState::default(),
             status_message: "connecting...".to_string(),
             should_quit: false,
-            quit_confirm: false,
+            triggers: crate::trigger::TriggerEngine::default(),
             account,
             sidebar_width: 22,
             sidebar_on_right: false,
