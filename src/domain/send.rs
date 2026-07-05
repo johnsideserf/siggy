@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use crate::signal::types::StyleType;
+use crate::signal::types::{LinkPreview, StyleType};
 
 /// A request from the UI to the main loop to send something.
 pub enum SendRequest {
@@ -21,6 +21,8 @@ pub enum SendRequest {
         /// UTF-16 (start, length, style) ranges for signal-cli's textStyle param.
         text_styles: Vec<(usize, usize, StyleType)>,
         attachment: Option<PathBuf>,
+        /// Sender-generated link preview from /preview (#267).
+        preview: Option<LinkPreview>,
         quote_timestamp: Option<i64>,
         quote_author: Option<String>,
         quote_body: Option<String>,

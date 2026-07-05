@@ -183,6 +183,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Mark the current conversation unread and close it",
     },
     CommandInfo {
+        name: "/preview",
+        alias: "",
+        args: "[url]",
+        description: "Fetch a link preview for your next message (no arg clears)",
+    },
+    CommandInfo {
         name: "/help",
         alias: "/h",
         args: "",
@@ -274,6 +280,8 @@ pub enum InputAction {
         format: ExportFormat,
         limit: Option<usize>,
     },
+    /// Fetch a link preview to attach to the next message (None clears it)
+    Preview(Option<String>),
     /// Toggle the archived flag on the current conversation
     Archive,
     /// Mark the current conversation unread and close it
@@ -369,6 +377,13 @@ pub fn parse_input(input: &str) -> InputAction {
         "/about" => InputAction::About,
         "/keybindings" | "/kb" => InputAction::Keybindings,
         "/export" => parse_export_args(&arg),
+        "/preview" => {
+            if arg.is_empty() {
+                InputAction::Preview(None)
+            } else {
+                InputAction::Preview(Some(arg))
+            }
+        }
         "/archive" => InputAction::Archive,
         "/unread" => InputAction::MarkUnread,
         "/help" | "/h" => InputAction::Help,

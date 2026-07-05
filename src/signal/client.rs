@@ -193,6 +193,7 @@ impl SignalClient {
         mentions: &[(usize, String)],
         text_styles: &[(usize, usize, StyleType)],
         attachments: &[&Path],
+        preview: Option<&LinkPreview>,
         quote: Option<(&str, i64, &str)>,
     ) -> Result<String> {
         let mut params = serde_json::json!({
@@ -201,6 +202,21 @@ impl SignalClient {
         });
         Self::set_target(&mut params, recipient, is_group);
         Self::set_text_styles(&mut params, text_styles);
+
+        // Sender-generated link preview (#267). The URL must also appear in
+        // the message body; the composer guarantees that.
+        if let Some(p) = preview {
+            params["previewUrl"] = serde_json::json!(p.url);
+            if let Some(ref title) = p.title {
+                params["previewTitle"] = serde_json::json!(title);
+            }
+            if let Some(ref description) = p.description {
+                params["previewDescription"] = serde_json::json!(description);
+            }
+            if let Some(ref image_path) = p.image_path {
+                params["previewImage"] = serde_json::json!(image_path);
+            }
+        }
 
         if !mentions.is_empty() {
             // signal-cli expects mentions as colon-separated strings: "start:length:uuid"

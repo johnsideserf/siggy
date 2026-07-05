@@ -3352,6 +3352,79 @@ fn unknown_sender_creates_unaccepted_conversation(mut app: App) {
     assert!(!app.store.conversations["+1"].accepted);
 }
 
+fn pending_preview(url: &str) -> crate::signal::types::LinkPreview {
+    crate::signal::types::LinkPreview {
+        url: url.to_string(),
+        title: Some("Example".to_string()),
+        description: Some("An example page".to_string()),
+        image_path: None,
+    }
+}
+
+#[rstest]
+fn send_with_pending_preview_appends_url_and_carries_preview(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.active_conversation = Some("+1".to_string());
+    app.media.pending_preview = Some(pending_preview("https://ex.com/a"));
+
+    app.input.buffer = "check this out".to_string();
+    app.input.cursor = app.input.buffer.len();
+    let req = app.handle_input();
+
+    let Some(SendRequest::Message { body, preview, .. }) = req else {
+        panic!("expected SendRequest::Message");
+    };
+    // URL appended because the text did not contain it.
+    assert_eq!(body, "check this out\nhttps://ex.com/a");
+    assert_eq!(preview.unwrap().url, "https://ex.com/a");
+    // Consumed: the next send goes out without a preview.
+    assert!(app.media.pending_preview.is_none());
+    // Local echo shows the preview immediately.
+    let msg = app.store.conversations["+1"].messages.last().unwrap();
+    assert_eq!(msg.preview.as_ref().unwrap().url, "https://ex.com/a");
+}
+
+#[rstest]
+fn send_with_pending_preview_and_empty_text_sends_url_only(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.active_conversation = Some("+1".to_string());
+    app.media.pending_preview = Some(pending_preview("https://ex.com/a"));
+
+    app.input.buffer = String::new();
+    let req = app.handle_input();
+    let Some(SendRequest::Message { body, preview, .. }) = req else {
+        panic!("expected SendRequest::Message");
+    };
+    assert_eq!(body, "https://ex.com/a");
+    assert!(preview.is_some());
+}
+
+#[rstest]
+fn preview_command_validates_and_clears(mut app: App) {
+    // Non-http URL rejected.
+    app.input.buffer = "/preview ftp://ex.com".to_string();
+    app.handle_input();
+    assert_eq!(app.status_message, "/preview needs an http(s) URL");
+    assert!(app.media.preview_rx.is_none());
+
+    // Bare /preview clears a pending preview.
+    app.media.pending_preview = Some(pending_preview("https://ex.com/a"));
+    app.input.buffer = "/preview".to_string();
+    app.handle_input();
+    assert!(app.media.pending_preview.is_none());
+    assert_eq!(app.status_message, "preview discarded");
+
+    // Bare /preview with nothing pending explains usage.
+    app.input.buffer = "/preview".to_string();
+    app.handle_input();
+    assert_eq!(
+        app.status_message,
+        "no pending preview (use /preview <url>)"
+    );
+}
+
 #[rstest]
 fn palette_empty_query_lists_conversations_then_commands(mut app: App) {
     app.store
