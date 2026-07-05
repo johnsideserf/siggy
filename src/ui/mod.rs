@@ -41,6 +41,7 @@ use overlays::group_menu::draw_group_menu;
 use overlays::help::draw_help;
 use overlays::keybindings::draw_keybindings;
 use overlays::message_request::draw_message_request;
+use overlays::palette::draw_palette;
 use overlays::pin_duration::draw_pin_duration_picker;
 use overlays::poll_vote::draw_poll_vote_overlay;
 use overlays::profile::draw_profile;
@@ -75,6 +76,8 @@ pub(super) const SETTINGS_POPUP_WIDTH: u16 = 50;
 pub(super) const SETTINGS_POPUP_HEIGHT: u16 = 25;
 pub(super) const CONTACTS_POPUP_WIDTH: u16 = 50;
 pub(super) const CONTACTS_MAX_VISIBLE: usize = 20;
+pub(super) const PALETTE_POPUP_WIDTH: u16 = 56;
+pub(super) const PALETTE_MAX_VISIBLE: usize = 12;
 pub(super) const FILE_BROWSER_POPUP_WIDTH: u16 = 60;
 pub(super) const FILE_BROWSER_MAX_VISIBLE: usize = 20;
 pub(super) const SEARCH_POPUP_WIDTH: u16 = 60;
@@ -263,6 +266,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Contacts overlay (overlays everything)
     if app.is_overlay(OverlayKind::Contacts) {
         draw_contacts(frame, app, size);
+    }
+
+    // Command palette overlay (#614)
+    if app.is_overlay(OverlayKind::Palette) {
+        draw_palette(frame, app, size);
     }
 
     // Verify identity overlay
@@ -746,7 +754,7 @@ mod snapshot_tests {
     fn test_sidebar_filter() {
         let mut app = demo_app();
         app.open_overlay(OverlayKind::SidebarFilter);
-        app.sidebar_filter = "ali".to_string();
+        app.sidebar_filter.query = "ali".to_string();
         app.refresh_sidebar_filter();
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);

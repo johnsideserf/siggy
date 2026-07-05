@@ -22,10 +22,10 @@ use crate::db::Database;
 use crate::domain::{
     ActionMenuState, ContactsOverlayState, EmojiPickerState, FilePickerState, ForwardOverlayState,
     GroupMenuOverlayState, ImageState, InputState, KeybindingsOverlayState, LockState, MediaState,
-    MouseState, NotificationState, PendingState, PinDurationOverlayState, PollVoteOverlayState,
-    ProfileOverlayState, ReactionState, ScrollState, SearchAction, SearchState,
-    SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState, TypingState,
-    VerifyOverlayState,
+    MouseState, NotificationState, PaletteItem, PaletteState, PendingState,
+    PinDurationOverlayState, PollVoteOverlayState, ProfileOverlayState, ReactionState, ScrollState,
+    SearchAction, SearchState, SettingsOverlayState, SettingsProfileOverlayState,
+    SidebarFilterState, ThemePickerState, TypingState, VerifyOverlayState,
 };
 // These value types were relocated into `domain` so the domain layer is a leaf
 // (#495). Re-export them here so existing `crate::app::*` references across the
@@ -272,6 +272,7 @@ pub enum OverlayKind {
     Customize,
     Settings,
     Autocomplete,
+    Palette,
 }
 
 // VisibleImage and ImageRenderResult moved to `domain::image` (#495);
@@ -483,10 +484,10 @@ pub struct App {
     pub sidebar_width: u16,
     /// Display sidebar on the right side instead of left
     pub sidebar_on_right: bool,
-    /// Current filter text for sidebar
-    pub sidebar_filter: String,
-    /// Filtered conversation IDs matching the filter
-    pub sidebar_filtered: Vec<String>,
+    /// Sidebar type-to-filter overlay state (query + matching IDs).
+    pub sidebar_filter: SidebarFilterState,
+    /// Fuzzy command palette overlay state (#614).
+    pub palette: PaletteState,
     /// Typing indicator state (inbound indicators + outbound typing tracking).
     pub typing: TypingState,
     /// Whether we are connected to signal-cli
@@ -1166,6 +1167,61 @@ impl App {
         );
     }
 
+    /// Open the fuzzy command palette (#614).
+    pub(crate) fn open_palette(&mut self) {
+        self.palette.query.clear();
+        self.palette.index = 0;
+        self.refresh_palette_filter();
+        self.open_overlay(OverlayKind::Palette);
+    }
+
+    /// Rebuild the palette's filtered list: conversations and commands scored
+    /// against the query, best match first. With an empty query every item
+    /// scores 0 and the stable sort keeps conversations (in sidebar order)
+    /// ahead of the command list.
+    pub(crate) fn refresh_palette_filter(&mut self) {
+        let query = self.palette.query.clone();
+        // (score, kind_rank, item); kind_rank breaks score ties in favor of
+        // conversations, since jump-to-chat is the common palette use.
+        let mut scored: Vec<(i64, i64, PaletteItem)> = Vec::new();
+        for id in &self.store.conversation_order {
+            let Some(conv) = self.store.conversations.get(id) else {
+                continue;
+            };
+            if conv.is_stale() {
+                continue;
+            }
+            if let Some(score) = list_overlay::fuzzy_score(&query, &conv.name) {
+                scored.push((
+                    score,
+                    1,
+                    PaletteItem::Conversation {
+                        id: id.clone(),
+                        name: conv.name.clone(),
+                        is_group: conv.is_group,
+                    },
+                ));
+            }
+        }
+        for cmd in crate::input::COMMANDS {
+            let haystack = format!("{} {}", cmd.name, cmd.description);
+            if let Some(score) = list_overlay::fuzzy_score(&query, &haystack) {
+                scored.push((
+                    score,
+                    0,
+                    PaletteItem::Command {
+                        name: cmd.name,
+                        args: cmd.args,
+                        description: cmd.description,
+                    },
+                ));
+            }
+        }
+        scored.sort_by_key(|item| (std::cmp::Reverse(item.0), std::cmp::Reverse(item.1)));
+        self.palette.filtered = scored.into_iter().map(|(_, _, item)| item).collect();
+        list_overlay::clamp_index(&mut self.palette.index, self.palette.filtered.len());
+    }
+
     /// Build the list of available group menu actions (context-dependent).
     pub fn group_menu_items(&self) -> Vec<GroupMenuItem> {
         let is_group = self
@@ -1811,8 +1867,8 @@ impl App {
             account,
             sidebar_width: 22,
             sidebar_on_right: false,
-            sidebar_filter: String::new(),
-            sidebar_filtered: Vec::new(),
+            sidebar_filter: SidebarFilterState::default(),
+            palette: PaletteState::default(),
             typing: TypingState::default(),
             connected: false,
             loading: true,
@@ -2111,8 +2167,8 @@ impl App {
 
     /// Refresh the filtered sidebar list based on the current filter text.
     pub(crate) fn refresh_sidebar_filter(&mut self) {
-        let query = self.sidebar_filter.to_lowercase();
-        self.sidebar_filtered = self
+        let query = self.sidebar_filter.query.to_lowercase();
+        self.sidebar_filter.filtered = self
             .store
             .conversation_order
             .iter()
@@ -2131,8 +2187,8 @@ impl App {
         if self.is_overlay(OverlayKind::SidebarFilter) {
             self.close_overlay();
         }
-        self.sidebar_filter.clear();
-        self.sidebar_filtered.clear();
+        self.sidebar_filter.query.clear();
+        self.sidebar_filter.filtered.clear();
     }
 
     /// Handle a key press while sidebar filter is active.
@@ -2143,10 +2199,10 @@ impl App {
             }
             KeyCode::Enter => {
                 // Select the first matching conversation
-                let target = if self.sidebar_filtered.is_empty() {
+                let target = if self.sidebar_filter.filtered.is_empty() {
                     None
                 } else {
-                    Some(self.sidebar_filtered[0].clone())
+                    Some(self.sidebar_filter.filtered[0].clone())
                 };
                 self.clear_sidebar_filter();
                 if let Some(conv_id) = target {
@@ -2154,12 +2210,12 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                self.sidebar_filter.push(c);
+                self.sidebar_filter.query.push(c);
                 self.refresh_sidebar_filter();
             }
             KeyCode::Backspace => {
-                self.sidebar_filter.pop();
-                if self.sidebar_filter.is_empty() {
+                self.sidebar_filter.query.pop();
+                if self.sidebar_filter.query.is_empty() {
                     self.clear_sidebar_filter();
                 } else {
                     self.refresh_sidebar_filter();

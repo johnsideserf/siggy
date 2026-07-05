@@ -33,9 +33,9 @@ pub use mouse::MouseState;
 pub use notification::{NotificationPreview, NotificationState};
 pub use overlays::{
     ActionMenuState, ContactsOverlayState, ForwardOverlayState, GroupMenuOverlayState,
-    GroupMenuState, KeybindingsOverlayState, PinDurationOverlayState, PinPending,
-    PollVoteOverlayState, PollVotePending, ProfileOverlayState, SettingsOverlayState,
-    SettingsProfileOverlayState, ThemePickerState, VerifyOverlayState,
+    GroupMenuState, KeybindingsOverlayState, PaletteItem, PaletteState, PinDurationOverlayState,
+    PinPending, PollVoteOverlayState, PollVotePending, ProfileOverlayState, SettingsOverlayState,
+    SettingsProfileOverlayState, SidebarFilterState, ThemePickerState, VerifyOverlayState,
 };
 pub use pending::{BufferedReceipt, PendingState};
 pub use reaction::ReactionState;

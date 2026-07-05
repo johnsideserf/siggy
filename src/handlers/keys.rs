@@ -19,7 +19,7 @@ use crate::app::{
     is_in_rect,
 };
 use crate::autocomplete::AutocompleteMode;
-use crate::domain::{EmojiPickerAction, EmojiPickerSource};
+use crate::domain::{EmojiPickerAction, EmojiPickerSource, PaletteItem};
 use crate::input::{next_char_pos, prev_char_pos};
 use crate::keybindings::{self, BindingMode, KeyAction};
 use crate::list_overlay::{ListKeyAction, classify_list_key};
@@ -364,8 +364,10 @@ fn handle_left_click(app: &mut App, col: u16, row: u16) {
         // conversation_order directly would select the wrong row).
         let sidebar_list = if !app.mouse.sidebar_display_order.is_empty() {
             &app.mouse.sidebar_display_order
-        } else if app.is_overlay(OverlayKind::SidebarFilter) && !app.sidebar_filtered.is_empty() {
-            &app.sidebar_filtered
+        } else if app.is_overlay(OverlayKind::SidebarFilter)
+            && !app.sidebar_filter.filtered.is_empty()
+        {
+            &app.sidebar_filter.filtered
         } else {
             &app.store.conversation_order
         };
@@ -747,8 +749,8 @@ pub fn handle_normal_key(
         Some(KeyAction::SidebarSearch) => {
             app.sidebar_visible = true;
             app.open_overlay(OverlayKind::SidebarFilter);
-            app.sidebar_filter.clear();
-            app.sidebar_filtered.clear();
+            app.sidebar_filter.query.clear();
+            app.sidebar_filter.filtered.clear();
             None
         }
         Some(KeyAction::ClearInput) => {
@@ -849,8 +851,8 @@ pub fn handle_global_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) 
         Some(KeyAction::SidebarSearch) => {
             app.sidebar_visible = true;
             app.open_overlay(OverlayKind::SidebarFilter);
-            app.sidebar_filter.clear();
-            app.sidebar_filtered.clear();
+            app.sidebar_filter.query.clear();
+            app.sidebar_filter.filtered.clear();
             true
         }
         Some(KeyAction::Lock) => {
@@ -874,6 +876,10 @@ pub fn handle_global_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) 
         }
         Some(KeyAction::OpenHelp) => {
             app.open_overlay(OverlayKind::Help);
+            true
+        }
+        Some(KeyAction::CommandPalette) => {
+            app.open_palette();
             true
         }
         Some(KeyAction::ToggleSidebar) => {
@@ -984,6 +990,10 @@ pub fn handle_overlay_key(app: &mut App, code: KeyCode) -> (bool, Option<SendReq
         OverlayKind::Contacts => {
             app.handle_contacts_key(code);
             (true, None)
+        }
+        OverlayKind::Palette => {
+            let send = handle_palette_key(app, code);
+            (true, send)
         }
         OverlayKind::Search => {
             app.handle_search_key(code);
@@ -1986,6 +1996,70 @@ pub fn handle_contacts_key(app: &mut App, code: KeyCode) {
             app.refresh_contacts_filter();
         }
         ListKeyAction::None | ListKeyAction::Up | ListKeyAction::Down => {}
+    }
+}
+
+/// Handle a key press while the command palette is open (#614).
+///
+/// Unlike `classify_list_key` overlays, every printable char (including
+/// j/k) goes to the filter, since typing is the whole point of the palette;
+/// navigate with Up/Down arrows. Selecting a conversation jumps to it;
+/// selecting an argument-less command runs it through the normal input path
+/// (so it can return a SendRequest); commands that take arguments prefill
+/// the composer instead.
+pub fn handle_palette_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
+    match code {
+        KeyCode::Up => {
+            app.palette.index = app.palette.index.saturating_sub(1);
+            None
+        }
+        KeyCode::Down => {
+            let len = app.palette.filtered.len();
+            if len > 0 {
+                app.palette.index = (app.palette.index + 1).min(len - 1);
+            }
+            None
+        }
+        KeyCode::Esc => {
+            app.close_overlay();
+            None
+        }
+        KeyCode::Enter => {
+            let item = app.palette.filtered.get(app.palette.index).cloned()?;
+            app.close_overlay();
+            match item {
+                PaletteItem::Conversation { id, .. } => {
+                    app.join_conversation(&id);
+                    None
+                }
+                PaletteItem::Command { name, args, .. } => {
+                    if args.is_empty() {
+                        app.input.buffer = name.to_string();
+                        app.input.cursor = app.input.buffer.len();
+                        app.handle_input()
+                    } else {
+                        app.mode = InputMode::Insert;
+                        app.input.buffer = format!("{name} ");
+                        app.input.cursor = app.input.buffer.len();
+                        app.update_autocomplete();
+                        None
+                    }
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            app.palette.query.pop();
+            app.palette.index = 0;
+            app.refresh_palette_filter();
+            None
+        }
+        KeyCode::Char(c) if !c.is_control() => {
+            app.palette.query.push(c);
+            app.palette.index = 0;
+            app.refresh_palette_filter();
+            None
+        }
+        _ => None,
     }
 }
 

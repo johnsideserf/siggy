@@ -3353,6 +3353,99 @@ fn unknown_sender_creates_unaccepted_conversation(mut app: App) {
 }
 
 #[rstest]
+fn palette_empty_query_lists_conversations_then_commands(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.store
+        .get_or_create_conversation("g1", "Rustaceans", true, &app.db);
+
+    app.open_palette();
+    assert!(app.is_overlay(OverlayKind::Palette));
+    // Conversations lead, in sidebar order, followed by every command.
+    let items = &app.palette.filtered;
+    assert!(matches!(
+        &items[0],
+        crate::domain::PaletteItem::Conversation { name, .. } if name == "Alice"
+    ));
+    assert!(matches!(
+        &items[1],
+        crate::domain::PaletteItem::Conversation { name, .. } if name == "Rustaceans"
+    ));
+    assert!(matches!(
+        &items[2],
+        crate::domain::PaletteItem::Command { .. }
+    ));
+    assert_eq!(items.len(), 2 + crate::input::COMMANDS.len());
+}
+
+#[rstest]
+fn palette_filters_and_enter_joins_conversation(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.store
+        .get_or_create_conversation("+2", "Bob", false, &app.db);
+    app.open_palette();
+
+    for c in "alice".chars() {
+        app.handle_overlay_key(KeyCode::Char(c));
+    }
+    assert!(matches!(
+        &app.palette.filtered[0],
+        crate::domain::PaletteItem::Conversation { name, .. } if name == "Alice"
+    ));
+
+    app.handle_overlay_key(KeyCode::Enter);
+    assert!(!app.is_overlay(OverlayKind::Palette));
+    assert_eq!(app.active_conversation.as_deref(), Some("+1"));
+}
+
+#[rstest]
+fn palette_runs_argless_command_and_prefills_command_with_args(mut app: App) {
+    // Arg-less command executes immediately: /help opens the help overlay.
+    app.open_palette();
+    for c in "help".chars() {
+        app.handle_overlay_key(KeyCode::Char(c));
+    }
+    let first_is_help = matches!(
+        &app.palette.filtered[0],
+        crate::domain::PaletteItem::Command { name, .. } if *name == "/help"
+    );
+    assert!(
+        first_is_help,
+        "expected /help first, got {:?}",
+        app.palette.filtered.first()
+    );
+    app.handle_overlay_key(KeyCode::Enter);
+    assert!(app.is_overlay(OverlayKind::Help));
+    app.close_overlay();
+
+    // Command with args prefills the composer in Insert mode.
+    app.open_palette();
+    for c in "join".chars() {
+        app.handle_overlay_key(KeyCode::Char(c));
+    }
+    app.handle_overlay_key(KeyCode::Enter);
+    assert!(!app.is_overlay(OverlayKind::Palette));
+    assert_eq!(app.mode, InputMode::Insert);
+    assert_eq!(app.input.buffer, "/join ");
+    assert_eq!(app.input.cursor, 6);
+}
+
+#[rstest]
+fn palette_typing_j_and_k_filters_instead_of_navigating(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Jake", false, &app.db);
+    app.open_palette();
+    app.handle_overlay_key(KeyCode::Char('j'));
+    app.handle_overlay_key(KeyCode::Char('k'));
+    assert_eq!(app.palette.query, "jk");
+    assert!(matches!(
+        &app.palette.filtered[0],
+        crate::domain::PaletteItem::Conversation { name, .. } if name == "Jake"
+    ));
+}
+
+#[rstest]
 fn archive_toggle_hides_and_restores(mut app: App) {
     app.store
         .get_or_create_conversation("+1", "Alice", false, &app.db);

@@ -21,14 +21,14 @@ expression: output
                      │││  /quit               Exit siggy                    │ Saturday…            │
                      │││                                                    │                      │
                      │││  Shortcuts                                         │                      │
-                     │││  Tab / Shift+Tab     Next / prev conversation      │ded.                  │
+                     │││  Ctrl+p              Command palette               │ded.                  │
+                     │││  Tab / Shift+Tab     Next / prev conversation      │                      │
                      │││  Up / Down           Recall input history          │                      │
-                     │││  @                   Mention autocomplete          │                      │
-                     │││  PgUp / PgDn         Scroll messages               │ to browse early      │
+                     │││  @                   Mention autocomplete          │ to browse early      │
+                     │││  PgUp / PgDn         Scroll messages               │                      │
                      │││  Ctrl+Left / Ctrl+RightResize sidebar              │                      │
-                     │││  Ctrl+l              Lock the session              │                      │
-                     │╰│  Ctrl+c              Quit                          │──────────────────────╯
-                     │╭│                                                    │──────────────────────╮
-                     │││  Formatting                                        │                      │
+                     │╰│  Ctrl+l              Lock the session              │──────────────────────╯
+                     │╭│  Ctrl+c              Quit                          │──────────────────────╮
+                     │││                                                    │                      │
                      │╰╰────────────────────────────────────────────────────╯──────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats
