@@ -3353,6 +3353,71 @@ fn unknown_sender_creates_unaccepted_conversation(mut app: App) {
 }
 
 #[rstest]
+fn archive_toggle_hides_and_restores(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.active_conversation = Some("+1".to_string());
+
+    // /archive sets the flag and closes the conversation
+    app.input.buffer = "/archive".to_string();
+    app.input.cursor = 8;
+    app.handle_input();
+    assert!(app.store.conversations["+1"].archived);
+    assert_eq!(app.active_conversation, None);
+    assert_eq!(app.status_message, "archived Alice");
+
+    // Rejoin (e.g. via sidebar filter) and /archive again to unarchive
+    app.join_conversation("+1");
+    app.input.buffer = "/archive".to_string();
+    app.input.cursor = 8;
+    app.handle_input();
+    assert!(!app.store.conversations["+1"].archived);
+    assert_eq!(app.active_conversation.as_deref(), Some("+1"));
+    assert_eq!(app.status_message, "unarchived Alice");
+}
+
+#[rstest]
+fn incoming_message_unarchives_conversation(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.store.conversations.get_mut("+1").unwrap().archived = true;
+
+    app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
+    assert!(!app.store.conversations["+1"].archived);
+}
+
+#[rstest]
+fn mark_unread_badges_and_closes(mut app: App) {
+    // An incoming message, read by joining the conversation
+    app.handle_signal_event(SignalEvent::MessageReceived(msg_from("+1")));
+    app.join_conversation("+1");
+    assert_eq!(app.store.conversations["+1"].unread, 0);
+
+    app.input.buffer = "/unread".to_string();
+    app.input.cursor = 7;
+    app.handle_input();
+    assert_eq!(app.store.conversations["+1"].unread, 1);
+    assert_eq!(app.active_conversation, None);
+    // The unread divider points at the incoming message again
+    assert_eq!(app.store.last_read_index.get("+1"), Some(&0));
+}
+
+#[rstest]
+fn mark_unread_without_incoming_is_a_noop(mut app: App) {
+    app.store
+        .get_or_create_conversation("+1", "Alice", false, &app.db);
+    app.active_conversation = Some("+1".to_string());
+
+    app.input.buffer = "/unread".to_string();
+    app.input.cursor = 7;
+    app.handle_input();
+    // Nothing to mark: conversation stays open, no badge
+    assert_eq!(app.active_conversation.as_deref(), Some("+1"));
+    assert_eq!(app.store.conversations["+1"].unread, 0);
+    assert_eq!(app.status_message, "no incoming messages to mark unread");
+}
+
+#[rstest]
 fn known_contact_creates_accepted_conversation(mut app: App) {
     app.store
         .contact_names
@@ -4559,6 +4624,7 @@ fn is_stale_filters_correctly() {
         is_group: true,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
     assert!(
         empty_group.is_stale(),
@@ -4573,6 +4639,7 @@ fn is_stale_filters_correctly() {
         is_group: true,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
     assert!(
         !named_group.is_stale(),
@@ -4587,6 +4654,7 @@ fn is_stale_filters_correctly() {
         is_group: false,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
     assert!(
         !phone_contact.is_stale(),
@@ -4601,6 +4669,7 @@ fn is_stale_filters_correctly() {
         is_group: false,
         expiration_timer: 0,
         accepted: true,
+        archived: false,
     };
     assert!(
         uuid_contact.is_stale(),

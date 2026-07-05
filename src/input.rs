@@ -171,6 +171,18 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Export chat history to a file",
     },
     CommandInfo {
+        name: "/archive",
+        alias: "",
+        args: "",
+        description: "Archive / unarchive the current conversation",
+    },
+    CommandInfo {
+        name: "/unread",
+        alias: "",
+        args: "",
+        description: "Mark the current conversation unread and close it",
+    },
+    CommandInfo {
         name: "/help",
         alias: "/h",
         args: "",
@@ -262,6 +274,10 @@ pub enum InputAction {
         format: ExportFormat,
         limit: Option<usize>,
     },
+    /// Toggle the archived flag on the current conversation
+    Archive,
+    /// Mark the current conversation unread and close it
+    MarkUnread,
     /// Unknown command
     Unknown(String),
 }
@@ -353,6 +369,8 @@ pub fn parse_input(input: &str) -> InputAction {
         "/about" => InputAction::About,
         "/keybindings" | "/kb" => InputAction::Keybindings,
         "/export" => parse_export_args(&arg),
+        "/archive" => InputAction::Archive,
+        "/unread" => InputAction::MarkUnread,
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }

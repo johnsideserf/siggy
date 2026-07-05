@@ -37,13 +37,7 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             None
         }
         InputAction::Part => {
-            app.save_scroll_position();
-            app.active_conversation = None;
-            app.scroll.offset = 0;
-            app.scroll.focused_index = None;
-            app.pending_attachment = None;
-            app.reset_typing_with_stop();
-            app.update_status();
+            close_active_conversation(app);
             None
         }
         InputAction::DeleteConversation => {
@@ -174,6 +168,14 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
         InputAction::Paste => app.handle_paste_command(),
         InputAction::Export { format, limit } => {
             app.export_chat_history(format, limit);
+            None
+        }
+        InputAction::Archive => {
+            archive_toggle(app);
+            None
+        }
+        InputAction::MarkUnread => {
+            mark_unread(app);
             None
         }
         InputAction::Unknown(msg) => {
@@ -456,6 +458,75 @@ fn build_outgoing_quote(app: &App) -> (Option<Quote>, Option<i64>, Option<String
         Some(author_phone.clone()),
         Some(body.clone()),
     )
+}
+
+/// Close the active conversation and reset per-conversation UI state
+/// (the `/part` behavior, shared by `/archive` and `/unread`).
+fn close_active_conversation(app: &mut App) {
+    app.save_scroll_position();
+    app.active_conversation = None;
+    app.scroll.offset = 0;
+    app.scroll.focused_index = None;
+    app.pending_attachment = None;
+    app.reset_typing_with_stop();
+    app.update_status();
+}
+
+/// Toggle the archived flag on the active conversation (#611). Archiving
+/// closes the conversation; it reappears in the sidebar on any new message,
+/// via the sidebar filter (`/_` shows everything), or by unarchiving.
+fn archive_toggle(app: &mut App) {
+    let Some(conv_id) = app.active_conversation.clone() else {
+        app.status_message = "no active conversation to archive".to_string();
+        return;
+    };
+    let Some(conv) = app.store.conversations.get_mut(&conv_id) else {
+        return;
+    };
+    conv.archived = !conv.archived;
+    let now_archived = conv.archived;
+    db_warn(app.db.set_archived(&conv_id, now_archived), "set_archived");
+    let name = app.conversation_name(&conv_id).to_string();
+    if now_archived {
+        close_active_conversation(app);
+        app.status_message = format!("archived {name}");
+    } else {
+        app.status_message = format!("unarchived {name}");
+    }
+}
+
+/// Mark the active conversation unread again and close it (#611). The newest
+/// incoming message becomes unread, so the sidebar badge shows 1.
+fn mark_unread(app: &mut App) {
+    let Some(conv_id) = app.active_conversation.clone() else {
+        app.status_message = "no active conversation to mark unread".to_string();
+        return;
+    };
+    let db_marked = match app.db.mark_unread(&conv_id) {
+        Ok(marked) => marked,
+        Err(e) => {
+            db_warn(Err::<(), _>(e), "mark_unread");
+            false
+        }
+    };
+    let mem_idx = app.store.conversations.get(&conv_id).and_then(|c| {
+        c.messages
+            .iter()
+            .rposition(|m| !m.is_system && !m.is_outgoing())
+    });
+    if !db_marked && mem_idx.is_none() {
+        app.status_message = "no incoming messages to mark unread".to_string();
+        return;
+    }
+    if let Some(i) = mem_idx {
+        app.store.last_read_index.insert(conv_id.clone(), i);
+    }
+    if let Some(conv) = app.store.conversations.get_mut(&conv_id) {
+        conv.unread = conv.unread.max(1);
+    }
+    let name = app.conversation_name(&conv_id).to_string();
+    close_active_conversation(app);
+    app.status_message = format!("marked {name} unread");
 }
 
 fn toggle_bell(app: &mut App, target: Option<&str>) {

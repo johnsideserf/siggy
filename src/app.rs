@@ -121,7 +121,7 @@ impl App {
         let expiration_start_ms = msg.expiration_start_ms;
 
         // Insert into the in-memory store.
-        let insert_idx = {
+        let (insert_idx, unarchived) = {
             let conv = self.store.conversations.get_mut(conv_id)?;
             let pos = if ordered_insert {
                 conv.messages
@@ -130,8 +130,14 @@ impl App {
                 conv.messages.len()
             };
             conv.messages.insert(pos, msg);
-            pos
+            // Any new message pulls the conversation out of the archive (#611).
+            let unarchived = conv.archived;
+            conv.archived = false;
+            (pos, unarchived)
         };
+        if unarchived {
+            db_warn(self.db.set_archived(conv_id, false), "set_archived");
+        }
 
         // Bump the read marker when an ordered insert lands before it.
         if ordered_insert

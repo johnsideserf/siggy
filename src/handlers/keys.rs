@@ -359,12 +359,16 @@ fn handle_left_click(app: &mut App, col: u16, row: u16) {
         && is_in_rect(col, row, inner)
     {
         let index = (row - inner.y) as usize;
-        let sidebar_list =
-            if app.is_overlay(OverlayKind::SidebarFilter) && !app.sidebar_filtered.is_empty() {
-                &app.sidebar_filtered
-            } else {
-                &app.store.conversation_order
-            };
+        // Use the exact order the sidebar rendered last frame (stale and
+        // archived conversations are hidden from the normal view, so indexing
+        // conversation_order directly would select the wrong row).
+        let sidebar_list = if !app.mouse.sidebar_display_order.is_empty() {
+            &app.mouse.sidebar_display_order
+        } else if app.is_overlay(OverlayKind::SidebarFilter) && !app.sidebar_filtered.is_empty() {
+            &app.sidebar_filtered
+        } else {
+            &app.store.conversation_order
+        };
         if index < sidebar_list.len() {
             let conv_id = sidebar_list[index].clone();
             app.clear_sidebar_filter();
