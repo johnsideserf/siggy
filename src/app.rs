@@ -21,8 +21,8 @@ use crate::conversation_store::{ConversationStore, db_warn};
 use crate::db::Database;
 use crate::domain::{
     ActionMenuState, ContactsOverlayState, EmojiPickerState, FilePickerState, ForwardOverlayState,
-    GroupMenuOverlayState, ImageState, InputState, KeybindingsOverlayState, LockState, MouseState,
-    NotificationState, PendingState, PinDurationOverlayState, PollVoteOverlayState,
+    GroupMenuOverlayState, ImageState, InputState, KeybindingsOverlayState, LockState, MediaState,
+    MouseState, NotificationState, PendingState, PinDurationOverlayState, PollVoteOverlayState,
     ProfileOverlayState, ReactionState, ScrollState, SearchAction, SearchState,
     SettingsOverlayState, SettingsProfileOverlayState, ThemePickerState, TypingState,
     VerifyOverlayState,
@@ -521,9 +521,8 @@ pub struct App {
     pub prev_active_conversation: Option<String>,
     /// Incognito mode — in-memory DB, no local persistence
     pub incognito: bool,
-    /// Directory attachments are downloaded to. "Open attachment" refuses any
-    /// path outside this directory (message bodies are remote-controlled text).
-    pub download_dir: PathBuf,
+    /// Media handling: attachment download dir and voice playback override.
+    pub media: MediaState,
     /// Show date separator lines between messages from different days
     pub date_separators: bool,
     /// Show delivery/read receipt status symbols on outgoing messages
@@ -1830,7 +1829,7 @@ impl App {
             image: ImageState::new(image_render_tx, image_render_rx),
             prev_active_conversation: None,
             incognito: false,
-            download_dir: PathBuf::new(),
+            media: MediaState::default(),
             date_separators: true,
             show_receipts: true,
             color_receipts: true,
@@ -3728,7 +3727,7 @@ impl App {
 
     fn open_file(&mut self, uri: &str) {
         let path = file_uri_to_path(uri);
-        match classify_file_open(&path, &self.download_dir) {
+        match classify_file_open(&path, &self.media.download_dir) {
             OpenFileDecision::NotFound => {
                 self.status_message = format!("File not found: {path}");
             }
@@ -3750,7 +3749,8 @@ impl App {
                 // instead of handing off to the OS default app. Falls back to
                 // open::that when no player is installed.
                 if crate::audio::is_audio_path(&canon)
-                    && let Some(player) = crate::audio::detect_player(None)
+                    && let Some(player) =
+                        crate::audio::detect_player(self.media.audio_player.as_deref())
                 {
                     match crate::audio::play(&canon, &player) {
                         Ok(_) => self.status_message = format!("Playing {filename}"),

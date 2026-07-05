@@ -62,6 +62,7 @@ proxy = ""
 | `lock_timeout` | int | `0` | Minutes of keyboard inactivity before the session auto-locks (0 = disabled) |
 | `db_path` | string | *(unset)* | Override the message database path. Absolute paths are used as-is; relative paths resolve under the data dir. Leave unset for the default `siggy.db`. Used to run multiple accounts side by side (see below) |
 | `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
+| `audio_player` | string | *(unset)* | Command for inline voice message playback, e.g. `"mpv --no-config"`. Leave unset to autodetect a player on PATH (mpv, ffplay, afplay, cvlc, paplay, aplay) |
 | `show_link_previews` | bool | `true` | Show link preview cards for URLs in messages |
 | `date_separators` | bool | `true` | Show date separator lines between messages from different days |
 | `show_receipts` | bool | `true` | Show delivery/read receipt status symbols |

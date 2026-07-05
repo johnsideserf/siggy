@@ -11,6 +11,7 @@ mod file_picker;
 mod image;
 mod input;
 mod lock;
+mod media;
 mod mouse;
 mod notification;
 mod overlays;
@@ -27,6 +28,7 @@ pub use image::{ImageMode, ImageRenderResult, ImageState, LinkRegion, VisibleIma
 pub use input::InputState;
 pub use lock::{LockPhase, LockState};
 pub use lock::{hash_passphrase, load_hash, lock_hash_path, save_hash, verify_passphrase};
+pub use media::MediaState;
 pub use mouse::MouseState;
 pub use notification::{NotificationPreview, NotificationState};
 pub use overlays::{

@@ -137,6 +137,12 @@ pub struct Config {
     #[serde(default)]
     pub cell_pixel_height: u16,
 
+    /// Command used to play voice messages inline, e.g. "mpv --no-config".
+    /// Absent or empty autodetects a CLI player on PATH (mpv, ffplay,
+    /// afplay, cvlc, paplay, aplay, in that order).
+    #[serde(default)]
+    pub audio_player: Option<String>,
+
     /// Legacy: show inline halfblock image previews (migrated to image_mode)
     #[serde(default = "default_true", skip_serializing)]
     pub inline_images: bool,
@@ -260,6 +266,7 @@ impl Default for Config {
             image_mode: Some(ImageMode::Halfblock),
             cell_pixel_width: 0,
             cell_pixel_height: 0,
+            audio_player: None,
             inline_images: true,
             show_link_previews: true,
             native_images: false,

@@ -20,7 +20,9 @@ linked devices) sync into the TUI automatically.
 - **Voice messages** -- audio attachments show as `[voice ▶ name]`. Press `o`
   (open) on the focused message to play it inline through a detected command-line
   player (`mpv`, `ffplay`, `afplay`, `cvlc`, `paplay`, or `aplay`, in that order).
-  If none is installed it falls back to opening the file in your OS default app.
+  Set `audio_player` in the config to use a specific command instead (see
+  [Configuration](configuration.md)). If no player is available it falls back
+  to opening the file in your OS default app.
 - **Other files** -- shown as `[attachment: filename]` with the download path
 - **Send files** -- use `/attach` to open a file browser and attach a file to
   your next message
