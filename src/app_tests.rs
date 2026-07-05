@@ -1047,7 +1047,8 @@ fn ensure_active_images_scan_is_gated_by_signature(mut app: App) {
             0,
             1,
             crate::domain::ImageMode::Halfblock,
-            true
+            true,
+            0
         ))
     );
 
@@ -1061,7 +1062,8 @@ fn ensure_active_images_scan_is_gated_by_signature(mut app: App) {
             3,
             1,
             crate::domain::ImageMode::Halfblock,
-            true
+            true,
+            0
         ))
     );
 
@@ -1077,7 +1079,8 @@ fn ensure_active_images_scan_is_gated_by_signature(mut app: App) {
             3,
             1,
             crate::domain::ImageMode::Halfblock,
-            true
+            true,
+            0
         )),
         "None mode returns before recording a new signature"
     );

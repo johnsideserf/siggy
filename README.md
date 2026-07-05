@@ -152,6 +152,16 @@ Outside tmux, siggy auto-detects Kitty / iTerm2 / WezTerm / Ghostty and renders 
 
 If `SIGGY_IMAGE_PROTOCOL` is unset, the existing auto-detection runs (correct outside tmux, falls back to halfblock inside it). Sixel passes through tmux 3.4+ natively and does not need the env var.
 
+For larger Sixel previews, keep `image_mode = "native"` and raise the terminal-cell
+limits in `config.toml`:
+
+```toml
+image_max_width = 80
+image_max_height = 45
+sixel_max_colors = 256
+sixel_diffusion = 0.875
+```
+
 ## Features
 
 - **Messaging** -- Send and receive 1:1 and group messages

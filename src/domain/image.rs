@@ -18,7 +18,7 @@ use ratatui::text::Line;
 
 pub use crate::config::ImageMode;
 
-use crate::image_render::ImageProtocol;
+use crate::image_render::{ImageProtocol, SixelEncodeSettings};
 
 /// An image visible on screen, for native protocol overlay rendering.
 #[derive(PartialEq, Eq)]
@@ -73,6 +73,16 @@ pub struct ImageState {
     pub image_protocol: ImageProtocol,
     /// Cell pixel dimensions (width, height) for Sixel encoding
     pub cell_px: (u16, u16),
+    /// Maximum attachment preview width in terminal cells
+    pub image_max_width: u32,
+    /// Maximum link preview thumbnail width in terminal cells
+    pub preview_image_max_width: u32,
+    /// Maximum preview height in terminal cell rows
+    pub image_max_height: u32,
+    /// Current chat pane image width cap in terminal cells
+    pub render_width_cap: u32,
+    /// Sixel palette and dithering options
+    pub sixel_encode: SixelEncodeSettings,
     /// Images visible on screen for native protocol overlay (cleared each frame)
     pub visible_images: Vec<VisibleImage>,
     /// Previous scroll offset for Sixel stale pixel detection
@@ -103,7 +113,7 @@ pub struct ImageState {
     /// (conv_id, scroll_offset, message_count, image_mode, show_link_previews).
     /// When unchanged and no render just completed, the per-tick scan is
     /// skipped to avoid idle CPU churn (#492).
-    pub scan_signature: Option<(String, usize, usize, ImageMode, bool)>,
+    pub scan_signature: Option<(String, usize, usize, ImageMode, bool, u32)>,
 }
 
 impl ImageState {
@@ -120,6 +130,11 @@ impl ImageState {
             link_url_map: HashMap::new(),
             image_protocol: image_render::detect_protocol(),
             cell_px: image_render::detect_cell_pixel_size(),
+            image_max_width: 40,
+            preview_image_max_width: 30,
+            image_max_height: 30,
+            render_width_cap: 0,
+            sixel_encode: SixelEncodeSettings::default(),
             visible_images: Vec::new(),
             sixel_prev_scroll: 0,
             prev_visible_images: Vec::new(),

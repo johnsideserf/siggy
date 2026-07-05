@@ -36,6 +36,21 @@ use crate::signal::types::{PollData, PollVote, Reaction, TrustLevel};
 use crate::theme::Theme;
 use ratatui::layout::Alignment;
 
+fn sixel_placeholder_line(line: &Line<'static>) -> Line<'static> {
+    Line::from(Span::raw(" ".repeat(line.width())))
+}
+
+/// Blank rows reserved below a Sixel image, beyond its own placeholder rows.
+///
+/// A Sixel graphic is positioned at a cell origin but sized in pixels. When the
+/// terminal's true cell-pixel height is smaller than the detected/configured
+/// `cell_px` (common in browser-backed terminals such as ttyd), the encoded
+/// graphic renders a few pixels past its reserved rows and bleeds into the top
+/// of the following text line. One blank guard row gives that sub-row overflow
+/// somewhere harmless to land. It does not fix gross cell-pixel misdetection;
+/// see the cell-pixel calibration follow-up.
+const SIXEL_GUARD_ROWS: usize = 1;
+
 /// Hash of everything that affects per-line wrapped height: the pane width and
 /// each line's text. Wrapping is by display width of the concatenated line text,
 /// independent of span boundaries and style, so we hash span contents back to
@@ -294,6 +309,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     app.mouse.messages_area = inner;
+    app.image.render_width_cap = u32::from(inner.width.saturating_sub(2).max(1));
 
     let messages = match &app.active_conversation {
         Some(id) => {
@@ -349,6 +365,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     // Track images for native protocol overlay: (first_line_index, line_count, path)
     let use_native = app.image.image_mode == crate::domain::ImageMode::Native
         && app.image.image_protocol != ImageProtocol::Halfblock;
+    let use_sixel = use_native && app.image.image_protocol == ImageProtocol::Sixel;
     let mut image_records: Vec<(usize, usize, String)> = Vec::new();
 
     for (i, msg) in visible.iter().enumerate() {
@@ -545,12 +562,25 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                 let first_idx = lines.len();
                 let count = image_lines.len();
                 for line in image_lines {
-                    lines.push(line.clone());
+                    if use_sixel {
+                        lines.push(sixel_placeholder_line(line));
+                    } else {
+                        lines.push(line.clone());
+                    }
                     line_msg_idx.push(Some(msg_index));
                 }
                 // Record for native protocol overlay
                 if use_native && let Some(ref path) = msg.image_path {
                     image_records.push((first_idx, count, path.clone()));
+                }
+                // Sixel overflow guard (see SIXEL_GUARD_ROWS). The blank rows
+                // sit below the image record, so the Sixel still covers exactly
+                // `count` rows and the guard rows absorb any sub-row bleed.
+                if use_sixel {
+                    for _ in 0..SIXEL_GUARD_ROWS {
+                        lines.push(Line::from(""));
+                        line_msg_idx.push(Some(msg_index));
+                    }
                 }
             }
 
@@ -595,11 +625,22 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
                     let first_idx = lines.len();
                     let count = img_lines.len();
                     for line in img_lines {
-                        lines.push(line.clone());
+                        if use_sixel {
+                            lines.push(sixel_placeholder_line(line));
+                        } else {
+                            lines.push(line.clone());
+                        }
                         line_msg_idx.push(Some(msg_index));
                     }
                     if use_native && let Some(ref path) = msg.preview_image_path {
                         image_records.push((first_idx, count, path.clone()));
+                    }
+                    // Sixel overflow guard (see SIXEL_GUARD_ROWS).
+                    if use_sixel {
+                        for _ in 0..SIXEL_GUARD_ROWS {
+                            lines.push(Line::from(""));
+                            line_msg_idx.push(Some(msg_index));
+                        }
                     }
                 }
             }

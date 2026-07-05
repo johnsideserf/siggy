@@ -28,6 +28,24 @@ pub enum ImageProtocol {
     Halfblock,
 }
 
+/// Quality settings for Sixel encoding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SixelEncodeSettings {
+    /// Maximum colors in the generated Sixel palette.
+    pub max_colors: u16,
+    /// Floyd-Steinberg error diffusion strength.
+    pub diffusion: f32,
+}
+
+impl Default for SixelEncodeSettings {
+    fn default() -> Self {
+        Self {
+            max_colors: 256,
+            diffusion: 0.875,
+        }
+    }
+}
+
 /// Detect the best available image protocol by checking environment variables.
 ///
 /// Honors an explicit `SIGGY_IMAGE_PROTOCOL` override
@@ -148,13 +166,17 @@ pub fn detect_cell_pixel_size() -> (u16, u16) {
 
 /// Encode a pre-sized image as a Sixel DCS string (CPU-bound).
 ///
-/// Decodes the base64 PNG, resizes to fill the target cell area, and
-/// Sixel-encodes.  Designed to run on a blocking thread via `spawn_blocking`.
+/// Decodes the base64 PNG, resizes down to the target cell area if needed, and
+/// Sixel-encodes. Designed to run on a blocking thread via `spawn_blocking`.
+/// The input PNG is already capped to the inline preview dimensions; do not
+/// upscale it here or a bad cell-pixel override can make the Sixel overlay
+/// much larger than the text-cell placeholder.
 pub fn encode_sixel(
     b64_png: &str,
     width_cells: u16,
     height_cells: u16,
     cell_px: (u16, u16),
+    settings: SixelEncodeSettings,
 ) -> Option<String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -169,20 +191,19 @@ pub fn encode_sixel(
     let target_w = (width_cells as u32 * cell_px.0 as u32).max(1);
     let target_h = (height_cells as u32 * cell_px.1 as u32).max(1);
 
-    let scale = f64::min(target_w as f64 / w as f64, target_h as f64 / h as f64);
+    let scale = f64::min(target_w as f64 / w as f64, target_h as f64 / h as f64).min(1.0);
     let new_w = ((w as f64 * scale).round() as u32).max(1);
     let new_h = ((h as f64 * scale).round() as u32).max(1);
 
     let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
     let rgba = resized.to_rgba8().into_raw();
+    let opts = icy_sixel::EncodeOptions {
+        max_colors: settings.max_colors.clamp(2, 256),
+        diffusion: settings.diffusion.clamp(0.0, 1.0),
+        quantize_method: icy_sixel::QuantizeMethod::Wu,
+    };
 
-    icy_sixel::sixel_encode(
-        &rgba,
-        new_w as usize,
-        new_h as usize,
-        &icy_sixel::EncodeOptions::default(),
-    )
-    .ok()
+    icy_sixel::sixel_encode(&rgba, new_w as usize, new_h as usize, &opts).ok()
 }
 
 /// Slice a cached full-size Sixel DCS string to extract only the visible bands.
@@ -421,7 +442,8 @@ pub fn kitty_id_color(image_id: u32) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Render an image file as halfblock-character lines for display in a terminal.
+/// Render an image file as halfblock-character lines for display in a terminal
+/// using explicit terminal-cell dimensions.
 ///
 /// Each terminal cell represents two vertical pixels using the upper-half-block
 /// character (▀) with the top pixel as foreground and bottom pixel as background.
@@ -429,16 +451,20 @@ pub fn kitty_id_color(image_id: u32) -> Color {
 /// Returns `None` if the image cannot be loaded or decoded, or if the source
 /// image exceeds `MAX_INPUT_DIM` on either axis. The size cap is defensive:
 /// a pathological link-preview og:image (e.g. a 30000×30000 promotional poster)
-/// can pin a `spawn_blocking` thread for minutes inside the resize step, and
-/// the output is at most a 30-cell column anyway. See issue #408.
-pub fn render_image(path: &Path, max_width: u32) -> Option<Vec<Line<'static>>> {
+/// can pin a `spawn_blocking` thread for minutes inside the resize step. See
+/// issue #408.
+pub fn render_image_with_limits(
+    path: &Path,
+    max_width: u32,
+    max_height_cells: u32,
+) -> Option<Vec<Line<'static>>> {
     /// Largest input dimension we'll attempt to decode. Anything over this
     /// is treated as a broken / hostile image and silently skipped.
     const MAX_INPUT_DIM: u32 = 8192;
 
     let start = Instant::now();
     crate::debug_log::logf(format_args!(
-        "render_image start: path={} max_width={max_width}",
+        "render_image start: path={} max_width={max_width} max_height_cells={max_height_cells}",
         path.display()
     ));
 
@@ -459,8 +485,8 @@ pub fn render_image(path: &Path, max_width: u32) -> Option<Vec<Line<'static>>> {
         }
     };
 
-    let cap_width = max_width;
-    let cap_height: u32 = 60; // 30 cell-rows × 2 pixels per row
+    let cap_width = max_width.max(1);
+    let cap_height = max_height_cells.max(1).saturating_mul(2);
 
     let (orig_w, orig_h) = img.dimensions();
     if orig_w == 0 || orig_h == 0 {
@@ -816,5 +842,90 @@ mod tests {
     fn wrap_for_tmux_passes_non_escape_bytes_through() {
         let wrapped = wrap_for_tmux("plain ascii");
         assert_eq!(wrapped, "\x1bPtmux;plain ascii\x1b\\");
+    }
+
+    /// Encode a solid-color PNG of the given pixel size to an in-memory buffer.
+    fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([120, 40, 200, 255]));
+        let mut bytes: Vec<u8> = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
+    /// Write a solid-color PNG to a `.png` temp file (kept alive by the caller).
+    fn write_test_png(w: u32, h: u32) -> tempfile::NamedTempFile {
+        use std::io::Write;
+        let mut f = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+        f.write_all(&png_bytes(w, h)).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    fn sixel_band_count(sixel: &str) -> usize {
+        let body_start = sixel.find('q').unwrap() + 1;
+        let body_end = sixel.rfind("\x1b\\").unwrap();
+        let body = &sixel[body_start..body_end];
+        let preamble_end = find_preamble_end(body);
+        body[preamble_end..]
+            .split('-')
+            .filter(|b| !b.is_empty())
+            .count()
+    }
+
+    #[test]
+    fn render_image_with_limits_respects_height_cap() {
+        // Tall image; with max_height_cells = 8 the output is at most 8 rows
+        // (each halfblock row encodes 2 pixel rows).
+        let f = write_test_png(20, 600);
+        let lines = render_image_with_limits(f.path(), 40, 8).expect("render");
+        assert!(!lines.is_empty());
+        assert!(lines.len() <= 8, "expected <= 8 rows, got {}", lines.len());
+    }
+
+    #[test]
+    fn render_image_with_limits_respects_width_cap() {
+        // Wide image; each line carries a 2-space indent, so width <= cap + 2.
+        let f = write_test_png(600, 20);
+        let lines = render_image_with_limits(f.path(), 10, 30).expect("render");
+        for line in &lines {
+            assert!(
+                line.width() <= 10 + 2,
+                "line width {} exceeds cap+indent",
+                line.width()
+            );
+        }
+    }
+
+    #[test]
+    fn encode_sixel_does_not_upscale_small_image() {
+        use base64::Engine;
+        // 6px tall source, huge cell target. The no-upscale clamp must keep the
+        // encode near the source size (1 band) rather than blowing it up to the
+        // 400px target (~67 bands).
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes(6, 6));
+        let sixel =
+            encode_sixel(&b64, 40, 40, (10, 10), SixelEncodeSettings::default()).expect("encode");
+        assert!(
+            sixel_band_count(&sixel) < 10,
+            "small image was upscaled: {} bands",
+            sixel_band_count(&sixel)
+        );
+    }
+
+    #[test]
+    fn encode_sixel_clamps_settings_out_of_range() {
+        use base64::Engine;
+        // Out-of-range palette/diffusion must not panic and still produce output.
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes(12, 12));
+        let settings = SixelEncodeSettings {
+            max_colors: 9999,
+            diffusion: 5.0,
+        };
+        let sixel = encode_sixel(&b64, 6, 6, (8, 8), settings);
+        assert!(sixel.is_some());
     }
 }

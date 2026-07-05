@@ -30,6 +30,11 @@ notification_preview = "full"
 clipboard_clear_seconds = 30
 lock_timeout = 0
 image_mode = "halfblock"
+image_max_width = 40
+preview_image_max_width = 30
+image_max_height = 30
+sixel_max_colors = 256
+sixel_diffusion = 0.875
 show_link_previews = true
 date_separators = true
 show_receipts = true
@@ -62,6 +67,11 @@ proxy = ""
 | `lock_timeout` | int | `0` | Minutes of keyboard inactivity before the session auto-locks (0 = disabled) |
 | `db_path` | string | *(unset)* | Override the message database path. Absolute paths are used as-is; relative paths resolve under the data dir. Leave unset for the default `siggy.db`. Used to run multiple accounts side by side (see below) |
 | `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
+| `image_max_width` | int | `40` | Maximum attachment image width in terminal cells |
+| `preview_image_max_width` | int | `30` | Maximum link preview thumbnail width in terminal cells |
+| `image_max_height` | int | `30` | Maximum image height in terminal cell rows |
+| `sixel_max_colors` | int | `256` | Maximum Sixel palette colors (`2`-`256`) |
+| `sixel_diffusion` | float | `0.875` | Sixel Floyd-Steinberg diffusion strength (`0.0`-`1.0`) |
 | `audio_player` | string | *(unset)* | Command for inline voice message playback, e.g. `"mpv --no-config"`. Leave unset to autodetect a player on PATH (mpv, ffplay, afplay, cvlc, paplay, aplay) |
 | `show_link_previews` | bool | `true` | Show link preview cards for URLs in messages |
 | `date_separators` | bool | `true` | Show date separator lines between messages from different days |

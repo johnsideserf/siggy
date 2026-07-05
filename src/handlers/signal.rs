@@ -511,10 +511,13 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
             .map(|p| format!("({})", path_to_file_uri(p)))
             .unwrap_or_default();
         if is_image {
-            let rendered = att
-                .local_path
-                .as_deref()
-                .and_then(|p| image_render::render_image(Path::new(p), 40));
+            let rendered = att.local_path.as_deref().and_then(|p| {
+                image_render::render_image_with_limits(
+                    Path::new(p),
+                    app.image.image_max_width,
+                    app.image.image_max_height,
+                )
+            });
             entries.push(ResolvedEntry {
                 body: format!("[image: {label}]{path_info}"),
                 image_lines: rendered,
@@ -787,7 +790,11 @@ fn persist_message_extras(app: &mut App, r: &ResolvedMessage) {
             && let Some(ref p) = preview.image_path
         {
             (
-                image_render::render_image(Path::new(p), 30),
+                image_render::render_image_with_limits(
+                    Path::new(p),
+                    app.image.preview_image_max_width,
+                    app.image.image_max_height,
+                ),
                 Some(p.clone()),
             )
         } else {

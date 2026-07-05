@@ -444,7 +444,11 @@ fn build_outgoing_attachment_body(
     let (img_lines, img_path) =
         if is_image && app.image.image_mode != crate::domain::ImageMode::None {
             (
-                image_render::render_image(path, 40),
+                image_render::render_image_with_limits(
+                    path,
+                    app.image.image_max_width,
+                    app.image.image_max_height,
+                ),
                 Some(path.to_string_lossy().into_owned()),
             )
         } else {
