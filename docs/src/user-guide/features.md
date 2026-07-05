@@ -215,7 +215,8 @@ Signal formatting is rendered in the chat area:
 - **Italic** -- displayed with terminal italic
 - **Strikethrough** -- displayed with terminal strikethrough
 - **Monospace** -- displayed in gray
-- **Spoiler** -- hidden behind block characters (`████`)
+- **Spoiler** -- hidden behind block characters (`████`); focus the message
+  with `J`/`K` in Normal mode to reveal the text while focused
 
 Styles compose correctly with @mentions and link highlighting.
 
