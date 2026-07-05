@@ -49,10 +49,10 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             None
         }
         InputAction::Quit => {
-            if app.input.buffer.is_empty() || app.quit_confirm {
+            if app.input.buffer.is_empty() || app.input.quit_confirm {
                 app.should_quit = true;
             } else {
-                app.quit_confirm = true;
+                app.input.quit_confirm = true;
             }
             None
         }
@@ -172,6 +172,20 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
         }
         InputAction::Preview(opt_url) => {
             preview(app, opt_url);
+            None
+        }
+        InputAction::TriggersReload => {
+            app.triggers = crate::trigger::TriggerEngine::load_default();
+            for warning in &app.triggers.warnings {
+                crate::debug_log::logf(format_args!("triggers.toml: {warning}"));
+            }
+            let rules = app.triggers.rule_count();
+            let warnings = app.triggers.warnings.len();
+            app.status_message = if warnings > 0 {
+                format!("triggers: {rules} rule(s) loaded, {warnings} warning(s) (see debug log)")
+            } else {
+                format!("triggers: {rules} rule(s) loaded")
+            };
             None
         }
         InputAction::Archive => {

@@ -908,6 +908,101 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         .unwrap_or(false);
     let conv_accepted = push_resolved(app, &resolved, is_active);
     apply_notification_policy(app, &resolved, is_active, conv_accepted);
+    evaluate_triggers(app, &msg, &resolved);
+}
+
+/// Run the message through the trigger engine (#615). Replies queue on
+/// `pending.trigger_sends` (drained into the normal send path by the main
+/// loop); `run` actions spawn immediately, fire-and-forget.
+fn evaluate_triggers(app: &mut App, msg: &SignalMessage, resolved: &ResolvedMessage) {
+    if app.triggers.rule_count() == 0 {
+        return;
+    }
+    let Some(body) = msg.body.as_deref().filter(|b| !b.is_empty()) else {
+        return;
+    };
+    let ctx = crate::trigger::MessageContext {
+        body,
+        sender_id: &msg.source,
+        sender_name: msg.source_name.as_deref(),
+        conv_id: &resolved.conv_id,
+        conv_name: &resolved.conv_name,
+        is_group: resolved.is_group,
+        is_outgoing: msg.is_outgoing,
+        timestamp_ms: msg.timestamp.timestamp_millis(),
+    };
+    let actions = app.triggers.evaluate(&ctx, std::time::Instant::now());
+    for action in actions {
+        match action {
+            crate::trigger::TriggerAction::Reply {
+                conv_id,
+                is_group,
+                text,
+            } => queue_trigger_reply(app, conv_id, is_group, text),
+            crate::trigger::TriggerAction::Run { argv, stdin_json } => {
+                if let Err(e) = crate::trigger::execute_run(&argv, stdin_json) {
+                    app.status_message = format!("trigger run failed: {e}");
+                    crate::debug_log::logf(format_args!("trigger run {argv:?} failed: {e}"));
+                }
+            }
+        }
+    }
+}
+
+/// Locally echo a trigger auto-reply and queue its send. Mirrors the plain
+/// path of `send_text` (no markup, mentions, or attachments).
+fn queue_trigger_reply(app: &mut App, conv_id: String, is_group: bool, text: String) {
+    let now = Utc::now();
+    let local_ts_ms = now.timestamp_millis();
+    let out_expires = app
+        .store
+        .conversations
+        .get(&conv_id)
+        .map(|c| c.expiration_timer)
+        .unwrap_or(0);
+    let echo = DisplayMessage {
+        sender: "you".to_string(),
+        timestamp: now,
+        body: text.clone(),
+        is_system: false,
+        image_lines: None,
+        image_path: None,
+        status: Some(MessageStatus::Sending),
+        timestamp_ms: local_ts_ms,
+        reactions: Vec::new(),
+        mention_ranges: Vec::new(),
+        style_ranges: Vec::new(),
+        body_raw: None,
+        mentions: Vec::new(),
+        quote: None,
+        is_edited: false,
+        is_deleted: false,
+        is_pinned: false,
+        sender_id: app.account.clone(),
+        expires_in_seconds: out_expires,
+        expiration_start_ms: if out_expires > 0 { local_ts_ms } else { 0 },
+        poll_data: None,
+        poll_votes: Vec::new(),
+        preview: None,
+        preview_image_lines: None,
+        preview_image_path: None,
+    };
+    app.on_message_added(&conv_id, echo, WireQuote::default(), false);
+    app.pending
+        .trigger_sends
+        .push(crate::app::SendRequest::Message {
+            recipient: conv_id,
+            body: text,
+            is_group,
+            local_ts_ms,
+            mentions: Vec::new(),
+            text_styles: Vec::new(),
+            attachment: None,
+            preview: None,
+            quote_timestamp: None,
+            quote_author: None,
+            quote_body: None,
+        });
 }
 
 pub(super) fn handle_system_message(

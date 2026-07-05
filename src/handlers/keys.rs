@@ -807,16 +807,16 @@ pub fn handle_global_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) 
     let action = app
         .keybindings
         .resolve(modifiers, code, BindingMode::Global);
-    if app.quit_confirm && !matches!(action, Some(KeyAction::Quit)) {
-        app.quit_confirm = false;
+    if app.input.quit_confirm && !matches!(action, Some(KeyAction::Quit)) {
+        app.input.quit_confirm = false;
         app.update_status();
     }
     match action {
         Some(KeyAction::Quit) => {
-            if app.input.buffer.is_empty() || app.quit_confirm {
+            if app.input.buffer.is_empty() || app.input.quit_confirm {
                 app.should_quit = true;
             } else {
-                app.quit_confirm = true;
+                app.input.quit_confirm = true;
             }
             true
         }

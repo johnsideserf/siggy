@@ -189,6 +189,12 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "Fetch a link preview for your next message (no arg clears)",
     },
     CommandInfo {
+        name: "/triggers",
+        alias: "",
+        args: "",
+        description: "Reload message trigger rules from triggers.toml",
+    },
+    CommandInfo {
         name: "/help",
         alias: "/h",
         args: "",
@@ -282,6 +288,8 @@ pub enum InputAction {
     },
     /// Fetch a link preview to attach to the next message (None clears it)
     Preview(Option<String>),
+    /// Reload triggers.toml and report the rule count
+    TriggersReload,
     /// Toggle the archived flag on the current conversation
     Archive,
     /// Mark the current conversation unread and close it
@@ -386,6 +394,7 @@ pub fn parse_input(input: &str) -> InputAction {
         }
         "/archive" => InputAction::Archive,
         "/unread" => InputAction::MarkUnread,
+        "/triggers" => InputAction::TriggersReload,
         "/help" | "/h" => InputAction::Help,
         _ => InputAction::Unknown(format!("Unknown command: {cmd}")),
     }

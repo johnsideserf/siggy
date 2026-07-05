@@ -29,6 +29,7 @@ mod settings_profile;
 mod setup;
 mod signal;
 mod theme;
+mod trigger;
 mod ui;
 
 use std::collections::HashMap;
@@ -207,6 +208,78 @@ async fn run_receive_stream(config: &Config) -> Result<()> {
     }
 }
 
+/// Headless trigger mode (#615): evaluate `triggers.toml` rules over the
+/// incoming stream and execute their actions, logging one line per firing.
+/// For 1:1 chats the conversation "name" is the phone number here (no
+/// contact list without the TUI), so `conversation` filters should use ids.
+async fn run_watch(config: &Config) -> Result<()> {
+    use std::io::Write;
+    let mut engine = trigger::TriggerEngine::load_default();
+    for warning in &engine.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if engine.rule_count() == 0 {
+        let path = trigger::TriggerEngine::rules_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "triggers.toml".to_string());
+        anyhow::bail!("no trigger rules loaded; create {path}");
+    }
+    println!("watching with {} rule(s)", engine.rule_count());
+
+    let mut client = SignalClient::spawn(config).await?;
+    loop {
+        match client.event_rx.recv().await {
+            Some(signal::types::SignalEvent::MessageReceived(msg)) => {
+                let Some(body) = msg.body.as_deref().filter(|b| !b.is_empty()) else {
+                    continue;
+                };
+                let conv_id = msg.group_id.clone().unwrap_or_else(|| msg.source.clone());
+                let is_group = msg.group_id.is_some();
+                let ctx = trigger::MessageContext {
+                    body,
+                    sender_id: &msg.source,
+                    sender_name: msg.source_name.as_deref(),
+                    conv_id: &conv_id,
+                    conv_name: msg.group_name.as_deref().unwrap_or(&conv_id),
+                    is_group,
+                    is_outgoing: msg.is_outgoing,
+                    timestamp_ms: msg.timestamp.timestamp_millis(),
+                };
+                for action in engine.evaluate(&ctx, Instant::now()) {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    match action {
+                        trigger::TriggerAction::Reply {
+                            conv_id,
+                            is_group,
+                            text,
+                        } => match client
+                            .send_message(&conv_id, &text, is_group, &[], &[], &[], None, None)
+                            .await
+                        {
+                            Ok(_) => println!("{now_ms}\treply\t{conv_id}\t{text}"),
+                            Err(e) => eprintln!("reply to {conv_id} failed: {e}"),
+                        },
+                        trigger::TriggerAction::Run { argv, stdin_json } => {
+                            match trigger::execute_run(&argv, stdin_json) {
+                                Ok(()) => println!("{now_ms}\trun\t{}", argv.join(" ")),
+                                Err(e) => eprintln!("run {} failed: {e}", argv.join(" ")),
+                            }
+                        }
+                    }
+                }
+                let _ = std::io::stdout().flush();
+            }
+            Some(signal::types::SignalEvent::Disconnected) | None => break,
+            Some(_) => {}
+        }
+    }
+    let _ = client.shutdown().await;
+    match cli_stderr_hint(&client.stderr_output()) {
+        Some(hint) => Err(anyhow::anyhow!("{hint}")),
+        None => Ok(()),
+    }
+}
+
 /// Whether the session should auto-lock now (#438). `timeout_mins == 0` disables
 /// it; otherwise lock once keyboard `idle` reaches that many minutes and we are
 /// not already locked. Only keypresses reset idle (the caller excludes mouse
@@ -266,6 +339,7 @@ async fn main() -> Result<()> {
     let mut check = false;
     let mut list = false;
     let mut receive = false;
+    let mut watch = false;
     let mut send_args: Option<(String, String)> = None;
 
     let mut i = 1;
@@ -327,6 +401,10 @@ async fn main() -> Result<()> {
             }
             "--receive" => {
                 receive = true;
+                i += 1;
+            }
+            "--watch" => {
+                watch = true;
                 i += 1;
             }
             "--send" => {
@@ -504,6 +582,18 @@ async fn main() -> Result<()> {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("receive failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Headless trigger mode (#615). Mutually exclusive with the TUI on the
+    // same account: signal-cli allows one process per account.
+    if watch {
+        match run_watch(&config).await {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("watch failed: {e}");
                 std::process::exit(1);
             }
         }
@@ -1676,6 +1766,12 @@ async fn run_app(
     app.incognito = incognito;
     app.media.download_dir = config.download_dir.clone();
     app.media.audio_player = config.audio_player.clone();
+    // Message triggers (#615): loaded here (not in App::new) so tests and
+    // demo mode never pick up the user's triggers.toml.
+    app.triggers = trigger::TriggerEngine::load_default();
+    for warning in &app.triggers.warnings {
+        debug_log::logf(format_args!("triggers.toml: {warning}"));
+    }
     app.sidebar_width = config.sidebar_width.clamp(14, 40);
     if config.cell_pixel_width > 0 && config.cell_pixel_height > 0 {
         app.image.cell_px = (config.cell_pixel_width, config.cell_pixel_height);
@@ -2034,6 +2130,11 @@ async fn run_app(
                     },
                 )
                 .await;
+        }
+
+        // Dispatch auto-replies queued by message triggers (#615)
+        for req in std::mem::take(&mut app.pending.trigger_sends) {
+            backend.dispatch(&mut app, req).await;
         }
 
         // Expire stale typing indicators

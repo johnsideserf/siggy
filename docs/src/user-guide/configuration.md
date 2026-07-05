@@ -108,6 +108,7 @@ CLI flags override config file values for the current session:
 | `--send <TO> <MSG>` | Send one message non-interactively and exit (`TO` = `+E164` for a 1:1 or a group id); exit 0 on confirmed send, 1 on failure/timeout |
 | `--list` | Print cached conversations as tab-separated rows (`unread`, `type`, `name`, `id`) and exit; reads the local DB, no signal-cli needed |
 | `--receive` | Stream incoming messages as tab-separated rows (`timestamp_ms`, `sender`, `group-id`, `body`) until signal-cli disconnects or interrupted (Ctrl-C) |
+| `--watch` | Headless trigger mode: run `triggers.toml` rules over the incoming stream (auto-reply / run commands) without the TUI |
 | `-V`, `--version` | Print `siggy <version>` to stdout and exit |
 
 ## Environment variables
