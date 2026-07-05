@@ -1788,6 +1788,10 @@ async fn run_app(
         if app.poll_preview_fetch() {
             needs_redraw = true;
         }
+        // Voice playback progress (#618): reap the player / refresh the line.
+        if app.tick_voice_playback() {
+            needs_redraw = true;
+        }
         // Keep the encode caches bounded (#492). Cheap O(1) length check per tick.
         app.image.enforce_cache_caps();
 
@@ -2068,6 +2072,9 @@ async fn run_app(
             break;
         }
     }
+
+    // Stop any voice playback so the player does not outlive the app (#618).
+    app.stop_voice_playback();
 
     // Restore terminal title on exit
     execute!(terminal.backend_mut(), crossterm::terminal::SetTitle("")).ok();

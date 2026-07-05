@@ -1197,6 +1197,52 @@ impl App {
         }
     }
 
+    /// Kill and reap the voice player child, if one is playing (#618).
+    /// Returns true when something was actually stopped.
+    pub(crate) fn stop_voice_playback(&mut self) -> bool {
+        if let Some(mut playing) = self.media.playing.take() {
+            let _ = playing.child.kill();
+            let _ = playing.child.wait();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Advance voice-playback bookkeeping each tick (#618): reap the player
+    /// when it exits and keep the status-bar progress line fresh. Returns
+    /// true when the status line changed (so the caller redraws).
+    pub fn tick_voice_playback(&mut self) -> bool {
+        let Some(playing) = &mut self.media.playing else {
+            return false;
+        };
+        if matches!(playing.child.try_wait(), Ok(Some(_))) {
+            self.media.playing = None;
+            self.update_status();
+            return true;
+        }
+        let elapsed = playing.started.elapsed();
+        let line = match playing.duration {
+            Some(total) => format!(
+                "playing {} {} / {} (o to stop)",
+                playing.label,
+                crate::audio::format_mmss(elapsed.min(total)),
+                crate::audio::format_mmss(total)
+            ),
+            None => format!(
+                "playing {} {} (o to stop)",
+                playing.label,
+                crate::audio::format_mmss(elapsed)
+            ),
+        };
+        if self.status_message != line {
+            self.status_message = line;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Open the fuzzy command palette (#614).
     pub(crate) fn open_palette(&mut self) {
         self.palette.query.clear();
@@ -3839,13 +3885,31 @@ impl App {
                     .unwrap_or_else(|| path.clone());
                 // Voice/audio: play inline via a detected CLI player (#199)
                 // instead of handing off to the OS default app. Falls back to
-                // open::that when no player is installed.
+                // open::that when no player is installed. Pressing `o` on the
+                // message that is already playing stops it instead (#618).
                 if crate::audio::is_audio_path(&canon)
+                    && self.media.playing.as_ref().is_some_and(|p| p.path == canon)
+                {
+                    self.stop_voice_playback();
+                    self.status_message = format!("Stopped {filename}");
+                } else if crate::audio::is_audio_path(&canon)
                     && let Some(player) =
                         crate::audio::detect_player(self.media.audio_player.as_deref())
                 {
+                    // Only one voice plays at a time.
+                    self.stop_voice_playback();
                     match crate::audio::play(&canon, &player) {
-                        Ok(_) => self.status_message = format!("Playing {filename}"),
+                        Ok(child) => {
+                            let duration = crate::audio::ogg_opus_duration(&canon);
+                            self.media.playing = Some(crate::domain::PlayingVoice {
+                                child,
+                                started: Instant::now(),
+                                duration,
+                                label: filename.clone(),
+                                path: canon.clone(),
+                            });
+                            self.status_message = format!("Playing {filename}");
+                        }
                         Err(e) => self.status_message = format!("Failed to play {filename}: {e}"),
                     }
                 } else {

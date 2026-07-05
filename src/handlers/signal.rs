@@ -527,9 +527,16 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
             });
         } else if crate::audio::is_audio(&att.content_type) {
             // Voice notes / audio: a play affordance instead of a generic
-            // attachment label. `o` (open) plays it inline (#199).
+            // attachment label. `o` (open) plays it inline (#199), and the
+            // label carries the duration when the file is Ogg Opus (#618).
+            let duration = att
+                .local_path
+                .as_deref()
+                .and_then(|p| crate::audio::ogg_opus_duration(Path::new(p)))
+                .map(|d| format!(" {}", crate::audio::format_mmss(d)))
+                .unwrap_or_default();
             entries.push(ResolvedEntry {
-                body: format!("[voice \u{25b6} {label}]{path_info}"),
+                body: format!("[voice \u{25b6} {label}{duration}]{path_info}"),
                 image_lines: None,
                 image_path: None,
                 mention_ranges: Vec::new(),
