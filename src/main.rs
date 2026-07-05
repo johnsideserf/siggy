@@ -24,6 +24,7 @@ mod keybindings;
 mod link;
 mod list_overlay;
 mod mute;
+mod preview;
 mod settings_profile;
 mod setup;
 mod signal;
@@ -110,7 +111,7 @@ async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Resul
     let mut client = SignalClient::spawn(config).await?;
     let is_group = !recipient.starts_with('+');
     let rpc_id = client
-        .send_message(recipient, body, is_group, &[], &[], &[], None)
+        .send_message(recipient, body, is_group, &[], &[], &[], None, None)
         .await?;
 
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
@@ -1093,6 +1094,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
             mentions,
             text_styles,
             attachment,
+            preview,
             quote_timestamp,
             quote_author,
             quote_body,
@@ -1111,6 +1113,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                     &mentions,
                     &text_styles,
                     &att_refs,
+                    preview.as_ref(),
                     quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str())),
                 )
                 .await
@@ -1779,6 +1782,10 @@ async fn run_app(
 
         // Background image rendering: drain completed renders and spawn new ones
         if app.ensure_active_images() {
+            needs_redraw = true;
+        }
+        // Background /preview fetch (#267): apply the result when it lands.
+        if app.poll_preview_fetch() {
             needs_redraw = true;
         }
         // Keep the encode caches bounded (#492). Cheap O(1) length check per tick.

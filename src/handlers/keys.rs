@@ -1936,6 +1936,7 @@ pub fn handle_forward_key(app: &mut App, code: KeyCode) -> Option<SendRequest> {
                     mentions: Vec::new(),
                     text_styles: Vec::new(),
                     attachment: None,
+                    preview: None,
                     quote_timestamp: None,
                     quote_author: None,
                     quote_body: None,

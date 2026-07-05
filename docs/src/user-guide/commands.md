@@ -13,6 +13,7 @@ All commands start with `/`. Type `/` in Insert mode to open the autocomplete po
 | `/attach` | `/a` | | Open file browser to attach a file |
 | `/paste` | `/pa` | | Paste from clipboard (text or image) |
 | `/export` | | `[txt\|md\|json] [n]` | Export chat history to a file |
+| `/preview` | | `[url]` | Fetch a link preview for your next message (no arg discards) |
 | `/archive` | | | Archive / unarchive current conversation |
 | `/unread` | | | Mark current conversation unread and close it |
 | `/sidebar` | `/sb` | | Toggle sidebar visibility |

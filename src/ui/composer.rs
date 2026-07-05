@@ -48,6 +48,18 @@ pub(super) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
                 .fg(theme.accent_secondary)
                 .add_modifier(Modifier::ITALIC),
         )));
+    } else if let Some(ref preview) = app.media.pending_preview {
+        // A fetched /preview waiting to attach to the next message (#267).
+        let label = format!(
+            " preview: {} ",
+            truncate(preview.title.as_deref().unwrap_or(&preview.url), 30)
+        );
+        block = block.title(Line::from(Span::styled(
+            label,
+            Style::default()
+                .fg(theme.fg_muted)
+                .add_modifier(Modifier::ITALIC),
+        )));
     }
 
     // Build attachment badge if present

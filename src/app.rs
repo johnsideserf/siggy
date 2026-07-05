@@ -1167,6 +1167,36 @@ impl App {
         );
     }
 
+    /// Drain the background `/preview` fetch, if one is running (#267).
+    /// Returns true when a result was applied (so the caller can redraw).
+    pub fn poll_preview_fetch(&mut self) -> bool {
+        let Some(rx) = &self.media.preview_rx else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(Ok(preview)) => {
+                self.status_message = format!(
+                    "preview ready: {} (sends with your next message; /preview to discard)",
+                    preview.title.as_deref().unwrap_or(&preview.url)
+                );
+                self.media.pending_preview = Some(preview);
+                self.media.preview_rx = None;
+                true
+            }
+            Ok(Err(e)) => {
+                self.status_message = format!("preview failed: {e}");
+                self.media.preview_rx = None;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status_message = "preview failed: fetch thread died".to_string();
+                self.media.preview_rx = None;
+                true
+            }
+        }
+    }
+
     /// Open the fuzzy command palette (#614).
     pub(crate) fn open_palette(&mut self) {
         self.palette.query.clear();

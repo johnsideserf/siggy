@@ -170,6 +170,10 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             app.export_chat_history(format, limit);
             None
         }
+        InputAction::Preview(opt_url) => {
+            preview(app, opt_url);
+            None
+        }
         InputAction::Archive => {
             archive_toggle(app);
             None
@@ -187,7 +191,11 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
 
 fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
     let text = input::replace_shortcodes(&raw_text);
-    if text.is_empty() && app.pending_attachment.is_none() && app.editing_message.is_none() {
+    if text.is_empty()
+        && app.pending_attachment.is_none()
+        && app.editing_message.is_none()
+        && app.media.pending_preview.is_none()
+    {
         return None;
     }
 
@@ -198,6 +206,20 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
     let Some(conv_id) = app.active_conversation.clone() else {
         app.status_message = "No active conversation. Use /join <name> first.".to_string();
         return None;
+    };
+
+    // Attach the pending /preview (#267). Signal requires the previewed URL
+    // to appear in the message body, so append it when the text lacks it.
+    let preview = app.media.pending_preview.take();
+    let text = match &preview {
+        Some(p) if !text.contains(&p.url) => {
+            if text.is_empty() {
+                p.url.clone()
+            } else {
+                format!("{text}\n{}", p.url)
+            }
+        }
+        _ => text,
     };
 
     let attachment = app.pending_attachment.take();
@@ -278,7 +300,7 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         expiration_start_ms: out_expiry_start,
         poll_data: None,
         poll_votes: Vec::new(),
-        preview: None,
+        preview: preview.clone(),
         preview_image_lines: None,
         preview_image_path: None,
     };
@@ -303,6 +325,7 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
         mentions: wire.mentions,
         text_styles: wire.styles,
         attachment,
+        preview,
         quote_timestamp,
         quote_author,
         quote_body,
@@ -458,6 +481,33 @@ fn build_outgoing_quote(app: &App) -> (Option<Quote>, Option<i64>, Option<String
         Some(author_phone.clone()),
         Some(body.clone()),
     )
+}
+
+/// Handle `/preview [url]` (#267): kick off a background metadata fetch for
+/// the URL, or clear the pending preview when no URL is given. The fetched
+/// preview attaches to the next message sent (which must contain the URL;
+/// send_text appends it if missing).
+fn preview(app: &mut App, opt_url: Option<String>) {
+    let Some(url) = opt_url else {
+        app.status_message = if app.media.pending_preview.take().is_some() {
+            "preview discarded".to_string()
+        } else if app.media.preview_rx.take().is_some() {
+            "preview fetch cancelled".to_string()
+        } else {
+            "no pending preview (use /preview <url>)".to_string()
+        };
+        return;
+    };
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        app.status_message = "/preview needs an http(s) URL".to_string();
+        return;
+    }
+    if app.media.preview_rx.is_some() {
+        app.status_message = "a preview fetch is already running".to_string();
+        return;
+    }
+    app.media.preview_rx = Some(crate::preview::spawn_fetch(url));
+    app.status_message = "fetching preview...".to_string();
 }
 
 /// Close the active conversation and reset per-conversation UI state
