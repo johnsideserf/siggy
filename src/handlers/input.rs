@@ -172,8 +172,8 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
             allow_multiple,
         } => create_poll(app, question, options, allow_multiple),
         InputAction::Paste => app.handle_paste_command(),
-        InputAction::Export(limit) => {
-            app.export_chat_history(limit);
+        InputAction::Export { format, limit } => {
+            app.export_chat_history(format, limit);
             None
         }
         InputAction::Unknown(msg) => {

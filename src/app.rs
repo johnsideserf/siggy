@@ -3766,8 +3766,14 @@ impl App {
         }
     }
 
-    /// Export the active conversation's messages to a plain text file.
-    pub(crate) fn export_chat_history(&mut self, limit: Option<usize>) {
+    /// Export the active conversation's messages to a file in the given
+    /// format (plain text, Markdown, or JSON). Rendering lives in
+    /// `crate::export`; this owns file naming, sanitizing, and the write.
+    pub(crate) fn export_chat_history(
+        &mut self,
+        format: crate::export::ExportFormat,
+        limit: Option<usize>,
+    ) {
         let conv_id = match self.active_conversation.as_ref() {
             Some(id) => id.clone(),
             None => {
@@ -3791,8 +3797,6 @@ impl App {
             return;
         }
 
-        // Build plain text output
-        let mut output = String::new();
         let safe_name: String = conv
             .name
             .chars()
@@ -3804,39 +3808,25 @@ impl App {
                 }
             })
             .collect();
-        let date = chrono::Local::now().format("%Y-%m-%d");
-        let filename = format!("siggy-export-{safe_name}-{date}.txt");
+        let now = chrono::Local::now();
+        let filename = format!(
+            "siggy-export-{safe_name}-{}.{}",
+            now.format("%Y-%m-%d"),
+            format.extension()
+        );
 
-        output.push_str(&format!("Chat export: {}\n", conv.name));
-        output.push_str(&format!(
-            "Exported: {}\n",
-            chrono::Local::now().format("%Y-%m-%d %H:%M")
-        ));
-        output.push_str(&format!("Messages: {}\n", export_msgs.len()));
-        output.push_str(&"-".repeat(60));
-        output.push('\n');
+        let output = crate::export::render(format, &conv.name, export_msgs, now);
 
-        for msg in export_msgs {
-            let time = msg
-                .timestamp
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M");
-            if msg.is_system {
-                output.push_str(&format!("[{time}] * {}\n", msg.body));
-            } else {
-                let prefix = if msg.is_edited { "(edited) " } else { "" };
-                output.push_str(&format!("[{time}] <{}> {prefix}{}\n", msg.sender, msg.body));
-                if let Some(ref q) = msg.quote {
-                    output.push_str(&format!("  > <{}> {}\n", q.author, q.body));
-                }
-            }
-        }
-
-        // Strip control characters from the assembled export (message bodies
+        // Strip control characters from text/Markdown exports (message bodies
         // and names are remote-controlled) so the saved file cannot inject
         // terminal escapes when viewed with cat/less (#504). Structural
-        // newlines and tabs are preserved.
-        let output = crate::debug_log::strip_control_chars(&output, true);
+        // newlines and tabs are preserved. JSON needs no stripping: serde
+        // escapes control characters inside strings.
+        let output = if format == crate::export::ExportFormat::Json {
+            output
+        } else {
+            crate::debug_log::strip_control_chars(&output, true)
+        };
 
         // Write to download dir or home
         let dir = dirs::download_dir()
