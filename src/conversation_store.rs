@@ -285,6 +285,15 @@ pub struct ConversationStore {
     pub uuid_to_name: HashMap<String, String>,
     /// Phone number → UUID mapping (for sending mentions).
     pub number_to_uuid: HashMap<String, String>,
+    /// Conversation key → Signal username with discriminator, no `@`
+    /// (e.g. `alice.42`), for display next to names (#612).
+    pub usernames: HashMap<String, String>,
+    /// Lowercased username → conversation key, for `/join @handle` (#612).
+    pub username_to_id: HashMap<String, String>,
+    /// Show `@handle` next to 1:1 conversation names. Display preference
+    /// living beside the username maps it gates; persisted via
+    /// `Config::show_usernames` (#612).
+    pub show_usernames: bool,
     /// Last-read message index per conversation (for unread marker).
     pub last_read_index: HashMap<String, usize>,
     /// Groups indexed by group_id (with member lists for @mention autocomplete).
@@ -301,6 +310,9 @@ impl ConversationStore {
             contact_names: HashMap::new(),
             uuid_to_name: HashMap::new(),
             number_to_uuid: HashMap::new(),
+            usernames: HashMap::new(),
+            username_to_id: HashMap::new(),
+            show_usernames: true,
             last_read_index: HashMap::new(),
             groups: HashMap::new(),
             has_more_messages: HashSet::new(),
@@ -347,6 +359,24 @@ impl ConversationStore {
             }
         }
         self.conversations.get_mut(id).unwrap()
+    }
+
+    /// Chat-pane title for a conversation: its name, with ` (@handle)`
+    /// appended for 1:1 conversations whose contact has a Signal username —
+    /// gated by [`Self::show_usernames`]. Skipped when the name already *is*
+    /// the handle (username-only contact with no profile name) (#612).
+    pub fn display_title(&self, id: &str) -> String {
+        let Some(conv) = self.conversations.get(id) else {
+            return id.to_string();
+        };
+        if !conv.is_group
+            && self.show_usernames
+            && let Some(username) = self.usernames.get(id)
+            && conv.name != format!("@{username}")
+        {
+            return format!("{} (@{username})", conv.name);
+        }
+        conv.name.clone()
     }
 
     /// Remember a contact's display name if not already known.

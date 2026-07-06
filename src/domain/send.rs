@@ -133,6 +133,11 @@ pub enum SendRequest {
         poll_timestamp: i64,
     },
     ListIdentities,
+    /// Resolve a Signal username (`name.123`, no `@`) to an account uuid via
+    /// getUserStatus, for `/join @handle` on unknown handles (#612).
+    ResolveUsername {
+        username: String,
+    },
     TrustIdentity {
         recipient: String,
         safety_number: String,

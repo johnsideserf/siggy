@@ -1,11 +1,12 @@
 ---
 source: src/ui/mod.rs
+assertion_line: 640
 expression: output
 ---
  Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
   ? +15550007777 (1) ││╭ Help ──────────────────────────────────────────────╮                      │
   • ##Family (2)     │││  Commands                                          │                      │
-  • Carol (1)        │││  /join <name>        Switch to a conversation      │                      │
+  • Carol (1)        │││  /join <name>        Switch to a conversation (@han│                      │
     ##Rust Devs      │││  /part               Leave current conversation    │                      │
     Bob              │││  /delete             Delete current conversation   │ run                  │
 ▸   Alice            │││  /attach             Attach a file                 │d before 7            │

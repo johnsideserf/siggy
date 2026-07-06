@@ -646,8 +646,8 @@ pub struct SettingDef {
 
 /// Section boundary indices within the SETTINGS array.
 pub const SETTINGS_SECTION_DISPLAY: usize = 3;
-pub const SETTINGS_SECTION_MESSAGES: usize = 9;
-pub const SETTINGS_SECTION_INTERFACE: usize = 12;
+pub const SETTINGS_SECTION_MESSAGES: usize = 10;
+pub const SETTINGS_SECTION_INTERFACE: usize = 13;
 
 /// Visual order of settings items (logical indices into the combined toggle+special list).
 /// Toggle indices 0..SETTINGS.len() map to SETTINGS entries.
@@ -655,13 +655,13 @@ pub const SETTINGS_SECTION_INTERFACE: usize = 12;
 /// Navigation walks this array so j/k follows the visual layout.
 pub const SETTINGS_VISUAL_ORDER: &[usize] = &[
     // Notifications
-    0, 1, 2, 15, // DM, Group, Desktop, Notification preview
+    0, 1, 2, 16, // DM, Group, Desktop, Notification preview
     // Display
-    3, 4, 5, 6, 7, 8, 16, // Link previews .. Emoji to text, Image mode
+    3, 4, 5, 6, 7, 8, 9, 17, // Link previews .. Show usernames, Image mode
     // Messages
-    9, 10, 11, // Show reactions, Verbose reactions, Send read receipts
+    10, 11, 12, // Show reactions, Verbose reactions, Send read receipts
     // Interface
-    12, 13, 14, 17, // Sidebar visible, Mouse, Sidebar on right, Customize...
+    13, 14, 15, 18, // Sidebar visible, Mouse, Sidebar on right, Customize...
 ];
 
 pub const SETTINGS: &[SettingDef] = &[
@@ -739,7 +739,15 @@ pub const SETTINGS: &[SettingDef] = &[
         save: Some(|c, v| c.emoji_to_text = v),
         load: Some(|c| c.emoji_to_text),
     },
-    // — Messages (9–11) —
+    SettingDef {
+        label: "Show usernames",
+        hint: "Show @handle next to 1:1 conversation names",
+        get: |a| a.store.show_usernames,
+        set: |a, v| a.store.show_usernames = v,
+        save: Some(|c, v| c.show_usernames = v),
+        load: Some(|c| c.show_usernames),
+    },
+    // — Messages (10–12) —
     SettingDef {
         label: "Show reactions",
         hint: "Show emoji reactions on messages",
@@ -764,7 +772,7 @@ pub const SETTINGS: &[SettingDef] = &[
         save: Some(|c, v| c.send_read_receipts = v),
         load: Some(|c| c.send_read_receipts),
     },
-    // — Interface (12–14) —
+    // — Interface (13–15) —
     SettingDef {
         label: "Sidebar visible",
         hint: "Show the conversation list sidebar",
@@ -1222,7 +1230,19 @@ impl App {
             .contact_names
             .iter()
             .filter(|(_, name)| !name.is_empty())
-            .map(|(number, name)| (number.clone(), name.clone()))
+            .map(|(key, name)| {
+                // uuid-keyed (username-only) contacts show their @handle
+                // instead of an opaque uuid; @handles re-resolve on select
+                // via the /join username path (#612)
+                let id = if !key.starts_with('+')
+                    && let Some(username) = self.store.usernames.get(key)
+                {
+                    format!("@{username}")
+                } else {
+                    key.clone()
+                };
+                (id, name.clone())
+            })
             .collect();
         self.contacts_overlay.filtered =
             list_overlay::filter_name_number_pairs(pairs, &self.contacts_overlay.filter);
@@ -3583,24 +3603,68 @@ impl App {
         self.clear_kitty_placements();
     }
 
-    pub(crate) fn join_conversation(&mut self, target: &str) {
+    /// Focus an existing conversation: queue read receipts, clear unread,
+    /// restore scroll. Callers ensure the conversation exists.
+    fn activate_conversation(&mut self, id: &str) {
+        let read_from = self.store.last_read_index.get(id).copied().unwrap_or(0);
+        self.queue_read_receipts_for_conv(id, read_from);
+        self.active_conversation = Some(id.to_string());
+        if let Some(conv) = self.store.conversations.get_mut(id) {
+            conv.unread = 0;
+        }
+        self.restore_scroll_position(id);
+
+        self.update_status();
+    }
+
+    /// Switch to (or create) the conversation named by `target`.
+    ///
+    /// Returns `Some(username)` when the target is an unknown `@handle` that
+    /// needs a getUserStatus round-trip; the caller turns that into a
+    /// [`SendRequest::ResolveUsername`] and the response is correlated via
+    /// `pending.username_resolve` (#612).
+    pub(crate) fn join_conversation(&mut self, target: &str) -> Option<String> {
         self.leave_active_conversation();
         // Stale from the previous conversation; the next render sets it. Prevents
         // evicting the new conversation's image_lines before it has drawn (#492).
         self.scroll.render_window_start = 0;
 
+        // Username target: @handle or u:handle (#612)
+        if let Some(handle) = target
+            .strip_prefix('@')
+            .or_else(|| target.strip_prefix("u:"))
+        {
+            let handle_lower = handle.to_lowercase();
+            if let Some(key) = self.store.username_to_id.get(&handle_lower).cloned() {
+                // Known contact: open (or create) its conversation under the
+                // contact key (phone number, or uuid for username-only contacts).
+                let name = self
+                    .store
+                    .contact_names
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| format!("@{handle}"));
+                self.store
+                    .get_or_create_conversation(&key, &name, false, &self.db);
+                self.activate_conversation(&key);
+                return None;
+            }
+            // Unknown handle: a full username (name.discriminator) can be
+            // resolved to a uuid via getUserStatus; a bare nickname cannot.
+            if handle_lower.contains('.') {
+                self.pending.username_resolve = Some(handle_lower.clone());
+                self.status_message = format!("Resolving @{handle_lower}...");
+                return Some(handle_lower);
+            }
+            self.status_message =
+                format!("Unknown username @{handle} - use the full handle (name.123)");
+            return None;
+        }
+
         // Try exact match first
         if self.store.conversations.contains_key(target) {
-            let read_from = self.store.last_read_index.get(target).copied().unwrap_or(0);
-            self.queue_read_receipts_for_conv(target, read_from);
-            self.active_conversation = Some(target.to_string());
-            if let Some(conv) = self.store.conversations.get_mut(target) {
-                conv.unread = 0;
-            }
-            self.restore_scroll_position(target);
-
-            self.update_status();
-            return;
+            self.activate_conversation(target);
+            return None;
         }
 
         // Try matching by name (case-insensitive)
@@ -3613,16 +3677,17 @@ impl App {
             .map(|(id, _)| id.clone());
 
         if let Some(id) = found_id {
-            let read_from = self.store.last_read_index.get(&id).copied().unwrap_or(0);
-            self.queue_read_receipts_for_conv(&id, read_from);
-            self.active_conversation = Some(id.clone());
-            if let Some(conv) = self.store.conversations.get_mut(&id) {
-                conv.unread = 0;
-            }
-            self.restore_scroll_position(&id);
+            self.activate_conversation(&id);
+            return None;
+        }
 
-            self.update_status();
-            return;
+        // Known contact key without a conversation yet (e.g. a username-only
+        // contact selected in the contacts overlay, keyed by uuid) (#612)
+        if let Some(name) = self.store.contact_names.get(target).cloned() {
+            self.store
+                .get_or_create_conversation(target, &name, false, &self.db);
+            self.activate_conversation(target);
+            return None;
         }
 
         // Create a new 1:1 conversation if target looks like a phone number
@@ -3636,6 +3701,7 @@ impl App {
         } else {
             self.status_message = format!("Conversation not found: {target}");
         }
+        None
     }
 
     /// Capture the viewport pin anchor on the first sync message arrival

@@ -23,7 +23,7 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
 
     // Help table entries: (key, description)
     let commands: &[(&str, &str)] = &[
-        ("/join <name>", "Switch to a conversation"),
+        ("/join <name>", "Switch to a conversation (@handle works)"),
         ("/part", "Leave current conversation"),
         ("/delete", "Delete current conversation"),
         ("/attach", "Attach a file"),

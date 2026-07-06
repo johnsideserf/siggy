@@ -203,6 +203,10 @@ pub struct Config {
     #[serde(default)]
     pub reaction_verbose: bool,
 
+    /// Show Signal usernames (@handle) next to 1:1 conversation names (#612)
+    #[serde(default = "default_true")]
+    pub show_usernames: bool,
+
     /// Send read receipts to message senders when viewing conversations
     #[serde(default = "default_true")]
     pub send_read_receipts: bool,
@@ -322,6 +326,7 @@ impl Default for Config {
             emoji_to_text: false,
             show_reactions: true,
             reaction_verbose: false,
+            show_usernames: true,
             send_read_receipts: true,
             mouse_enabled: true,
             sidebar_on_right: false,

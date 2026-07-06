@@ -104,15 +104,27 @@ fn cli_stderr_hint(stderr: &str) -> Option<&'static str> {
     }
 }
 
+/// Classify a `--send` recipient: phone numbers and usernames (`@name.123`
+/// or `u:name.123`, normalized to signal-cli's `u:` form) are 1:1 targets;
+/// anything else is treated as a group id (#257, #612).
+fn oneshot_target(recipient: &str) -> (String, bool) {
+    if let Some(handle) = recipient.strip_prefix('@') {
+        (format!("u:{handle}"), false)
+    } else if recipient.starts_with('+') || recipient.starts_with("u:") {
+        (recipient.to_string(), false)
+    } else {
+        (recipient.to_string(), true)
+    }
+}
+
 /// Send a single message non-interactively, await confirmation, and return
 /// whether it was accepted (#257). Spawns signal-cli, sends, then waits up to
-/// 30s for the correlated `SendTimestamp` (ok) or `SendFailed`. A recipient that
-/// does not start with `+` is treated as a group id.
+/// 30s for the correlated `SendTimestamp` (ok) or `SendFailed`.
 async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Result<bool> {
     let mut client = SignalClient::spawn(config).await?;
-    let is_group = !recipient.starts_with('+');
+    let (target, is_group) = oneshot_target(recipient);
     let rpc_id = client
-        .send_message(recipient, body, is_group, &[], &[], &[], None, None)
+        .send_message(&target, body, is_group, &[], &[], &[], None, None)
         .await?;
 
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
@@ -1617,6 +1629,12 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
         SendRequest::ListIdentities => {
             let _ = signal_client.list_identities().await;
         }
+        SendRequest::ResolveUsername { username } => {
+            if let Err(e) = signal_client.get_user_status(&username).await {
+                app.pending.username_resolve = None;
+                app.status_message = format!("Username lookup failed: {e}");
+            }
+        }
         SendRequest::TrustIdentity {
             recipient,
             safety_number,
@@ -2238,6 +2256,20 @@ async fn run_app(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oneshot_target_classifies_recipients() {
+        // Phone number: 1:1, passed through
+        assert_eq!(
+            oneshot_target("+15551234567"),
+            ("+15551234567".into(), false)
+        );
+        // Username forms: 1:1, normalized to signal-cli's u: prefix (#612)
+        assert_eq!(oneshot_target("@alice.42"), ("u:alice.42".into(), false));
+        assert_eq!(oneshot_target("u:alice.42"), ("u:alice.42".into(), false));
+        // Anything else: group id
+        assert_eq!(oneshot_target("grpid=="), ("grpid==".into(), true));
+    }
 
     #[test]
     fn should_auto_lock_respects_timeout_and_state() {

@@ -1,6 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 4364
+source: src/ui/mod.rs
+assertion_line: 698
 expression: output
 ---
  Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
@@ -18,17 +18,17 @@ expression: output
                      ││✓ │    [x] Receipt colors                          │                        │
                      ││[0│    [ ] Nerd Font icons                         │                        │
                      ││[0│    [ ] Emoji to text                           │/localmarket.example.com│
-                     ││  │    Image mode: halfblock                       │                        │
-                     ││  │  Messages                                      │ry Saturday…            │
-                     ││  │    [x] Show reactions                          │                        │
-                     ││○ │    [ ] Verbose reactions                       │                        │
-                     ││✓ │    [x] Send read receipts                      │owded.                  │
+                     ││  │    [x] Show usernames                          │                        │
+                     ││  │    Image mode: halfblock                       │ry Saturday…            │
+                     ││  │  Messages                                      │                        │
+                     ││○ │    [x] Show reactions                          │                        │
+                     ││✓ │    [ ] Verbose reactions                       │owded.                  │
+                     ││○ │    [x] Send read receipts                      │                        │
                      ││○ │  Interface                                     │                        │
-                     ││○ │    [x] Sidebar visible                         │                        │
-                     ││○ │    [x] Mouse support                           │nt to browse early      │
-                     ││[0│    [ ] Sidebar on right                        │                        │
-                     ││  │    Customize...                                │                        │
-                     │╰──│  Play a sound for incoming direct messages     │────────────────────────╯
+                     ││○ │    [x] Sidebar visible                         │nt to browse early      │
+                     ││[0│    [x] Mouse support                           │                        │
+                     ││  │    [ ] Sidebar on right                        │                        │
+                     │╰──│    Customize...                                │────────────────────────╯
                      │╭──╰────────────────────────────────────────────────╯────────────────────────╮
                      ││  Type a message...                                                         │
                      │╰────────────────────────────────────────────────────────────────────────────╯

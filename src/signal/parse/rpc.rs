@@ -28,7 +28,10 @@ pub fn parse_rpc_result(
             let contacts: Vec<Contact> = arr
                 .iter()
                 .filter_map(|obj| {
-                    let number = obj.get("number").and_then(|v| v.as_str())?;
+                    let number = obj
+                        .get("number")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
                     let name = obj
                         .get("profileName")
                         .and_then(|v| v.as_str())
@@ -40,10 +43,21 @@ pub fn parse_rpc_result(
                         .get("uuid")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    let username = obj
+                        .get("username")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                    // Username-only contacts have no number; keep them as long
+                    // as some stable identifier exists (#612).
+                    if number.is_none() && uuid.is_none() {
+                        return None;
+                    }
                     Some(Contact {
-                        number: number.to_string(),
+                        number,
                         name,
                         uuid,
+                        username,
                     })
                 })
                 .collect();
@@ -131,6 +145,27 @@ pub fn parse_rpc_result(
                 })
                 .collect();
             Some(SignalEvent::IdentityList(identities))
+        }
+        "getUserStatus" => {
+            let arr = result.as_array()?;
+            let statuses: Vec<UserStatus> = arr
+                .iter()
+                .filter_map(|obj| {
+                    let recipient = obj.get("recipient").and_then(|v| v.as_str())?;
+                    let get_str =
+                        |k: &str| obj.get(k).and_then(|v| v.as_str()).map(|s| s.to_string());
+                    Some(UserStatus {
+                        recipient: recipient.to_string(),
+                        username: get_str("username"),
+                        uuid: get_str("uuid"),
+                        registered: obj
+                            .get("isRegistered")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    })
+                })
+                .collect();
+            Some(SignalEvent::UserStatusList(statuses))
         }
         "sendPollCreate" => {
             let id = rpc_id?.to_string();

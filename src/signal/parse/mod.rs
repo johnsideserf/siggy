@@ -57,9 +57,9 @@ mod tests {
         match event {
             SignalEvent::ContactList(contacts) => {
                 assert_eq!(contacts.len(), 2);
-                assert_eq!(contacts[0].number, "+15551234567");
+                assert_eq!(contacts[0].number.as_deref(), Some("+15551234567"));
                 assert_eq!(contacts[0].name.as_deref(), Some("Alice"));
-                assert_eq!(contacts[1].number, "+15559876543");
+                assert_eq!(contacts[1].number.as_deref(), Some("+15559876543"));
                 assert_eq!(contacts[1].name.as_deref(), Some("Bob"));
             }
             _ => panic!("Expected ContactList"),
@@ -99,7 +99,7 @@ mod tests {
         match event {
             SignalEvent::ContactList(contacts) => {
                 assert_eq!(contacts.len(), 1);
-                assert_eq!(contacts[0].number, "+1");
+                assert_eq!(contacts[0].number.as_deref(), Some("+1"));
             }
             _ => panic!("Expected ContactList"),
         }
@@ -586,6 +586,65 @@ mod tests {
                 assert_eq!(contacts[1].uuid, None);
             }
             _ => panic!("Expected ContactList"),
+        }
+    }
+
+    #[test]
+    fn parse_list_contacts_with_username() {
+        let result = json!([
+            {"number": "+15551234567", "profileName": "Alice", "uuid": "abc-def-123", "username": "alice.42"},
+            {"number": "+15559876543", "contactName": "Bob"}
+        ]);
+        let event = parse_rpc_result("listContacts", &result, None).unwrap();
+        match event {
+            SignalEvent::ContactList(contacts) => {
+                assert_eq!(contacts[0].username.as_deref(), Some("alice.42"));
+                assert_eq!(contacts[1].username, None);
+            }
+            _ => panic!("Expected ContactList"),
+        }
+    }
+
+    #[test]
+    fn parse_list_contacts_username_only_contact_kept() {
+        // Username-only contacts (phone-number-privacy users) have no "number"
+        // field but do carry a uuid; they must not be dropped (#612).
+        let result = json!([
+            {"uuid": "u-u-i-d", "username": "carol.99", "profileName": "Carol"}
+        ]);
+        let event = parse_rpc_result("listContacts", &result, None).unwrap();
+        match event {
+            SignalEvent::ContactList(contacts) => {
+                assert_eq!(contacts.len(), 1);
+                assert_eq!(contacts[0].number, None);
+                assert_eq!(contacts[0].uuid.as_deref(), Some("u-u-i-d"));
+                assert_eq!(contacts[0].username.as_deref(), Some("carol.99"));
+                assert_eq!(contacts[0].name.as_deref(), Some("Carol"));
+            }
+            _ => panic!("Expected ContactList"),
+        }
+    }
+
+    #[test]
+    fn parse_get_user_status_username_resolution() {
+        // getUserStatus queried by username: uuid present when registered (#612).
+        let result = json!([
+            {"recipient": "carol.99", "username": "carol.99", "uuid": "u-u-i-d", "isRegistered": true},
+            {"recipient": "ghost.1", "uuid": null, "isRegistered": false}
+        ]);
+        let event = parse_rpc_result("getUserStatus", &result, None).unwrap();
+        match event {
+            SignalEvent::UserStatusList(statuses) => {
+                assert_eq!(statuses.len(), 2);
+                assert_eq!(statuses[0].recipient, "carol.99");
+                assert_eq!(statuses[0].username.as_deref(), Some("carol.99"));
+                assert_eq!(statuses[0].uuid.as_deref(), Some("u-u-i-d"));
+                assert!(statuses[0].registered);
+                assert_eq!(statuses[1].recipient, "ghost.1");
+                assert_eq!(statuses[1].uuid, None);
+                assert!(!statuses[1].registered);
+            }
+            _ => panic!("Expected UserStatusList"),
         }
     }
 
