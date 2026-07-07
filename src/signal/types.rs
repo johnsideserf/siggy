@@ -256,6 +256,9 @@ pub enum SignalEvent {
     ContactList(Vec<Contact>),
     GroupList(Vec<Group>),
     IdentityList(Vec<IdentityInfo>),
+    /// getUserStatus response: registration status per queried recipient,
+    /// used for username → uuid resolution (#612).
+    UserStatusList(Vec<UserStatus>),
     Error(String),
     /// The signal-cli stdout reader reached EOF (the child exited). Emitted
     /// explicitly so the app can mark itself disconnected and fail any in-flight
@@ -378,6 +381,9 @@ impl SignalEvent {
             Self::ContactList(contacts) => format!("ContactList(count={})", contacts.len()),
             Self::GroupList(groups) => format!("GroupList(count={})", groups.len()),
             Self::IdentityList(ids) => format!("IdentityList(count={})", ids.len()),
+            Self::UserStatusList(statuses) => {
+                format!("UserStatusList(count={})", statuses.len())
+            }
             Self::Error(e) => format!("Error({e})"),
             Self::Disconnected => "Disconnected".to_string(),
         }
@@ -526,9 +532,32 @@ impl StyleType {
 /// Contact info from signal-cli
 #[derive(Debug, Clone)]
 pub struct Contact {
-    pub number: String,
+    /// E.164 phone number. `None` for username-only contacts
+    /// (phone-number-privacy users) — those carry a uuid instead (#612).
+    pub number: Option<String>,
     pub name: Option<String>,
     pub uuid: Option<String>,
+    /// Signal username with discriminator (e.g. `alice.42`), without `@` (#612).
+    pub username: Option<String>,
+}
+
+impl Contact {
+    /// Stable conversation/map key for this contact: phone number when
+    /// present, else the ACI uuid. `None` only for malformed entries.
+    pub fn key(&self) -> Option<&str> {
+        self.number.as_deref().or(self.uuid.as_deref())
+    }
+}
+
+/// One entry of a getUserStatus response (#612). `recipient` echoes the
+/// queried identifier (for usernames, without the `u:` prefix); `uuid` is
+/// present only when the account is registered.
+#[derive(Debug, Clone)]
+pub struct UserStatus {
+    pub recipient: String,
+    pub username: Option<String>,
+    pub uuid: Option<String>,
+    pub registered: bool,
 }
 
 /// Group info from signal-cli

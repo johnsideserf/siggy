@@ -49,4 +49,8 @@ pub struct PendingState {
     /// Auto-replies queued by message triggers (#615), drained by the main
     /// loop into `dispatch_send` like any composer send.
     pub trigger_sends: Vec<SendRequest>,
+    /// Username awaiting getUserStatus resolution from `/join @handle`
+    /// (lowercased, no `@`). Cleared when the `UserStatusList` response
+    /// arrives (#612).
+    pub username_resolve: Option<String>,
 }

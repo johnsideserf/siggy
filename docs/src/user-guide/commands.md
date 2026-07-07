@@ -6,7 +6,7 @@ All commands start with `/`. Type `/` in Insert mode to open the autocomplete po
 
 | Command | Alias | Arguments | Description |
 |---|---|---|---|
-| `/join` | `/j` | `<name>` | Switch to a conversation by contact name, number, or group |
+| `/join` | `/j` | `<name>` | Switch to a conversation by contact name, number, `@username`, or group |
 | `/part` | `/p` | | Leave current conversation |
 | `/delete` | | | Delete current conversation (declines pending message requests) |
 | `/search` | `/s` | `<query>` | Search messages across all conversations |
@@ -200,3 +200,19 @@ phone number in E.164 format:
 ```
 
 The conversation will appear in your sidebar once the first message is exchanged.
+
+## Signal usernames
+
+Contacts who use Signal's phone-number privacy are reachable by username
+instead of number. `/join` accepts `@` handles:
+
+```
+/join @alice.42
+```
+
+Known contacts resolve instantly; an unknown handle needs the full form with
+its numeric discriminator (`name.123`) and is looked up on the Signal servers.
+Usernames of your contacts also show next to their name in the chat header —
+toggle this off with the **Show usernames** setting (`Ctrl+P` → Settings).
+
+The non-interactive sender accepts the same forms: `siggy --send @alice.42 -m hi`.

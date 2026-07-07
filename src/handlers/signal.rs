@@ -276,8 +276,16 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
         SignalEvent::ContactList(contacts) => handle_contact_list(app, contacts),
         SignalEvent::GroupList(groups) => handle_group_list(app, groups),
         SignalEvent::IdentityList(identities) => handle_identity_list(app, identities),
+        SignalEvent::UserStatusList(statuses) => handle_user_status_list(app, statuses),
         SignalEvent::Error(ref err) => {
             crate::debug_log::logf(format_args!("signal event error: {err}"));
+            // A getUserStatus RPC error means the pending /join @handle
+            // resolution will never get a UserStatusList — clear the marker
+            // so the join doesn't wedge on "Resolving..." (#612). The error
+            // text itself lands in the status bar below.
+            if err.starts_with("getUserStatus") {
+                app.pending.username_resolve = None;
+            }
             match SignalCliHint::classify(err) {
                 Some(hint) => {
                     // Show the actionable hint once per session per category;
@@ -1399,17 +1407,87 @@ fn handle_read_sync(app: &mut App, read_messages: Vec<(String, i64)>) {
     }
 }
 
+/// Handle a getUserStatus response: complete a pending `/join @handle`
+/// username resolution (#612). Responses with no pending join are ignored —
+/// nothing else issues getUserStatus. A response arriving while a join is
+/// pending always terminates the pending state, so the UI can never wedge on
+/// "Resolving..." (only one getUserStatus is ever in flight).
+fn handle_user_status_list(app: &mut App, statuses: Vec<crate::signal::types::UserStatus>) {
+    let Some(pending) = app.pending.username_resolve.clone() else {
+        return;
+    };
+    app.pending.username_resolve = None;
+
+    // Tolerate signal-cli echoing the queried recipient with the u: prefix.
+    let status = statuses.iter().find(|s| {
+        s.recipient
+            .trim_start_matches("u:")
+            .eq_ignore_ascii_case(&pending)
+            || s.username
+                .as_deref()
+                .is_some_and(|u| u.eq_ignore_ascii_case(&pending))
+    });
+    let Some(status) = status else {
+        app.status_message = format!("Username lookup failed for @{pending}");
+        return;
+    };
+
+    let (true, Some(uuid)) = (status.registered, status.uuid.as_deref()) else {
+        app.status_message = format!("No Signal account found for @{pending}");
+        return;
+    };
+    let handle = status.username.clone().unwrap_or_else(|| pending.clone());
+    // The resolved account may already be a phone-keyed contact whose
+    // username simply wasn't in the local contact list — reuse that key, or
+    // incoming messages (keyed by sourceNumber) would land in a parallel,
+    // uuid-keyed conversation.
+    let key = app
+        .store
+        .number_to_uuid
+        .iter()
+        .find(|(_, u)| u.as_str() == uuid)
+        .map(|(number, _)| number.clone())
+        .unwrap_or_else(|| uuid.to_string());
+    // Remember the resolution so future /join hits skip the round-trip
+    app.store.usernames.insert(key.clone(), handle.clone());
+    app.store.username_to_id.insert(handle.to_lowercase(), key);
+    // Re-join through the username path, which now resolves locally and
+    // creates the conversation under the right key with the right name.
+    app.join_conversation(&format!("@{handle}"));
+}
+
 fn handle_contact_list(app: &mut App, contacts: Vec<Contact>) {
     app.loading = false;
     app.startup_status.clear();
     for contact in contacts {
-        // Store name in lookup for future message resolution
+        // Conversation/map key: phone number, else uuid for username-only
+        // contacts (#612). Entries with neither are dropped at parse time.
+        let Some(key) = contact.key().map(|k| k.to_string()) else {
+            continue;
+        };
+        // Store name in lookup for future message resolution. A username-only
+        // contact with no profile name still gets a displayable identity: the
+        // @handle (#612).
         if let Some(ref name) = contact.name
             && !name.is_empty()
         {
+            app.store.contact_names.insert(key.clone(), name.clone());
+        } else if contact.number.is_none()
+            && let Some(ref username) = contact.username
+        {
+            // Fallback identity only — never downgrade a name learned from an
+            // earlier sync (phone contacts keep theirs the same way).
             app.store
                 .contact_names
-                .insert(contact.number.clone(), name.clone());
+                .entry(key.clone())
+                .or_insert_with(|| format!("@{username}"));
+        }
+        // Username maps: key → handle for display, handle → key for /join (#612)
+        if let Some(ref username) = contact.username {
+            app.store.usernames.insert(key.clone(), username.clone());
+            app.store
+                .username_to_id
+                .insert(username.to_lowercase(), key.clone());
         }
         // Build UUID maps for @mention resolution
         if let Some(ref uuid) = contact.uuid {
@@ -1418,20 +1496,21 @@ fn handle_contact_list(app: &mut App, contacts: Vec<Contact>) {
             {
                 app.store.uuid_to_name.insert(uuid.clone(), name.clone());
             }
-            app.store
-                .number_to_uuid
-                .insert(contact.number.clone(), uuid.clone());
+            if let Some(ref number) = contact.number {
+                app.store
+                    .number_to_uuid
+                    .insert(number.clone(), uuid.clone());
+            }
         }
         // Update name on existing conversations only — don't create new ones
-        if let Some(conv) = app.store.conversations.get_mut(&contact.number)
+        if let Some(conv) = app.store.conversations.get_mut(&key)
             && let Some(ref contact_name) = contact.name
             && !contact_name.is_empty()
             && conv.name != *contact_name
         {
             conv.name = contact_name.clone();
             db_warn(
-                app.db
-                    .upsert_conversation(&contact.number, contact_name, false),
+                app.db.upsert_conversation(&key, contact_name, false),
                 "upsert_conversation",
             );
         }

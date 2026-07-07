@@ -45,7 +45,7 @@ signal-cli → JsonRpcResponse → SignalEvent (mpsc) → App state → SQLite +
 
 ### Conversations
 
-Keyed by phone number (1:1) or group ID (groups). `get_or_create_conversation()` is the single point for ensuring a conversation exists — it upserts to both the in-memory HashMap and SQLite. New conversations append to `conversation_order`; existing ones are no-ops.
+Keyed by phone number (1:1), ACI uuid (1:1 with username-only contacts who share no number, #612), or group ID (groups). Don't assume a non-group conversation id starts with `+`. `get_or_create_conversation()` is the single point for ensuring a conversation exists — it upserts to both the in-memory HashMap and SQLite. New conversations append to `conversation_order`; existing ones are no-ops.
 
 ### Signal-CLI Communication
 

@@ -358,6 +358,21 @@ impl SignalClient {
         Ok(())
     }
 
+    /// Resolve a Signal username (`name.123`, no `@`/`u:` prefix) to its
+    /// account uuid and registration status (#612). The correlated response
+    /// parses into [`SignalEvent::UserStatusList`].
+    pub async fn get_user_status(&self, username: &str) -> Result<()> {
+        self.send_rpc(
+            "getUserStatus",
+            serde_json::json!({
+                "account": self.account,
+                "username": [username],
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn trust_identity(&self, recipient: &str, safety_number: &str) -> Result<()> {
         let params = serde_json::json!({
             "recipient": [recipient],

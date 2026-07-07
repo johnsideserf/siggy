@@ -177,7 +177,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             let conv = &app.store.conversations[id];
             let prefix = if conv.is_group { " #" } else { " " };
             let mut spans = vec![Span::styled(
-                format!("{prefix}{} ", conv.name),
+                format!("{prefix}{} ", app.store.display_title(id)),
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
