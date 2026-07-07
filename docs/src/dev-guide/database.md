@@ -63,12 +63,23 @@ CREATE TABLE messages (
     poll_data            TEXT,                           -- serialized poll JSON (v11)
     link_preview         TEXT,                           -- serialized preview JSON (v12)
     body_raw             TEXT,                           -- body with mention placeholders (v13)
-    mentions_json        TEXT                            -- serialized mention ranges (v13)
+    mentions_json        TEXT,                           -- serialized mention ranges (v13)
+    entry_seq            INTEGER NOT NULL DEFAULT 0     -- row number within one message (v16)
 );
 
 CREATE INDEX idx_messages_conv_ts ON messages(conversation_id, timestamp);
 CREATE INDEX idx_messages_conv_ts_ms ON messages(conversation_id, timestamp_ms);
+CREATE UNIQUE INDEX idx_messages_incoming_dedup                    -- replay dedup (v16)
+    ON messages(conversation_id, sender_id, timestamp_ms, entry_seq)
+    WHERE sender <> 'you' AND sender_id <> '';
 ```
+
+One incoming message persists as several rows (the body plus one row per
+attachment) sharing `(conversation_id, sender_id, timestamp_ms)`;
+`entry_seq` numbers them in insertion order. The partial unique index makes
+replayed envelopes (reconnect redelivery) conflict-skip instead of
+duplicating, while outgoing rows stay outside it because the send-confirm
+flow rewrites their `timestamp_ms`.
 
 System messages (`is_system = 1`) are used for join/leave notifications and
 are excluded from unread counts.
@@ -144,6 +155,7 @@ Migrations are version-based and run sequentially in `Database::migrate()`:
 | 13 | Add `body_raw` and `mentions_json` columns to `messages` (mention re-resolution) |
 | 14 | Add `mute_expires_at` column to `conversations` (timed mutes) |
 | 15 | Add `archived` column to `conversations` (archive) |
+| 16 | Add `entry_seq` column to `messages` (backfilled per message key) and a partial unique index on incoming rows `(conversation_id, sender_id, timestamp_ms, entry_seq)` for replay deduplication |
 
 Each migration is wrapped in a transaction. The `schema_version` table tracks
 the current version.
