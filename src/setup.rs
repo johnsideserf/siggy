@@ -199,9 +199,9 @@ pub async fn run_setup(
                 // link-state probe (#640 U5, flow gap G1) rather than a raw
                 // listContacts exit-code read. Same probe, same semantics
                 // (a failed probe reads as unlinked).
-                let registered =
-                    backend::signal_cli::SignalCliBackend::link_state(&working_config).await
-                        == LinkState::Linked;
+                let registered = backend::signal_cli::SignalCliBackend::link_state(&working_config)
+                    .await
+                    == LinkState::Linked;
                 if registered {
                     // Already registered, skip linking
                     terminal.draw(|frame| {

@@ -62,6 +62,36 @@ pub const ACTIVE_ENGINE_NAME: &str = signal_cli::ENGINE_NAME;
 #[cfg(feature = "signal-cli-backend")]
 pub const NEEDS_CLI_BINARY: bool = true;
 
+/// Retry policy for the main loop's reconnect supervisor (plan U5, flow gap
+/// G2, #640). Adapters expose it via [`Backend::reconnect_policy`] so the
+/// policy is an engine property, not a main-loop constant: U11 lets the
+/// native adapter retry network-class errors indefinitely while signal-cli
+/// keeps its 6-attempt respawn cap (#497).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconnectPolicy {
+    /// How many attempts before giving up and leaving the disconnect error
+    /// on screen.
+    pub max_attempts: u32,
+}
+
+impl Default for ReconnectPolicy {
+    /// signal-cli's policy (#497): 6 respawn attempts, exponential backoff.
+    fn default() -> Self {
+        Self { max_attempts: 6 }
+    }
+}
+
+impl ReconnectPolicy {
+    /// Exponential backoff before the next attempt, capped at 30s. `attempt`
+    /// is 1-based (the delay applied *after* attempt N fails, before attempt
+    /// N+1). The first attempt fires immediately on disconnect, so this is
+    /// only consulted after a failure. Byte-identical to the old
+    /// `reconnect_backoff` in `main.rs`.
+    pub fn backoff(&self, attempt: u32) -> Duration {
+        Duration::from_secs((1u64 << attempt.min(6)).min(30))
+    }
+}
+
 /// A messaging engine the main loop can drive.
 ///
 /// Shaped around siggy's needs (one `dispatch` entry point for the whole

@@ -1891,16 +1891,25 @@ mod tests {
     #[test]
     fn check_verdict_requires_a_verified_link_for_ready() {
         // Fully configured and registered: ready, exit 0, no hint.
-        assert_eq!(check_verdict(true, true, Some(LinkState::Linked)), (0, None));
+        assert_eq!(
+            check_verdict(true, true, Some(LinkState::Linked)),
+            (0, None)
+        );
         // Unlinked account: nonzero with the actionable relink instruction.
         let (code, hint) = check_verdict(true, true, Some(LinkState::Unlinked));
         assert_eq!(code, 1);
         let hint = hint.expect("unlinked must carry an actionable hint");
-        assert!(hint.contains("--setup"), "hint should say how to relink: {hint}");
+        assert!(
+            hint.contains("--setup"),
+            "hint should say how to relink: {hint}"
+        );
         // Corrupt local data: nonzero with reset guidance.
         let (code, hint) = check_verdict(true, true, Some(LinkState::Corrupt));
         assert_eq!(code, 1);
-        assert!(hint.expect("corrupt must carry a hint").contains("--reset-account"));
+        assert!(
+            hint.expect("corrupt must carry a hint")
+                .contains("--reset-account")
+        );
         // Probe skipped (missing binary or no account): not ready, as before.
         assert_eq!(check_verdict(false, true, None).0, 1);
         assert_eq!(check_verdict(true, false, None).0, 1);
