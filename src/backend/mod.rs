@@ -9,14 +9,23 @@
 //! vs array recipients, JSON-RPC correlation) stay inside the adapters and
 //! `signal/`; nothing engine-shaped leaks past this module.
 //!
-//! Linking and connection lifecycle (`link_state`, `link`, `--check`) are not
-//! part of the trait yet; U5 routes those bypass paths through the boundary.
+//! Link-state probing (`--check`, startup registration gating, the wizard's
+//! linking step) goes through each adapter's inherent `link_state()`
+//! associated function rather than a trait method: the probe must run before
+//! any engine instance or connection exists, so tying it to `&mut self` would
+//! misrepresent how it actually works (plan U5, flow gap G1; the choice is
+//! documented on [`Backend`]). The reconnect supervisor's retry policy is
+//! adapter-supplied via [`ReconnectPolicy`] (flow gap G2), and user-facing
+//! engine naming goes through [`Backend::display_name`] or, instance-free,
+//! [`ACTIVE_ENGINE_NAME`] (flow gap G7).
 
 pub mod demo;
 #[cfg(test)]
 pub mod mock;
 #[cfg(feature = "signal-cli-backend")]
 pub mod signal_cli;
+
+use std::time::Duration;
 
 use crate::app::{App, SendRequest};
 use crate::config::Config;
@@ -40,6 +49,19 @@ compile_error!(
     "the `native-backend` engine is not implemented yet (it lands with #642); build with the default `signal-cli-backend` feature until then"
 );
 
+/// User-facing name of the compiled-in engine, for surfaces that run before
+/// any backend instance exists (`--check`'s backend line, spawn-failure
+/// copy). Always matches `ActiveBackend`'s [`Backend::display_name`] (flow
+/// gap G7). Cfg-selected alongside the alias above; U9 adds the native arm.
+#[cfg(feature = "signal-cli-backend")]
+pub const ACTIVE_ENGINE_NAME: &str = signal_cli::ENGINE_NAME;
+
+/// Whether the compiled-in engine drives an external binary the setup wizard
+/// must locate (plan U5 wizard hook, #640). True for signal-cli; U10's
+/// native backend flips this so the wizard skips its binary-detection step.
+#[cfg(feature = "signal-cli-backend")]
+pub const NEEDS_CLI_BINARY: bool = true;
+
 /// A messaging engine the main loop can drive.
 ///
 /// Shaped around siggy's needs (one `dispatch` entry point for the whole
@@ -52,15 +74,21 @@ compile_error!(
 /// - main-loop plumbing carried over from the retired `MessagingBackend`
 ///   enum: [`startup`](Backend::startup), [`drain_events`](Backend::drain_events),
 ///   [`supports_reconnect`](Backend::supports_reconnect),
+///   [`reconnect_policy`](Backend::reconnect_policy),
 ///   [`try_reconnect`](Backend::try_reconnect),
-///   [`resync_after_reconnect`](Backend::resync_after_reconnect). U5 reshapes
-///   this group when linking/connection lifecycle enters the boundary.
+///   [`resync_after_reconnect`](Backend::resync_after_reconnect)
+///
+/// Deliberately *not* a trait method: link-state probing. Every "am I
+/// linked?" call site (`--check`, startup gating in `run_main_flow`, the
+/// wizard's linking step) runs before an engine instance or connection
+/// exists, so each adapter instead exposes an inherent associated function
+/// (`SignalCliBackend::link_state(config)`; U10 adds the native twin with
+/// the same signature). This is the least invasive shape that truthfully
+/// models today's probes (plan U5, KTD-3, flow gap G1).
 pub trait Backend {
-    /// User-facing engine name for status copy (plan flow gap G7).
-    ///
-    /// Not yet threaded into the reconnect/status strings; U5 does that (the
-    /// existing strings stay byte-identical until then).
-    #[allow(dead_code)]
+    /// User-facing engine name for status copy (plan flow gap G7). The
+    /// reconnect supervisor's status strings render through this, keeping
+    /// them byte-identical for signal-cli and truthful for other engines.
     fn display_name(&self) -> &'static str;
 
     /// Capability flag (plan KTD-10): whether group admin operations
@@ -88,8 +116,17 @@ pub trait Backend {
 
     /// Whether the main loop's reconnect supervisor applies to this backend.
     /// Preserves the old `matches!(backend, MessagingBackend::Signal(_))`
-    /// gate; U5 replaces the supervisor with trait-level connection lifecycle.
+    /// gate; the supervisor's cap and backoff come from
+    /// [`reconnect_policy`](Backend::reconnect_policy).
     fn supports_reconnect(&self) -> bool;
+
+    /// Retry policy for [`try_reconnect`](Backend::try_reconnect) (plan U5,
+    /// flow gap G2). Defaults to signal-cli's 6-attempt exponential-backoff
+    /// policy (#497); only consulted when
+    /// [`supports_reconnect`](Backend::supports_reconnect) is true.
+    fn reconnect_policy(&self) -> ReconnectPolicy {
+        ReconnectPolicy::default()
+    }
 
     /// Attempt to re-establish the engine connection. Returns true on
     /// success. See #497 for the signal-cli respawn semantics.
@@ -578,5 +615,33 @@ mod tests {
     fn group_admin_capability_defaults_to_supported() {
         assert!(DemoBackend.supports_group_admin());
         assert!(MockBackend::default().supports_group_admin());
+    }
+
+    // --- Reconnect policy (plan U5, flow gap G2) ---
+
+    /// Moved from main.rs's `reconnect_backoff_is_exponential_and_capped`
+    /// when the backoff became adapter policy (#640 U5). Same assertions:
+    /// signal-cli's schedule must stay byte-identical (#497).
+    #[test]
+    fn reconnect_policy_backoff_is_exponential_and_capped() {
+        let policy = ReconnectPolicy::default();
+        assert_eq!(policy.backoff(1), Duration::from_secs(2));
+        assert_eq!(policy.backoff(2), Duration::from_secs(4));
+        assert_eq!(policy.backoff(3), Duration::from_secs(8));
+        assert_eq!(policy.backoff(4), Duration::from_secs(16));
+        // Capped at 30s, and never overflows the shift for large attempts.
+        assert_eq!(policy.backoff(5), Duration::from_secs(30));
+        assert_eq!(policy.backoff(6), Duration::from_secs(30));
+        assert_eq!(policy.backoff(100), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn reconnect_policy_defaults_to_signal_cli_attempt_cap() {
+        // The old MAX_RECONNECT_ATTEMPTS constant (#497), now trait-supplied.
+        assert_eq!(ReconnectPolicy::default().max_attempts, 6);
+        assert_eq!(
+            MockBackend::default().reconnect_policy(),
+            ReconnectPolicy::default()
+        );
     }
 }

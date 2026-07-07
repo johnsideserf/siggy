@@ -20,8 +20,10 @@ use ratatui::{
 };
 use tokio::process::Command;
 
+use crate::backend;
 use crate::config::Config;
 use crate::link;
+use crate::signal::types::LinkState;
 
 pub enum SetupResult {
     /// Wizard finished successfully, use this config.
@@ -32,13 +34,28 @@ pub enum SetupResult {
     Cancelled,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Step {
     SignalCli,
     Account,
     Linking,
     Preferences,
     Done,
+}
+
+/// Ordered wizard steps for the compiled-in backend (plan U5 gating hook,
+/// #640). The binary-detection step exists only for engines that drive an
+/// external binary (`needs_binary` = [`backend::NEEDS_CLI_BINARY`]); U10's
+/// native backend flips that flag and the wizard starts at the account step.
+/// Today only the first step feeds the imperative loop below - the in-loop
+/// transitions stay hardcoded until a second backend actually exists.
+fn wizard_steps(needs_binary: bool) -> Vec<Step> {
+    let mut steps = Vec::with_capacity(5);
+    if needs_binary {
+        steps.push(Step::SignalCli);
+    }
+    steps.extend([Step::Account, Step::Linking, Step::Preferences, Step::Done]);
+    steps
 }
 
 pub async fn run_setup(
@@ -51,7 +68,9 @@ pub async fn run_setup(
     }
 
     let mut working_config = config.clone();
-    let mut step = Step::SignalCli;
+    let mut step = *wizard_steps(backend::NEEDS_CLI_BINARY)
+        .first()
+        .expect("wizard step list is never empty");
     let mut signal_cli_path = working_config.signal_cli_path.clone();
     let mut phone_input = String::new();
     let mut phone_cursor: usize = 0;
@@ -176,10 +195,13 @@ pub async fn run_setup(
             }
 
             Step::Linking => {
-                // Check if already registered
-                let registered = link::check_account_registered(&working_config)
-                    .await
-                    .unwrap_or(false);
+                // Check if already registered - through the adapter's
+                // link-state probe (#640 U5, flow gap G1) rather than a raw
+                // listContacts exit-code read. Same probe, same semantics
+                // (a failed probe reads as unlinked).
+                let registered =
+                    backend::signal_cli::SignalCliBackend::link_state(&working_config).await
+                        == LinkState::Linked;
                 if registered {
                     // Already registered, skip linking
                     terminal.draw(|frame| {
@@ -1186,6 +1208,34 @@ fn draw_done_screen(frame: &mut ratatui::Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- wizard_steps (plan U5 gating hook, #640) ---
+
+    #[test]
+    fn wizard_steps_gate_binary_detection_per_backend() {
+        // signal-cli drives an external binary, so detection is the first
+        // step - behavior unchanged today.
+        assert_eq!(
+            wizard_steps(true),
+            vec![
+                Step::SignalCli,
+                Step::Account,
+                Step::Linking,
+                Step::Preferences,
+                Step::Done,
+            ]
+        );
+        // An in-process engine (native, #640 U10) skips straight to the
+        // account step; every other step survives.
+        let native = wizard_steps(false);
+        assert!(!native.contains(&Step::SignalCli));
+        assert_eq!(native.first(), Some(&Step::Account));
+        assert_eq!(native.len(), 4);
+        // The compiled-in backend today starts at binary detection: the
+        // list run_setup actually uses must lead with it.
+        let compiled = wizard_steps(backend::NEEDS_CLI_BINARY);
+        assert_eq!(compiled.first(), Some(&Step::SignalCli));
+    }
 
     #[tokio::test]
     async fn check_signal_cli_detects_known_command() {

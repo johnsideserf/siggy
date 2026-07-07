@@ -1,9 +1,14 @@
 //! Device linking against an existing Signal account.
 //!
-//! Spawns `signal-cli link`, parses the linking URI from stdout, renders a
-//! QR code in the terminal, and waits for the user to scan it from their
-//! primary device. On success, polls account registration until signal-cli
-//! reports the new device is provisioned.
+//! Split along the backend boundary (plan U5, #640): the engine-specific
+//! provisioning steps - obtain a linking URI ([`start_link_session`]), await
+//! completion ([`LinkSession::poll`]), and check registration
+//! ([`check_account_registered`], which the signal-cli adapter's
+//! `link_state()` wraps) - are signal-cli-shaped, spawning `signal-cli link`
+//! and reading its stdout/exit code. The QR rendering and screen flow
+//! ([`render_qr_lines`], `show_qr_and_wait`) are backend-agnostic and stay
+//! unchanged; U10 implements the same three-step seam natively via presage's
+//! `link_secondary_device` and reuses the rendering as-is.
 
 use std::io;
 use std::time::Duration;
@@ -33,6 +38,10 @@ pub enum LinkResult {
 
 /// Check whether the configured account is registered with signal-cli.
 /// Returns `Ok(true)` if registered, `Ok(false)` if not.
+///
+/// signal-cli-specific probe (a one-shot `listContacts` exit-code read);
+/// callers outside this module go through the signal-cli adapter's
+/// `link_state()` instead of calling this directly (#640 U5, flow gap G1).
 pub async fn check_account_registered(config: &Config) -> Result<bool> {
     let result = tokio::time::timeout(Duration::from_secs(10), async {
         let output = Command::new(&config.signal_cli_path)
@@ -63,21 +72,65 @@ pub async fn check_account_registered(config: &Config) -> Result<bool> {
     }
 }
 
-/// Run the interactive device-linking flow: spawn `signal-cli link`, capture the
-/// linking URI, display a QR code in the TUI, and wait for completion or cancellation.
-pub async fn run_linking_flow(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    config: &Config,
-) -> Result<LinkResult> {
-    // Show initial status
-    terminal.draw(|frame| {
-        let msg = Paragraph::new("Starting device linking...")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::Yellow));
-        let area = centered_rect(50, 3, frame.area());
-        frame.render_widget(msg, area);
-    })?;
+/// An in-flight signal-cli provisioning session (plan U5, #640): owns the
+/// `signal-cli link` child between "URI obtained" and "handshake complete".
+/// Engine-specific step 2 of the linking seam; U10's native backend replaces
+/// this with presage's provisioning future behind the same poll shape.
+struct LinkSession {
+    child: tokio::process::Child,
+}
 
+/// What one non-blocking [`LinkSession::poll`] observed.
+enum LinkPoll {
+    /// Handshake still in progress; keep showing the QR.
+    Pending,
+    /// The device was linked successfully.
+    Completed,
+}
+
+impl LinkSession {
+    /// Non-blocking completion check. Failure errors carry signal-cli's
+    /// stderr detail, byte-identical to the old inline `try_wait` handling
+    /// in `show_qr_and_wait`.
+    async fn poll(&mut self) -> Result<LinkPoll> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    Ok(LinkPoll::Completed)
+                } else {
+                    // signal-cli writes the real reason (timeout, rate limit,
+                    // stale account state) to stderr. Surface it instead of just
+                    // the numeric exit code, which is opaque on its own.
+                    let mut stderr_output = String::new();
+                    if let Some(mut stderr) = self.child.stderr.take() {
+                        let _ = stderr.read_to_string(&mut stderr_output).await;
+                    }
+                    let detail = stderr_output.trim();
+                    if detail.is_empty() {
+                        anyhow::bail!("signal-cli link failed (exit code: {:?})", status.code());
+                    } else {
+                        anyhow::bail!(
+                            "signal-cli link failed (exit code: {:?}): {detail}",
+                            status.code()
+                        );
+                    }
+                }
+            }
+            Ok(None) => Ok(LinkPoll::Pending),
+            Err(e) => anyhow::bail!("Error checking signal-cli link status: {e}"),
+        }
+    }
+
+    /// Abort the session (user cancelled). Best-effort kill of the child.
+    async fn cancel(&mut self) {
+        let _ = self.child.kill().await;
+    }
+}
+
+/// Obtain a provisioning URI by spawning `signal-cli link` (plan U5, #640):
+/// engine-specific step 1 of the linking seam. Returns the URI (for the
+/// backend-agnostic QR renderer) plus the session to poll for completion.
+async fn start_link_session(config: &Config) -> Result<(String, LinkSession)> {
     // Spawn signal-cli link
     let mut child = Command::new(&config.signal_cli_path)
         .arg("link")
@@ -114,7 +167,7 @@ pub async fn run_linking_flow(
                 }
             }
             Ok(Ok(None)) => {
-                // stdout closed without URI — read stderr for details
+                // stdout closed without URI - read stderr for details
                 let mut stderr_output = String::new();
                 if let Some(mut stderr) = child.stderr.take() {
                     let _ = stderr.read_to_string(&mut stderr_output).await;
@@ -136,12 +189,33 @@ pub async fn run_linking_flow(
         }
     };
 
+    Ok((uri, LinkSession { child }))
+}
+
+/// Run the interactive device-linking flow: obtain a linking URI from the
+/// engine ([`start_link_session`]), display a QR code in the TUI, and wait
+/// for completion or cancellation.
+pub async fn run_linking_flow(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config: &Config,
+) -> Result<LinkResult> {
+    // Show initial status
+    terminal.draw(|frame| {
+        let msg = Paragraph::new("Starting device linking...")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Yellow));
+        let area = centered_rect(50, 3, frame.area());
+        frame.render_widget(msg, area);
+    })?;
+
+    let (uri, mut session) = start_link_session(config).await?;
+
     // Generate QR code
     let qr = qrcode::QrCode::new(uri.as_bytes()).context("Failed to generate QR code")?;
     let qr_lines = render_qr_lines(&qr);
 
     // Show QR and wait for linking to complete or user to cancel
-    show_qr_and_wait(terminal, &qr_lines, &mut child).await
+    show_qr_and_wait(terminal, &qr_lines, &mut session).await
 }
 
 /// Convert a QR code matrix into half-block text lines.
@@ -191,52 +265,34 @@ fn render_qr_lines(qr: &qrcode::QrCode) -> Vec<Line<'static>> {
     lines
 }
 
-/// Display the QR code screen and wait for the child process to finish (link success)
-/// or for the user to press Esc/Ctrl+C to cancel.
+/// Display the QR code screen and wait for the provisioning session to
+/// complete (link success) or for the user to press Esc/Ctrl+C to cancel.
+/// Backend-agnostic: everything engine-specific happens inside the session.
 async fn show_qr_and_wait(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     qr_lines: &[Line<'static>],
-    child: &mut tokio::process::Child,
+    session: &mut LinkSession,
 ) -> Result<LinkResult> {
     loop {
         // Draw
         terminal.draw(|frame| draw_qr_screen(frame, qr_lines))?;
 
-        // Check if the child process finished (non-blocking)
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    // Show success briefly
-                    terminal.draw(|frame| {
-                        let msg = Paragraph::new("Device linked successfully!")
-                            .alignment(Alignment::Center)
-                            .style(Style::default().fg(Color::Green));
-                        let area = centered_rect(50, 3, frame.area());
-                        frame.render_widget(msg, area);
-                    })?;
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    return Ok(LinkResult::Success);
-                } else {
-                    // signal-cli writes the real reason (timeout, rate limit,
-                    // stale account state) to stderr. Surface it instead of just
-                    // the numeric exit code, which is opaque on its own.
-                    let mut stderr_output = String::new();
-                    if let Some(mut stderr) = child.stderr.take() {
-                        let _ = stderr.read_to_string(&mut stderr_output).await;
-                    }
-                    let detail = stderr_output.trim();
-                    if detail.is_empty() {
-                        anyhow::bail!("signal-cli link failed (exit code: {:?})", status.code());
-                    } else {
-                        anyhow::bail!(
-                            "signal-cli link failed (exit code: {:?}): {detail}",
-                            status.code()
-                        );
-                    }
-                }
+        // Check if the handshake finished (non-blocking); failure details
+        // propagate as errors from the session poll.
+        match session.poll().await? {
+            LinkPoll::Completed => {
+                // Show success briefly
+                terminal.draw(|frame| {
+                    let msg = Paragraph::new("Device linked successfully!")
+                        .alignment(Alignment::Center)
+                        .style(Style::default().fg(Color::Green));
+                    let area = centered_rect(50, 3, frame.area());
+                    frame.render_widget(msg, area);
+                })?;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                return Ok(LinkResult::Success);
             }
-            Ok(None) => {} // Still running
-            Err(e) => anyhow::bail!("Error checking signal-cli link status: {e}"),
+            LinkPoll::Pending => {} // Still running
         }
 
         // Poll for keyboard input
@@ -248,7 +304,7 @@ async fn show_qr_and_wait(
             }
             match (key.modifiers, key.code) {
                 (_, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                    let _ = child.kill().await;
+                    session.cancel().await;
                     return Ok(LinkResult::Cancelled);
                 }
                 _ => {}

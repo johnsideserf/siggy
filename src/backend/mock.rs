@@ -13,6 +13,15 @@ use super::Backend;
 pub struct MockBackend {
     /// Every request routed through [`Backend::dispatch`], in order.
     pub dispatched: Vec<SendRequest>,
+    /// Whether the reconnect supervisor applies (plan U5 supervisor tests).
+    pub reconnectable: bool,
+    /// What [`Backend::try_reconnect`] reports back to the supervisor.
+    pub reconnect_ok: bool,
+    /// How many times [`Backend::try_reconnect`] was called through the
+    /// trait (plan U5: the supervisor must route every attempt here).
+    pub reconnect_calls: u32,
+    /// How many times [`Backend::resync_after_reconnect`] ran.
+    pub resync_calls: u32,
 }
 
 impl Backend for MockBackend {
@@ -31,12 +40,15 @@ impl Backend for MockBackend {
     }
 
     fn supports_reconnect(&self) -> bool {
-        false
+        self.reconnectable
     }
 
     async fn try_reconnect(&mut self, _config: &Config) -> bool {
-        false
+        self.reconnect_calls += 1;
+        self.reconnect_ok
     }
 
-    async fn resync_after_reconnect(&mut self) {}
+    async fn resync_after_reconnect(&mut self) {
+        self.resync_calls += 1;
+    }
 }
