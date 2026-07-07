@@ -1224,6 +1224,18 @@ impl App {
     }
 
     /// Build the filtered contacts list from contact_names using the current filter.
+    /// Whether a contacts-overlay row identifier already has a conversation.
+    /// Rows display `@handle` for uuid-keyed contacts, so handles must be
+    /// resolved back to the conversation key before the lookup (#612).
+    pub fn contact_row_has_conversation(&self, id: &str) -> bool {
+        let key = id
+            .strip_prefix('@')
+            .and_then(|handle| self.store.username_to_id.get(&handle.to_lowercase()))
+            .map(|k| k.as_str())
+            .unwrap_or(id);
+        self.store.conversation_order.iter().any(|c| c == key)
+    }
+
     pub fn refresh_contacts_filter(&mut self) {
         let pairs: Vec<(String, String)> = self
             .store
@@ -3075,17 +3087,21 @@ impl App {
             let mut candidates: Vec<(String, String)> = Vec::new();
 
             // Collect contacts from contact_names
-            for (phone, name) in &self.store.contact_names {
-                // Skip group IDs (they don't start with '+')
-                if !phone.starts_with('+') {
+            for (key, name) in &self.store.contact_names {
+                // Non-phone keys are group ids or uuid-keyed username-only
+                // contacts; the latter complete as @handle (#612)
+                let (display, value) = if key.starts_with('+') {
+                    (format!("{name} ({key})"), key.clone())
+                } else if let Some(handle) = self.store.usernames.get(key) {
+                    (format!("{name} (@{handle})"), format!("@{handle}"))
+                } else {
                     continue;
-                }
-                let display = format!("{name} ({phone})");
+                };
                 if filter_lower.is_empty()
                     || name.to_lowercase().contains(&filter_lower)
-                    || phone.contains(&filter_lower)
+                    || value.to_lowercase().contains(&filter_lower)
                 {
-                    candidates.push((display, phone.clone()));
+                    candidates.push((display, value));
                 }
             }
 
@@ -3617,13 +3633,27 @@ impl App {
         self.update_status();
     }
 
+    /// Create (if needed) and focus a 1:1 conversation for a known contact
+    /// key, preferring the contact's display name over `fallback_name`.
+    fn open_contact_conversation(&mut self, key: &str, fallback_name: &str) {
+        let name = self
+            .store
+            .contact_names
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| fallback_name.to_string());
+        self.store
+            .get_or_create_conversation(key, &name, false, &self.db);
+        self.activate_conversation(key);
+    }
+
     /// Switch to (or create) the conversation named by `target`.
     ///
-    /// Returns `Some(username)` when the target is an unknown `@handle` that
-    /// needs a getUserStatus round-trip; the caller turns that into a
-    /// [`SendRequest::ResolveUsername`] and the response is correlated via
+    /// An unknown `@handle` needs a getUserStatus round-trip: the request is
+    /// queued on `pending.trigger_sends` (drained by the main loop, so every
+    /// call site dispatches it uniformly) and the response is correlated via
     /// `pending.username_resolve` (#612).
-    pub(crate) fn join_conversation(&mut self, target: &str) -> Option<String> {
+    pub(crate) fn join_conversation(&mut self, target: &str) {
         self.leave_active_conversation();
         // Stale from the previous conversation; the next render sets it. Prevents
         // evicting the new conversation's image_lines before it has drawn (#492).
@@ -3638,33 +3668,43 @@ impl App {
             if let Some(key) = self.store.username_to_id.get(&handle_lower).cloned() {
                 // Known contact: open (or create) its conversation under the
                 // contact key (phone number, or uuid for username-only contacts).
-                let name = self
-                    .store
-                    .contact_names
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or_else(|| format!("@{handle}"));
-                self.store
-                    .get_or_create_conversation(&key, &name, false, &self.db);
-                self.activate_conversation(&key);
-                return None;
+                self.open_contact_conversation(&key, &format!("@{handle}"));
+                return;
+            }
+            // A conversation literally named "@handle" (e.g. restored from
+            // the DB before listContacts repopulates the username maps) is a
+            // local match — don't burn a network round-trip on it.
+            let found_id = self
+                .store
+                .conversations
+                .iter()
+                .find(|(_, conv)| conv.name.eq_ignore_ascii_case(target))
+                .map(|(id, _)| id.clone());
+            if let Some(id) = found_id {
+                self.activate_conversation(&id);
+                return;
             }
             // Unknown handle: a full username (name.discriminator) can be
             // resolved to a uuid via getUserStatus; a bare nickname cannot.
             if handle_lower.contains('.') {
                 self.pending.username_resolve = Some(handle_lower.clone());
+                self.pending
+                    .trigger_sends
+                    .push(SendRequest::ResolveUsername {
+                        username: handle_lower.clone(),
+                    });
                 self.status_message = format!("Resolving @{handle_lower}...");
-                return Some(handle_lower);
+                return;
             }
             self.status_message =
                 format!("Unknown username @{handle} - use the full handle (name.123)");
-            return None;
+            return;
         }
 
         // Try exact match first
         if self.store.conversations.contains_key(target) {
             self.activate_conversation(target);
-            return None;
+            return;
         }
 
         // Try matching by name (case-insensitive)
@@ -3678,16 +3718,17 @@ impl App {
 
         if let Some(id) = found_id {
             self.activate_conversation(&id);
-            return None;
+            return;
         }
 
-        // Known contact key without a conversation yet (e.g. a username-only
-        // contact selected in the contacts overlay, keyed by uuid) (#612)
-        if let Some(name) = self.store.contact_names.get(target).cloned() {
-            self.store
-                .get_or_create_conversation(target, &name, false, &self.db);
-            self.activate_conversation(target);
-            return None;
+        // Known 1:1 contact key without a conversation yet (e.g. a
+        // username-only contact selected in the contacts overlay, keyed by
+        // uuid). Group ids also live in contact_names — those must not be
+        // resurrected as 1:1 conversations (#612).
+        if self.store.contact_names.contains_key(target) && !self.store.groups.contains_key(target)
+        {
+            self.open_contact_conversation(target, target);
+            return;
         }
 
         // Create a new 1:1 conversation if target looks like a phone number
@@ -3701,7 +3742,6 @@ impl App {
         } else {
             self.status_message = format!("Conversation not found: {target}");
         }
-        None
     }
 
     /// Capture the viewport pin anchor on the first sync message arrival

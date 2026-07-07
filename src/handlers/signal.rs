@@ -279,6 +279,13 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
         SignalEvent::UserStatusList(statuses) => handle_user_status_list(app, statuses),
         SignalEvent::Error(ref err) => {
             crate::debug_log::logf(format_args!("signal event error: {err}"));
+            // A getUserStatus RPC error means the pending /join @handle
+            // resolution will never get a UserStatusList — clear the marker
+            // so the join doesn't wedge on "Resolving..." (#612). The error
+            // text itself lands in the status bar below.
+            if err.starts_with("getUserStatus") {
+                app.pending.username_resolve = None;
+            }
             match SignalCliHint::classify(err) {
                 Some(hint) => {
                     // Show the actionable hint once per session per category;
@@ -1402,36 +1409,51 @@ fn handle_read_sync(app: &mut App, read_messages: Vec<(String, i64)>) {
 
 /// Handle a getUserStatus response: complete a pending `/join @handle`
 /// username resolution (#612). Responses with no pending join are ignored —
-/// nothing else issues getUserStatus.
+/// nothing else issues getUserStatus. A response arriving while a join is
+/// pending always terminates the pending state, so the UI can never wedge on
+/// "Resolving..." (only one getUserStatus is ever in flight).
 fn handle_user_status_list(app: &mut App, statuses: Vec<crate::signal::types::UserStatus>) {
     let Some(pending) = app.pending.username_resolve.clone() else {
         return;
     };
-    let Some(status) = statuses.iter().find(|s| {
-        s.recipient.eq_ignore_ascii_case(&pending)
+    app.pending.username_resolve = None;
+
+    // Tolerate signal-cli echoing the queried recipient with the u: prefix.
+    let status = statuses.iter().find(|s| {
+        s.recipient
+            .trim_start_matches("u:")
+            .eq_ignore_ascii_case(&pending)
             || s.username
                 .as_deref()
                 .is_some_and(|u| u.eq_ignore_ascii_case(&pending))
-    }) else {
+    });
+    let Some(status) = status else {
+        app.status_message = format!("Username lookup failed for @{pending}");
         return;
     };
-    app.pending.username_resolve = None;
 
     let (true, Some(uuid)) = (status.registered, status.uuid.as_deref()) else {
         app.status_message = format!("No Signal account found for @{pending}");
         return;
     };
     let handle = status.username.clone().unwrap_or_else(|| pending.clone());
+    // The resolved account may already be a phone-keyed contact whose
+    // username simply wasn't in the local contact list — reuse that key, or
+    // incoming messages (keyed by sourceNumber) would land in a parallel,
+    // uuid-keyed conversation.
+    let key = app
+        .store
+        .number_to_uuid
+        .iter()
+        .find(|(_, u)| u.as_str() == uuid)
+        .map(|(number, _)| number.clone())
+        .unwrap_or_else(|| uuid.to_string());
     // Remember the resolution so future /join hits skip the round-trip
-    app.store.usernames.insert(uuid.to_string(), handle.clone());
-    app.store
-        .username_to_id
-        .insert(handle.to_lowercase(), uuid.to_string());
-    let name = format!("@{handle}");
-    app.store
-        .get_or_create_conversation(uuid, &name, false, &app.db);
-    // Re-join through the username path, which now resolves locally
-    app.join_conversation(&name);
+    app.store.usernames.insert(key.clone(), handle.clone());
+    app.store.username_to_id.insert(handle.to_lowercase(), key);
+    // Re-join through the username path, which now resolves locally and
+    // creates the conversation under the right key with the right name.
+    app.join_conversation(&format!("@{handle}"));
 }
 
 fn handle_contact_list(app: &mut App, contacts: Vec<Contact>) {
@@ -1453,9 +1475,12 @@ fn handle_contact_list(app: &mut App, contacts: Vec<Contact>) {
         } else if contact.number.is_none()
             && let Some(ref username) = contact.username
         {
+            // Fallback identity only — never downgrade a name learned from an
+            // earlier sync (phone contacts keep theirs the same way).
             app.store
                 .contact_names
-                .insert(key.clone(), format!("@{username}"));
+                .entry(key.clone())
+                .or_insert_with(|| format!("@{username}"));
         }
         // Username maps: key → handle for display, handle → key for /join (#612)
         if let Some(ref username) = contact.username {

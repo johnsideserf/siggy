@@ -33,9 +33,8 @@ pub fn handle_input(app: &mut App) -> Option<SendRequest> {
     match action {
         InputAction::SendText(raw_text) => send_text(app, raw_text),
         InputAction::Join(target) => {
-            // An unknown @handle needs a getUserStatus round-trip (#612)
-            app.join_conversation(&target)
-                .map(|username| SendRequest::ResolveUsername { username })
+            app.join_conversation(&target);
+            None
         }
         InputAction::Part => {
             close_active_conversation(app);

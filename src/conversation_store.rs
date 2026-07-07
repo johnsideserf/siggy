@@ -372,7 +372,7 @@ impl ConversationStore {
         if !conv.is_group
             && self.show_usernames
             && let Some(username) = self.usernames.get(id)
-            && conv.name != format!("@{username}")
+            && conv.name.strip_prefix('@') != Some(username.as_str())
         {
             return format!("{} (@{username})", conv.name);
         }

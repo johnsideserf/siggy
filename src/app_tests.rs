@@ -2724,9 +2724,12 @@ fn join_known_username_opens_conversation(mut app: App) {
         username: Some("carol.99".to_string()),
     }]));
 
-    let resolve = app.join_conversation("@carol.99");
+    app.join_conversation("@carol.99");
 
-    assert_eq!(resolve, None, "known username needs no resolution");
+    assert!(
+        app.pending.trigger_sends.is_empty(),
+        "known username needs no resolution"
+    );
     assert_eq!(app.active_conversation.as_deref(), Some("uuid-carol"));
     let conv = app.store.conversations.get("uuid-carol").unwrap();
     assert_eq!(conv.name, "Carol");
@@ -2734,26 +2737,176 @@ fn join_known_username_opens_conversation(mut app: App) {
 }
 
 #[rstest]
-fn join_unknown_full_username_requests_resolution(mut app: App) {
+fn join_unknown_full_username_queues_resolve_request(mut app: App) {
     app.input.buffer = "/join @ghost.1".to_string();
     app.input.cursor = app.input.buffer.len();
     let req = app.handle_input();
 
-    let Some(SendRequest::ResolveUsername { username }) = req else {
-        panic!("expected SendRequest::ResolveUsername");
-    };
-    assert_eq!(username, "ghost.1");
+    // The request is queued on pending.trigger_sends (drained by the main
+    // loop) so every join_conversation call site dispatches it uniformly —
+    // not returned, which only the composer path would propagate (#612).
+    assert!(req.is_none());
+    assert_eq!(app.pending.trigger_sends.len(), 1);
+    assert!(matches!(
+        &app.pending.trigger_sends[0],
+        SendRequest::ResolveUsername { username } if username == "ghost.1"
+    ));
     // Pending marker survives until the UserStatusList response correlates
     assert_eq!(app.pending.username_resolve.as_deref(), Some("ghost.1"));
     assert!(app.active_conversation.is_none());
 }
 
 #[rstest]
-fn join_unknown_username_without_discriminator_errors(mut app: App) {
-    let resolve = app.join_conversation("@nosuchperson");
+fn join_group_id_in_contact_names_does_not_create_1to1(mut app: App) {
+    // handle_group_list stores group_id → name in contact_names; the
+    // known-contact-key fallback must not resurrect a deleted group
+    // conversation as a 1:1 (#612 review).
+    app.handle_signal_event(SignalEvent::GroupList(vec![Group {
+        id: "g1".to_string(),
+        name: "Family".to_string(),
+        members: vec![],
+        member_uuids: vec![],
+    }]));
+    app.store.conversations.remove("g1");
+    app.store.conversation_order.retain(|c| c != "g1");
 
-    assert_eq!(resolve, None, "cannot resolve without a discriminator");
+    app.join_conversation("g1");
+
+    assert!(app.store.conversations.is_empty());
+    assert!(app.status_message.contains("not found"));
+}
+
+#[rstest]
+fn user_status_without_matching_entry_clears_pending(mut app: App) {
+    app.join_conversation("@ghost.1");
+    assert!(app.pending.username_resolve.is_some());
+
+    app.handle_signal_event(SignalEvent::UserStatusList(vec![]));
+
     assert!(app.pending.username_resolve.is_none());
+    assert!(app.status_message.contains("ghost.1"));
+    assert!(app.active_conversation.is_none());
+}
+
+#[rstest]
+fn get_user_status_rpc_error_clears_pending(mut app: App) {
+    app.join_conversation("@ghost.1");
+    assert!(app.pending.username_resolve.is_some());
+
+    app.handle_signal_event(SignalEvent::Error(
+        "getUserStatus: Invalid username".to_string(),
+    ));
+
+    assert!(app.pending.username_resolve.is_none());
+}
+
+#[rstest]
+fn user_status_reuses_phone_keyed_identity(mut app: App) {
+    // Alice is already known by phone number; resolving her username must not
+    // create a second, uuid-keyed conversation (#612 review).
+    app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
+        number: Some("+1".to_string()),
+        name: Some("Alice".to_string()),
+        uuid: Some("uuid-alice".to_string()),
+        username: None,
+    }]));
+    app.join_conversation("@alice.42");
+    assert!(app.pending.username_resolve.is_some());
+
+    app.handle_signal_event(SignalEvent::UserStatusList(vec![UserStatus {
+        recipient: "alice.42".to_string(),
+        username: Some("alice.42".to_string()),
+        uuid: Some("uuid-alice".to_string()),
+        registered: true,
+    }]));
+
+    assert_eq!(app.active_conversation.as_deref(), Some("+1"));
+    assert!(!app.store.conversations.contains_key("uuid-alice"));
+    assert_eq!(app.store.usernames.get("+1").unwrap(), "alice.42");
+}
+
+#[rstest]
+fn contact_list_does_not_downgrade_learned_name(mut app: App) {
+    app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
+        number: None,
+        name: Some("Carol".to_string()),
+        uuid: Some("uuid-carol".to_string()),
+        username: Some("carol.99".to_string()),
+    }]));
+    // Second sync without a profile name (e.g. profile fetch failed)
+    app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
+        number: None,
+        name: None,
+        uuid: Some("uuid-carol".to_string()),
+        username: Some("carol.99".to_string()),
+    }]));
+
+    assert_eq!(app.store.contact_names.get("uuid-carol").unwrap(), "Carol");
+}
+
+#[rstest]
+fn join_at_target_matches_existing_conversation_name(mut app: App) {
+    // After a restart the username maps are empty until listContacts arrives;
+    // an existing conversation literally named "@carol.99" must still be
+    // joinable without a network round-trip (#612 review).
+    app.store
+        .get_or_create_conversation("uuid-carol", "@carol.99", false, &app.db);
+
+    app.join_conversation("@carol.99");
+
+    assert_eq!(app.active_conversation.as_deref(), Some("uuid-carol"));
+    assert!(app.pending.username_resolve.is_none());
+    assert!(app.pending.trigger_sends.is_empty());
+}
+
+#[rstest]
+fn contact_row_has_conversation_resolves_handles(mut app: App) {
+    app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
+        number: None,
+        name: Some("Carol".to_string()),
+        uuid: Some("uuid-carol".to_string()),
+        username: Some("carol.99".to_string()),
+    }]));
+    app.store
+        .get_or_create_conversation("uuid-carol", "Carol", false, &app.db);
+
+    // The contacts overlay displays "@carol.99" but the conversation is keyed
+    // by uuid; the checkmark lookup must bridge the two (#612 review).
+    assert!(app.contact_row_has_conversation("@carol.99"));
+    assert!(!app.contact_row_has_conversation("+1"));
+}
+
+#[rstest]
+fn join_autocomplete_includes_username_only_contacts(mut app: App) {
+    app.handle_signal_event(SignalEvent::ContactList(vec![Contact {
+        number: None,
+        name: Some("Carol".to_string()),
+        uuid: Some("uuid-carol".to_string()),
+        username: Some("carol.99".to_string()),
+    }]));
+    app.input.buffer = "/join car".to_string();
+    app.update_autocomplete();
+
+    assert!(app.is_overlay(OverlayKind::Autocomplete));
+    let found = app
+        .autocomplete
+        .join_candidates
+        .iter()
+        .any(|(display, value)| display.contains("@carol.99") && value == "@carol.99");
+    assert!(
+        found,
+        "expected @carol.99 candidate, got {:?}",
+        app.autocomplete.join_candidates
+    );
+}
+
+#[rstest]
+fn join_unknown_username_without_discriminator_errors(mut app: App) {
+    app.join_conversation("@nosuchperson");
+
+    // Cannot resolve without a discriminator: no pending, no queued request
+    assert!(app.pending.username_resolve.is_none());
+    assert!(app.pending.trigger_sends.is_empty());
     assert!(app.active_conversation.is_none());
     assert!(app.status_message.contains("nosuchperson"));
 }

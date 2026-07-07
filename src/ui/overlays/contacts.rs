@@ -58,7 +58,7 @@ pub(in crate::ui) fn draw_contacts(frame: &mut Frame, app: &App, area: Rect) {
         {
             let actual_index = scroll_offset + i;
             let is_selected = actual_index == app.contacts_overlay.index;
-            let has_conversation = app.store.conversation_order.contains(number);
+            let has_conversation = app.contact_row_has_conversation(number);
 
             // Checkmark for contacts that already have a conversation
             let marker = if has_conversation { " \u{2713}" } else { "  " };

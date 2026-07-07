@@ -108,9 +108,14 @@ fn cli_stderr_hint(stderr: &str) -> Option<&'static str> {
 /// or `u:name.123`, normalized to signal-cli's `u:` form) are 1:1 targets;
 /// anything else is treated as a group id (#257, #612).
 fn oneshot_target(recipient: &str) -> (String, bool) {
-    if let Some(handle) = recipient.strip_prefix('@') {
-        (format!("u:{handle}"), false)
-    } else if recipient.starts_with('+') || recipient.starts_with("u:") {
+    if let Some(handle) = recipient
+        .strip_prefix('@')
+        .or_else(|| recipient.strip_prefix("u:"))
+    {
+        // Lowercase like the interactive /join path (usernames are
+        // case-insensitive; nicknames are canonically lowercase)
+        (format!("u:{}", handle.to_lowercase()), false)
+    } else if recipient.starts_with('+') {
         (recipient.to_string(), false)
     } else {
         (recipient.to_string(), true)
@@ -2264,9 +2269,11 @@ mod tests {
             oneshot_target("+15551234567"),
             ("+15551234567".into(), false)
         );
-        // Username forms: 1:1, normalized to signal-cli's u: prefix (#612)
+        // Username forms: 1:1, normalized to signal-cli's u: prefix and
+        // lowercased like the interactive /join path (#612)
         assert_eq!(oneshot_target("@alice.42"), ("u:alice.42".into(), false));
-        assert_eq!(oneshot_target("u:alice.42"), ("u:alice.42".into(), false));
+        assert_eq!(oneshot_target("@Alice.42"), ("u:alice.42".into(), false));
+        assert_eq!(oneshot_target("u:Alice.42"), ("u:alice.42".into(), false));
         // Anything else: group id
         assert_eq!(oneshot_target("grpid=="), ("grpid==".into(), true));
     }
