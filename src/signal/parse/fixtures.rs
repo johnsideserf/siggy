@@ -479,8 +479,11 @@ fn golden_rpc_get_user_status() {
 fn golden_rpc_send_response_timestamp() {
     let frame = r#"{"jsonrpc":"2.0","result":{"results":[{"recipientAddress":{"uuid":"0f0f0f0f-1111-2222-3333-444444444444","number":"+15559876543"},"type":"SUCCESS"}],"timestamp":1700000000123},"id":"a1b2c3d4-0000-4000-8000-000000000001"}"#;
     match parse_correlated(frame, "send") {
-        SignalEvent::SendTimestamp { rpc_id, server_ts } => {
-            assert_eq!(rpc_id, "a1b2c3d4-0000-4000-8000-000000000001");
+        SignalEvent::SendTimestamp { token, server_ts } => {
+            assert_eq!(
+                token,
+                SendToken::new("a1b2c3d4-0000-4000-8000-000000000001")
+            );
             assert_eq!(server_ts, 1700000000123);
         }
         other => panic!("Expected SendTimestamp, got {other:?}"),

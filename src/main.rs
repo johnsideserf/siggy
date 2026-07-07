@@ -128,19 +128,17 @@ fn oneshot_target(recipient: &str) -> (String, bool) {
 async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Result<bool> {
     let mut client = SignalClient::spawn(config).await?;
     let (target, is_group) = oneshot_target(recipient);
-    let rpc_id = client
+    let token = client
         .send_message(&target, body, is_group, &[], &[], &[], None, None)
         .await?;
 
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match client.event_rx.recv().await {
-                Some(signal::types::SignalEvent::SendTimestamp { rpc_id: id, .. })
-                    if id == rpc_id =>
-                {
+                Some(signal::types::SignalEvent::SendTimestamp { token: t, .. }) if t == token => {
                     return Some(true);
                 }
-                Some(signal::types::SignalEvent::SendFailed { rpc_id: id }) if id == rpc_id => {
+                Some(signal::types::SignalEvent::SendFailed { token: t }) if t == token => {
                     return Some(false);
                 }
                 Some(_) => continue,
@@ -1259,14 +1257,14 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 )
                 .await
             {
-                Ok(rpc_id) => {
+                Ok(token) => {
                     debug_log::logf(format_args!(
                         "send: to={} ts={local_ts_ms}",
                         debug_log::mask_phone(&recipient)
                     ));
                     app.pending
                         .sends
-                        .insert(rpc_id.clone(), (recipient.to_string(), local_ts_ms));
+                        .insert(token.clone(), (recipient.to_string(), local_ts_ms));
                     // Register any paste temp file for deferred deletion. The actual delete is
                     // triggered after send confirmation; this sentinel keeps it alive until then.
                     // Only one paste attachment per send is expected; break after the first match.
@@ -1275,7 +1273,7 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                             let sentinel = Instant::now()
                                 + Duration::from_secs(app::PASTE_CLEANUP_SENTINEL_SECS);
                             app.pending_paste_cleanups
-                                .insert(rpc_id.clone(), (path.clone(), sentinel));
+                                .insert(token.clone(), (path.clone(), sentinel));
                             break;
                         }
                     }
@@ -1345,14 +1343,14 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 )
                 .await
             {
-                Ok(rpc_id) => {
+                Ok(token) => {
                     debug_log::logf(format_args!(
                         "edit: to={} ts={edit_timestamp}",
                         debug_log::mask_phone(&recipient)
                     ));
                     app.pending
                         .sends
-                        .insert(rpc_id, (recipient.to_string(), local_ts_ms));
+                        .insert(token, (recipient.to_string(), local_ts_ms));
                 }
                 Err(e) => {
                     app.status_message = format!("edit error: {e}");
@@ -1567,8 +1565,8 @@ async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: Sen
                 .send_poll_create(&recipient, is_group, &question, &options, allow_multiple)
                 .await
             {
-                Ok(rpc_id) => {
-                    app.pending.sends.insert(rpc_id, (recipient, local_ts_ms));
+                Ok(token) => {
+                    app.pending.sends.insert(token, (recipient, local_ts_ms));
                 }
                 Err(e) => {
                     app.status_message = format!("poll error: {e}");

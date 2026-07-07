@@ -195,7 +195,7 @@ impl SignalClient {
         attachments: &[&Path],
         preview: Option<&LinkPreview>,
         quote: Option<(&str, i64, &str)>,
-    ) -> Result<String> {
+    ) -> Result<SendToken> {
         let mut params = serde_json::json!({
             "message": body,
             "account": self.account,
@@ -242,7 +242,7 @@ impl SignalClient {
         }
 
         let id = self.send_rpc("send", params).await?;
-        Ok(id)
+        Ok(SendToken::new(id))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -255,7 +255,7 @@ impl SignalClient {
         mentions: &[(usize, String)],
         text_styles: &[(usize, usize, StyleType)],
         quote: Option<(&str, i64, &str)>,
-    ) -> Result<String> {
+    ) -> Result<SendToken> {
         let mut params = serde_json::json!({
             "message": body,
             "account": self.account,
@@ -279,7 +279,7 @@ impl SignalClient {
         }
 
         let id = self.send_rpc("send", params).await?;
-        Ok(id)
+        Ok(SendToken::new(id))
     }
 
     pub async fn send_remote_delete(
@@ -570,7 +570,7 @@ impl SignalClient {
         question: &str,
         options: &[String],
         allow_multiple: bool,
-    ) -> Result<String> {
+    ) -> Result<SendToken> {
         let option_arr: Vec<serde_json::Value> = options
             .iter()
             .map(|o| serde_json::Value::String(o.clone()))
@@ -588,7 +588,7 @@ impl SignalClient {
         }
 
         let id = self.send_rpc("sendPollCreate", params).await?;
-        Ok(id)
+        Ok(SendToken::new(id))
     }
 
     pub async fn send_poll_vote(
@@ -762,7 +762,9 @@ fn drain_pending_as_failures(
     let mut map = pending.lock().unwrap_or_else(|e| e.into_inner());
     map.drain()
         .filter(|(_, (method, _))| method == "send" || method == "sendPollCreate")
-        .map(|(id, _)| SignalEvent::SendFailed { rpc_id: id })
+        .map(|(id, _)| SignalEvent::SendFailed {
+            token: SendToken::new(id),
+        })
         .collect()
 }
 
@@ -813,7 +815,9 @@ fn handle_stdout_line(
             // Routing a tracked send method to the generic Error arm would leak
             // the pending entry and leave the local message in Sending forever.
             if method == "send" || method == "sendPollCreate" {
-                rpc_id.map(|id| SignalEvent::SendFailed { rpc_id: id })
+                rpc_id.map(|id| SignalEvent::SendFailed {
+                    token: SendToken::new(id),
+                })
             } else {
                 Some(SignalEvent::Error(format!("{method}: {}", err.message)))
             }
@@ -1016,7 +1020,7 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","id":"send-1","error":{"code":-1,"message":"boom"}}"#;
         let ev = handle_stdout_line(line, &pending, Path::new("."));
         assert!(
-            matches!(ev, Some(SignalEvent::SendFailed { rpc_id }) if rpc_id == "send-1"),
+            matches!(ev, Some(SignalEvent::SendFailed { token }) if token == SendToken::new("send-1")),
             "a tracked send method error must route to SendFailed"
         );
         assert!(!pending.lock().unwrap().contains_key("send-1"));
@@ -1087,7 +1091,7 @@ mod tests {
         let mut failed: Vec<String> = events
             .into_iter()
             .map(|e| match e {
-                SignalEvent::SendFailed { rpc_id } => rpc_id,
+                SignalEvent::SendFailed { token } => token.to_string(),
                 other => panic!("expected SendFailed, got {other:?}"),
             })
             .collect();
@@ -1118,7 +1122,7 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","id":"p-1","error":{"code":-1,"message":"x"}}"#;
         let ev = handle_stdout_line(line, &pending, Path::new("."));
         assert!(
-            matches!(ev, Some(SignalEvent::SendFailed { rpc_id }) if rpc_id == "p-1"),
+            matches!(ev, Some(SignalEvent::SendFailed { token }) if token == SendToken::new("p-1")),
             "correlation must survive a poisoned pending lock (REL-002)"
         );
     }

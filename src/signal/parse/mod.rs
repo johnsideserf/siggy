@@ -210,8 +210,8 @@ mod tests {
         let result = json!({"timestamp": 1700000000123_i64});
         let event = parse_rpc_result("send", &result, Some("rpc-42")).unwrap();
         match event {
-            SignalEvent::SendTimestamp { rpc_id, server_ts } => {
-                assert_eq!(rpc_id, "rpc-42");
+            SignalEvent::SendTimestamp { token, server_ts } => {
+                assert_eq!(token, SendToken::new("rpc-42"));
                 assert_eq!(server_ts, 1700000000123);
             }
             _ => panic!("Expected SendTimestamp"),

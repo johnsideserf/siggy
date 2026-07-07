@@ -19,7 +19,7 @@ pub fn parse_rpc_result(
                 .or_else(|| result.as_i64())
                 .unwrap_or(0);
             Some(SignalEvent::SendTimestamp {
-                rpc_id: id,
+                token: SendToken::new(id),
                 server_ts,
             })
         }
@@ -175,7 +175,7 @@ pub fn parse_rpc_result(
                 .or_else(|| result.as_i64())
                 .unwrap_or(0);
             Some(SignalEvent::SendTimestamp {
-                rpc_id: id,
+                token: SendToken::new(id),
                 server_ts,
             })
         }

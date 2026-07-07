@@ -556,10 +556,10 @@ pub struct App {
     pub pending_attachment: Option<PathBuf>,
     /// Directory for temporary clipboard paste files (PID-scoped to avoid conflicts)
     pub paste_temp_path: PathBuf,
-    /// Paste temp files pending deletion: rpc_id → (path, delete_after)
+    /// Paste temp files pending deletion: send token → (path, delete_after)
     /// Populated when a paste attachment send is dispatched; deletion deferred 10s after
-    /// signal-cli confirms or fails the send, to avoid deleting before signal-cli reads the file.
-    pub pending_paste_cleanups: HashMap<String, (PathBuf, Instant)>,
+    /// the backend confirms or fails the send, to avoid deleting before it reads the file.
+    pub pending_paste_cleanups: HashMap<crate::signal::types::SendToken, (PathBuf, Instant)>,
     /// Reply target: (author_phone, body_snippet, timestamp_ms)
     pub reply_target: Option<(String, String, i64)>,
     /// Message being edited: (timestamp_ms, conv_id)
@@ -3999,7 +3999,7 @@ impl App {
     /// Called each tick from the main event loop.
     pub fn cleanup_paste_files(&mut self) {
         self.pending_paste_cleanups
-            .retain(|_rpc_id, (path, delete_after)| {
+            .retain(|_token, (path, delete_after)| {
                 if Instant::now() >= *delete_after {
                     let _ = std::fs::remove_file(path);
                     false
