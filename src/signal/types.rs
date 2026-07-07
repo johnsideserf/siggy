@@ -155,6 +155,60 @@ pub struct PollVote {
     pub vote_count: i64,
 }
 
+/// Opaque, backend-neutral correlation token for an in-flight send (KTD-4 in
+/// the native-backend plan, #640). Under the signal-cli backend it wraps the
+/// JSON-RPC request id; the native backend will use the wire timestamp. App
+/// state only stores and compares tokens, never inspects their contents.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SendToken(String);
+
+impl SendToken {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+impl std::fmt::Display for SendToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Registration/link state of the local account as reported by the active
+/// backend (boundary contract R4/KTD-3 in the native-backend plan, #640).
+/// Replaces process-behavior inferences (child-exit sniffing, stderr
+/// regexes) as the backends implement `link_state()` in later Phase 1 units.
+// Vocabulary-only until the Backend trait lands (#640 U4/U5); the bin target
+// has no consumer yet, only the lib surface.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkState {
+    /// Account data present and registered as a linked device.
+    Linked,
+    /// No usable local account data; linking is required.
+    Unlinked,
+    /// Local account data exists but is unusable (server rejects the
+    /// registration, store corrupt); relink or reset required.
+    Corrupt,
+}
+
+/// Typed connection-lifecycle notification from the active backend (KTD-3).
+/// The signal-cli adapter today surfaces only the terminal case (via
+/// [`SignalEvent::Disconnected`]); richer variants are emitted once the
+/// backend trait owns the connection lifecycle (#640 units U4/U5).
+// Vocabulary-only until the Backend trait lands (#640 U4/U5); the bin target
+// has no consumer yet, only the lib surface.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionEvent {
+    /// The backend established (or re-established) its transport.
+    Connected,
+    /// The backend lost its transport and will not recover on its own.
+    Disconnected,
+    /// The backend is attempting recovery (1-based attempt counter).
+    Reconnecting { attempt: u32 },
+}
+
 /// Events received from signal-cli
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
@@ -166,11 +220,11 @@ pub enum SignalEvent {
         timestamps: Vec<i64>,
     },
     SendTimestamp {
-        rpc_id: String,
+        token: SendToken,
         server_ts: i64,
     },
     SendFailed {
-        rpc_id: String,
+        token: SendToken,
     },
     TypingIndicator {
         sender: String,
@@ -260,6 +314,13 @@ pub enum SignalEvent {
     /// used for username → uuid resolution (#612).
     UserStatusList(Vec<UserStatus>),
     Error(String),
+    /// The initial sync burst has ended (boundary contract KTD-5 in the
+    /// native-backend plan, #640). Emitted by the signal-cli path when its
+    /// wall-clock quiet-period heuristic fires; the native backend will map
+    /// presage's `QueueEmpty` to it. Consumed by `App::end_sync()`:
+    /// notification digest, deferred read receipts, and viewport unpinning
+    /// all key off this event.
+    SyncComplete,
     /// The signal-cli stdout reader reached EOF (the child exited). Emitted
     /// explicitly so the app can mark itself disconnected and fail any in-flight
     /// sends, instead of relying solely on the mpsc channel closing (#497).
@@ -288,10 +349,10 @@ impl SignalEvent {
                 mask_phone(sender),
                 timestamps.len(),
             ),
-            Self::SendTimestamp { rpc_id, server_ts } => {
-                format!("SendTimestamp(rpc={rpc_id}, ts={server_ts})",)
+            Self::SendTimestamp { token, server_ts } => {
+                format!("SendTimestamp(token={token}, ts={server_ts})",)
             }
-            Self::SendFailed { rpc_id } => format!("SendFailed(rpc={rpc_id})"),
+            Self::SendFailed { token } => format!("SendFailed(token={token})"),
             Self::TypingIndicator {
                 sender, is_typing, ..
             } => format!(
@@ -385,6 +446,7 @@ impl SignalEvent {
                 format!("UserStatusList(count={})", statuses.len())
             }
             Self::Error(e) => format!("Error({e})"),
+            Self::SyncComplete => "SyncComplete".to_string(),
             Self::Disconnected => "Disconnected".to_string(),
         }
     }

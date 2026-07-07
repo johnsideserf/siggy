@@ -104,12 +104,12 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
         } => {
             handle_receipt(app, &sender, receipt_type, &timestamps);
         }
-        SignalEvent::SendTimestamp { rpc_id, server_ts } => {
-            handle_send_timestamp(app, &rpc_id, server_ts);
+        SignalEvent::SendTimestamp { token, server_ts } => {
+            handle_send_timestamp(app, &token, server_ts);
         }
-        SignalEvent::SendFailed { rpc_id } => {
+        SignalEvent::SendFailed { token } => {
             app.status_message = "send failed".to_string();
-            handle_send_failed(app, &rpc_id);
+            handle_send_failed(app, &token);
         }
         SignalEvent::TypingIndicator {
             sender,
@@ -300,6 +300,15 @@ pub fn handle_signal_event(app: &mut App, event: SignalEvent) {
                 None => {
                     app.status_message = format!("error: {err}");
                 }
+            }
+        }
+        SignalEvent::SyncComplete => {
+            // End-of-initial-sync (KTD-5, #640): flush the notification
+            // digest, deferred read receipts, and viewport pin. The signal-cli
+            // path emits this from the main loop's wall-clock heuristic; the
+            // native backend will map presage's QueueEmpty to it.
+            if app.sync.active {
+                app.end_sync();
             }
         }
         SignalEvent::Disconnected => {
@@ -1633,18 +1642,18 @@ fn handle_identity_list(app: &mut App, identities: Vec<IdentityInfo>) {
     }
 }
 
-fn handle_send_timestamp(app: &mut App, rpc_id: &str, server_ts: i64) {
+fn handle_send_timestamp(app: &mut App, token: &crate::signal::types::SendToken, server_ts: i64) {
     // Schedule any paste temp file for deletion after the delay (signal-cli has confirmed send)
-    if let Some((path, _)) = app.pending_paste_cleanups.remove(rpc_id) {
+    if let Some((path, _)) = app.pending_paste_cleanups.remove(token) {
         app.pending_paste_cleanups.insert(
-            rpc_id.to_string(),
+            token.clone(),
             (
                 path,
                 Instant::now() + std::time::Duration::from_secs(PASTE_CLEANUP_DELAY_SECS),
             ),
         );
     }
-    if let Some((conv_id, local_ts)) = app.pending.sends.remove(rpc_id) {
+    if let Some((conv_id, local_ts)) = app.pending.sends.remove(token) {
         crate::debug_log::logf(format_args!(
             "send confirmed: conv={} local_ts={local_ts} server_ts={server_ts}",
             crate::debug_log::mask_phone(&conv_id)
@@ -1708,18 +1717,18 @@ fn handle_send_timestamp(app: &mut App, rpc_id: &str, server_ts: i64) {
     }
 }
 
-fn handle_send_failed(app: &mut App, rpc_id: &str) {
+fn handle_send_failed(app: &mut App, token: &crate::signal::types::SendToken) {
     // Schedule any paste temp file for deletion after the delay (signal-cli has finished with it)
-    if let Some((path, _)) = app.pending_paste_cleanups.remove(rpc_id) {
+    if let Some((path, _)) = app.pending_paste_cleanups.remove(token) {
         app.pending_paste_cleanups.insert(
-            rpc_id.to_string(),
+            token.clone(),
             (
                 path,
                 Instant::now() + std::time::Duration::from_secs(PASTE_CLEANUP_DELAY_SECS),
             ),
         );
     }
-    if let Some((conv_id, local_ts)) = app.pending.sends.remove(rpc_id) {
+    if let Some((conv_id, local_ts)) = app.pending.sends.remove(token) {
         mark_send_failed(app, &conv_id, local_ts);
     }
 }

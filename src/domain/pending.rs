@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use super::send::SendRequest;
-use crate::signal::types::ReceiptKind;
+use crate::signal::types::{ReceiptKind, SendToken};
 
 /// A receipt that arrived before the message it targets was matchable
 /// (typically before the `SendTimestamp` that rewrites the local timestamp
@@ -28,12 +28,13 @@ pub struct BufferedReceipt {
 /// State for in-flight signal-cli work awaiting confirmation or dispatch.
 #[derive(Default)]
 pub struct PendingState {
-    /// Pending send RPCs: `rpc_id -> (conv_id, local_timestamp_ms)`.
+    /// Pending sends: `SendToken -> (conv_id, local_timestamp_ms)`.
     ///
     /// Populated by `dispatch_send()` on message send. Entries removed on
     /// `SendTimestamp` (success) or `SendFailed` (error). Used to correlate
-    /// signal-cli responses with local messages.
-    pub sends: HashMap<String, (String, i64)>,
+    /// backend confirmations with local messages; the token is opaque to
+    /// app state (KTD-4, #640).
+    pub sends: HashMap<SendToken, (String, i64)>,
     /// Receipts that arrived before their matching `SendTimestamp`.
     ///
     /// Populated by `handle_receipt()` for timestamps with no matching

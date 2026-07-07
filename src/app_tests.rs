@@ -2,7 +2,7 @@ use super::*;
 use crate::db::Database;
 use crate::signal::types::{
     Attachment, Contact, Group, IdentityInfo, Mention, PollData, PollOption, ReceiptKind,
-    SignalEvent, SignalMessage, StyleType, TextStyle, TrustLevel, UserStatus,
+    SendToken, SignalEvent, SignalMessage, StyleType, TextStyle, TrustLevel, UserStatus,
 };
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use rstest::{fixture, rstest};
@@ -1516,14 +1516,14 @@ fn rapid_consecutive_sends_both_get_confirmed(mut app: App) {
     }
     app.pending
         .sends
-        .insert("rpc-1".to_string(), (conv_id.to_string(), t));
+        .insert(SendToken::new("rpc-1"), (conv_id.to_string(), t));
     app.pending
         .sends
-        .insert("rpc-2".to_string(), (conv_id.to_string(), t + 200));
+        .insert(SendToken::new("rpc-2"), (conv_id.to_string(), t + 200));
 
     // Server confirms msg1 with a timestamp LATER than msg2's local one
     app.handle_signal_event(SignalEvent::SendTimestamp {
-        rpc_id: "rpc-1".to_string(),
+        token: SendToken::new("rpc-1"),
         server_ts: t + 450,
     });
     // The vec must still be sorted, or msg2's confirmation below misses
@@ -1536,7 +1536,7 @@ fn rapid_consecutive_sends_both_get_confirmed(mut app: App) {
     );
 
     app.handle_signal_event(SignalEvent::SendTimestamp {
-        rpc_id: "rpc-2".to_string(),
+        token: SendToken::new("rpc-2"),
         server_ts: t + 500,
     });
 
@@ -1595,10 +1595,10 @@ fn send_timestamp_upgrades_sending_to_sent(mut app: App) {
     // Register pending send
     app.pending
         .sends
-        .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
+        .insert(SendToken::new("rpc-1"), (conv_id.to_string(), local_ts));
 
     app.handle_signal_event(SignalEvent::SendTimestamp {
-        rpc_id: "rpc-1".to_string(),
+        token: SendToken::new("rpc-1"),
         server_ts,
     });
 
@@ -1646,10 +1646,10 @@ fn send_failed_sets_failed_status(mut app: App) {
 
     app.pending
         .sends
-        .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
+        .insert(SendToken::new("rpc-1"), (conv_id.to_string(), local_ts));
 
     app.handle_signal_event(SignalEvent::SendFailed {
-        rpc_id: "rpc-1".to_string(),
+        token: SendToken::new("rpc-1"),
     });
 
     assert_eq!(
@@ -1666,17 +1666,17 @@ fn send_timestamp_resets_paste_cleanup_deadline(mut app: App) {
     let tmp = std::env::temp_dir().join("test-paste-dummy.png");
     let sentinel = Instant::now() + std::time::Duration::from_secs(PASTE_CLEANUP_SENTINEL_SECS);
     app.pending_paste_cleanups
-        .insert("rpc-1".to_string(), (tmp.clone(), sentinel));
+        .insert(SendToken::new("rpc-1"), (tmp.clone(), sentinel));
 
     app.handle_signal_event(SignalEvent::SendTimestamp {
-        rpc_id: "rpc-1".to_string(),
+        token: SendToken::new("rpc-1"),
         server_ts: 0,
     });
 
     // Deadline should now be ~10s from now, well under the sentinel
     let (_, deadline) = app
         .pending_paste_cleanups
-        .get("rpc-1")
+        .get(&SendToken::new("rpc-1"))
         .expect("entry should still exist");
     let remaining = deadline.saturating_duration_since(Instant::now());
     assert!(
@@ -1690,15 +1690,15 @@ fn send_failed_resets_paste_cleanup_deadline(mut app: App) {
     let tmp = std::env::temp_dir().join("test-paste-dummy-fail.png");
     let sentinel = Instant::now() + std::time::Duration::from_secs(PASTE_CLEANUP_SENTINEL_SECS);
     app.pending_paste_cleanups
-        .insert("rpc-2".to_string(), (tmp.clone(), sentinel));
+        .insert(SendToken::new("rpc-2"), (tmp.clone(), sentinel));
 
     app.handle_signal_event(SignalEvent::SendFailed {
-        rpc_id: "rpc-2".to_string(),
+        token: SendToken::new("rpc-2"),
     });
 
     let (_, deadline) = app
         .pending_paste_cleanups
-        .get("rpc-2")
+        .get(&SendToken::new("rpc-2"))
         .expect("entry should still exist");
     let remaining = deadline.saturating_duration_since(Instant::now());
     assert!(
@@ -1717,7 +1717,7 @@ fn cleanup_paste_files_removes_file_after_deadline(mut app: App) {
     // Insert with a deadline already in the past
     let past = Instant::now() - std::time::Duration::from_secs(1);
     app.pending_paste_cleanups
-        .insert("rpc-3".to_string(), (tmp.clone(), past));
+        .insert(SendToken::new("rpc-3"), (tmp.clone(), past));
 
     app.cleanup_paste_files();
 
@@ -1736,7 +1736,7 @@ fn cleanup_paste_files_keeps_file_before_deadline(mut app: App) {
     // Insert with a future deadline
     let future = Instant::now() + std::time::Duration::from_secs(60);
     app.pending_paste_cleanups
-        .insert("rpc-4".to_string(), (tmp.clone(), future));
+        .insert(SendToken::new("rpc-4"), (tmp.clone(), future));
 
     app.cleanup_paste_files();
 
@@ -1804,7 +1804,7 @@ fn receipt_before_send_timestamp_is_buffered_and_replayed(mut app: App) {
 
     app.pending
         .sends
-        .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
+        .insert(SendToken::new("rpc-1"), (conv_id.to_string(), local_ts));
 
     // Receipt arrives BEFORE SendTimestamp (references server_ts which we don't know yet)
     app.handle_signal_event(SignalEvent::ReceiptReceived {
@@ -1822,7 +1822,7 @@ fn receipt_before_send_timestamp_is_buffered_and_replayed(mut app: App) {
 
     // Now SendTimestamp arrives — updates timestamp_ms and replays buffered receipts
     app.handle_signal_event(SignalEvent::SendTimestamp {
-        rpc_id: "rpc-1".to_string(),
+        token: SendToken::new("rpc-1"),
         server_ts,
     });
 
@@ -1893,11 +1893,12 @@ fn buffered_receipt_resolves_against_db_after_max_replays(mut app: App) {
 
     // Each confirmed send triggers one replay.
     for i in 0..10 {
-        app.pending
-            .sends
-            .insert(format!("rpc-{i}"), ("+other".to_string(), 1_000_000 + i));
+        app.pending.sends.insert(
+            SendToken::new(format!("rpc-{i}")),
+            ("+other".to_string(), 1_000_000 + i),
+        );
         app.handle_signal_event(SignalEvent::SendTimestamp {
-            rpc_id: format!("rpc-{i}"),
+            token: SendToken::new(format!("rpc-{i}")),
             server_ts: 2_000_000 + i,
         });
     }
@@ -5774,6 +5775,30 @@ fn end_sync_no_bell_when_no_suppressed(mut app: App) {
     assert!(!app.notifications.pending_bell);
 }
 
+// U3 (#640): the boundary event must end the sync window exactly as the old
+// direct end_sync() call did: digest bell fires once, suppressed counts clear.
+#[rstest]
+fn sync_complete_event_ends_sync_window(mut app: App) {
+    app.sync.active = true;
+    app.sync.message_count = 50;
+    app.scroll.offset = 30;
+    app.sync
+        .suppressed_notifications
+        .insert("+1".to_string(), 10);
+    app.handle_signal_event(SignalEvent::SyncComplete);
+    assert!(!app.sync.active);
+    assert_eq!(app.scroll.offset, 0);
+    assert!(app.notifications.pending_bell);
+    assert!(app.sync.suppressed_notifications.is_empty());
+
+    // A second SyncComplete after the window closed is a no-op: the bell
+    // must not re-arm and state stays quiescent.
+    app.notifications.pending_bell = false;
+    app.handle_signal_event(SignalEvent::SyncComplete);
+    assert!(!app.sync.active);
+    assert!(!app.notifications.pending_bell);
+}
+
 // --- SignalEvent dispatch coverage (closes #418) ---
 //
 // Each test fires one previously-uncovered SignalEvent variant through
@@ -6529,10 +6554,10 @@ fn send_confirm_timestamp_rewrite_survives_reload() {
     );
     app.pending
         .sends
-        .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
+        .insert(SendToken::new("rpc-1"), (conv_id.to_string(), local_ts));
 
     app.handle_signal_event(SignalEvent::SendTimestamp {
-        rpc_id: "rpc-1".to_string(),
+        token: SendToken::new("rpc-1"),
         server_ts,
     });
 
@@ -6564,10 +6589,10 @@ fn send_failed_status_survives_reload() {
     );
     app.pending
         .sends
-        .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
+        .insert(SendToken::new("rpc-1"), (conv_id.to_string(), local_ts));
 
     app.handle_signal_event(SignalEvent::SendFailed {
-        rpc_id: "rpc-1".to_string(),
+        token: SendToken::new("rpc-1"),
     });
 
     drop(app);
