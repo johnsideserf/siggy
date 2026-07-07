@@ -21,7 +21,10 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --tests -- -D warnings
+        # --locked: the default lane doubles as the lockfile canary for the
+        # native backend's future [patch.crates-io] entry (#640 U7/U9) -- a
+        # drifted Cargo.lock fails here instead of being silently rewritten.
+        run: cargo clippy --locked --tests -- -D warnings
 
       - name: App field-count ratchet
         run: bash scripts/check-app-field-count.sh
@@ -41,7 +44,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
+
+  # The native-backend feature lane (#640 U7). Allowed to fail until Phase 3
+  # (#643) per the plan's R11 schedule: pre-U9 the feature intentionally
+  # stops at a compile_error! marker, and during Phases 0-2 upstream churn
+  # may break it without blocking unrelated work. NOT in the required-check
+  # set (branch ruleset 13341653 pins Lint + the three Test jobs by name;
+  # this job is additional and must never rename those).
+  native:
+    name: Native lane (allowed-to-fail until Phase 3)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-backend
+
+      - name: Clippy (native-backend)
+        run: cargo clippy --locked --tests --no-default-features --features native-backend -- -D warnings
+
+      - name: Test (native-backend)
+        run: cargo test --locked --no-default-features --features native-backend
 
   fuzz:
     name: Fuzz (${{ matrix.target }})

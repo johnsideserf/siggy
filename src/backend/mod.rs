@@ -15,6 +15,7 @@
 pub mod demo;
 #[cfg(test)]
 pub mod mock;
+#[cfg(feature = "signal-cli-backend")]
 pub mod signal_cli;
 
 use crate::app::{App, SendRequest};
@@ -22,10 +23,22 @@ use crate::config::Config;
 
 pub use demo::DemoBackend;
 
-/// The concrete backend the binary is built with. U7 turns this into a
-/// cfg-selected alias (`signal-cli-backend` vs `native-backend` features);
-/// until then signal-cli is the only live engine.
+/// The concrete backend the binary is built with, selected at compile time
+/// by the mutually exclusive `signal-cli-backend` / `native-backend`
+/// features (#640 U7, plan KTD-1).
+#[cfg(feature = "signal-cli-backend")]
 pub type ActiveBackend<'a> = signal_cli::SignalCliBackend<'a>;
+
+// The native engine arrives with #642 (U9): pinned presage, store, and the
+// LocalSet runtime shim. The feature exists ahead of it so the CI matrix,
+// mutual-exclusion guard, and lockfile canary are in place before any
+// presage code merges; until U9 lands, a native build stops here with a
+// clear message instead of a wall of missing-type errors. U9 replaces this
+// with `pub mod native;` and the corresponding ActiveBackend alias.
+#[cfg(feature = "native-backend")]
+compile_error!(
+    "the `native-backend` engine is not implemented yet (it lands with #642); build with the default `signal-cli-backend` feature until then"
+);
 
 /// A messaging engine the main loop can drive.
 ///

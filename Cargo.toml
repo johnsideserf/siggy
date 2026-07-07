@@ -20,6 +20,22 @@ include = [
     "rust-toolchain.toml",
 ]
 
+# Backend selection (#640 U7, plan R2/KTD-1): exactly one engine per binary,
+# chosen at compile time. The two features are mutually exclusive, enforced
+# by compile_error! guards in main.rs and lib.rs -- `cargo build
+# --all-features` therefore fails BY DESIGN (see CONTRIBUTING.md).
+# `native-backend` is declared ahead of its implementation (#642) so the CI
+# matrix, guards, and lockfile canary are in place before presage merges.
+[features]
+default = ["signal-cli-backend"]
+signal-cli-backend = []
+native-backend = []
+
+[package.metadata.docs.rs]
+# Build with the default backend only; --all-features would hit the
+# mutual-exclusion guard.
+no-default-features = false
+
 [dependencies]
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"

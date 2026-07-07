@@ -15,6 +15,11 @@ crossterm = "0.28"
 
 [dependencies.siggy]
 path = ".."
+# Pin the default engine explicitly (#640 U7): fuzz_json_rpc fuzzes the
+# signal-cli JSON-RPC parser, which only exists under this feature. Native
+# parsing gets its own fuzz coverage later if warranted.
+default-features = false
+features = ["signal-cli-backend"]
 
 [[bin]]
 name = "fuzz_json_rpc"

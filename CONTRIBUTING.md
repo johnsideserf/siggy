@@ -19,6 +19,26 @@ Use `--demo` mode to test the UI without a Signal account:
 cargo run -- --demo
 ```
 
+## Backend features
+
+siggy selects its messaging engine at compile time via mutually exclusive
+Cargo features: `signal-cli-backend` (the default) and `native-backend`
+(an in-progress in-process engine, tracked in
+[#637](https://github.com/johnsideserf/siggy/issues/637)). Exactly one must
+be enabled, so **`cargo build --all-features` fails by design** with a
+mutual-exclusion error - this is expected, not a bug.
+
+Build incantations:
+
+```sh
+cargo build                                                  # default engine (signal-cli)
+cargo build --no-default-features --features native-backend  # native engine (not implemented yet)
+```
+
+The native lane also runs in CI (allowed to fail until the epic's Phase 3).
+Once the native engine lands it needs `protoc` installed to build; the
+default build does not.
+
 ## Making changes
 
 1. Create a feature branch from `master`:
