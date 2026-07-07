@@ -845,7 +845,7 @@ fn load_from_db_demotes_stale_sending_to_failed(mut app: App) {
     );
 }
 
-// Reproduces #486: when dispatch_send fails locally (stdin channel closed),
+// Reproduces #486: when backend dispatch fails locally (stdin channel closed),
 // no SendFailed event will ever arrive, so the dispatcher calls
 // mark_send_failed directly. It must update memory and the DB.
 #[rstest]

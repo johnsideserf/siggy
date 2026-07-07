@@ -1754,7 +1754,7 @@ fn handle_send_failed(app: &mut App, token: &crate::signal::types::SendToken) {
 }
 
 /// Mark an outgoing message Failed in memory and in the DB. Shared by the
-/// RPC SendFailed path above and by dispatch_send's local-failure path
+/// RPC SendFailed path above and by the backend dispatch local-failure path
 /// (stdin channel closed before the request ever reached signal-cli, #486).
 pub(crate) fn mark_send_failed(app: &mut App, conv_id: &str, local_ts: i64) {
     let mut found = false;

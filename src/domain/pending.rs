@@ -30,7 +30,7 @@ pub struct BufferedReceipt {
 pub struct PendingState {
     /// Pending sends: `SendToken -> (conv_id, local_timestamp_ms)`.
     ///
-    /// Populated by `dispatch_send()` on message send. Entries removed on
+    /// Populated by `Backend::dispatch` on message send. Entries removed on
     /// `SendTimestamp` (success) or `SendFailed` (error). Used to correlate
     /// backend confirmations with local messages; the token is opaque to
     /// app state (KTD-4, #640).
@@ -48,7 +48,7 @@ pub struct PendingState {
     /// Queued read receipts to dispatch: `(recipient_phone, timestamps)`.
     pub read_receipts: Vec<(String, Vec<i64>)>,
     /// Auto-replies queued by message triggers (#615), drained by the main
-    /// loop into `dispatch_send` like any composer send.
+    /// loop into `Backend::dispatch` like any composer send.
     pub trigger_sends: Vec<SendRequest>,
     /// Username awaiting getUserStatus resolution from `/join @handle`
     /// (lowercased, no `@`). Cleared when the `UserStatusList` response

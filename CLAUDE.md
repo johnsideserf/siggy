@@ -26,7 +26,8 @@ signal-cli → JsonRpcResponse → SignalEvent (mpsc) → App state → SQLite +
 
 ### Key Modules
 
-- **main.rs** — Event loop: polls keyboard (50ms), drains signal events, renders each frame. Orchestrates setup wizard → device linking → app startup. `dispatch_send()` routes each `SendRequest` variant to its `SignalClient` RPC method (handlers stay sync; the main loop owns async I/O).
+- **main.rs** — Event loop: polls keyboard (50ms), drains backend events, renders each frame. Orchestrates setup wizard → device linking → app startup. `run_app` is generic over the `Backend` trait (handlers stay sync; the main loop owns async I/O).
+- **backend/** — The messaging-engine boundary (#640, plan KTD-1): the `Backend` trait (dispatch of each `SendRequest` variant, startup, event drain, reconnect), the cfg-selected `ActiveBackend` alias, and one adapter per engine (`signal_cli.rs` wrapping `SignalClient`, `demo.rs` for `--demo`, `mock.rs` test double). Nothing engine-shaped leaks past this module.
 - **app.rs** — Application state. `App` (field count CI-ratcheted, see below) holds mode (Normal/Insert), per-overlay key handlers, and sub-structs extracted into `src/domain/`. Conversations live in `ConversationStore` (`conversation_store.rs`: HashMap + ordered Vec for the sidebar). ~40% of the file is the inline test module.
 - **handlers/** — Backend/composer event handling extracted from app.rs: `signal.rs` (`handle_signal_event()`, the single entry point for all backend events), `input.rs` (composer text → `SendRequest`), `keys.rs` (shared key-action helpers). Overlay key handlers are still in app.rs (migration ongoing, #494).
 - **domain/** — Extracted `App` sub-state (scroll, input, pending, overlays, image, lock, typing, search, …) per the #352 roadmap. Should be a leaf layer; three modules still import from app:: (#495).
