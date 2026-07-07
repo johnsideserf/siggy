@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.13.0
+
+The automation and identity release: scriptable message triggers with a
+headless watch mode, and Signal username (@handle) support.
+
+### New features
+
+- **Message triggers** -- declarative rules in `triggers.toml` (next to
+  `config.toml`) fire on incoming messages: auto-`reply` with a canned
+  text, or `run` an external command that receives the message as JSON on
+  stdin. Matching is dependency-free (case-insensitive `substring`,
+  `exact`, or `prefix`), rules can be scoped by sender and conversation,
+  and `/triggers` reloads the file live. Safety rails: `run` commands are
+  argv arrays spawned without a shell and require a top-level
+  `allow_run = true` opt-in, message content only ever reaches the child
+  as JSON (injection-proof), history replayed during initial sync never
+  fires, your own messages never fire, and a per-rule per-conversation
+  rate limit (default 30s) guards against auto-responder loops
+  (closes #615).
+- **Headless watch mode** -- `siggy --watch` runs the same trigger rules
+  as a standalone bot with no TUI, logging one line per firing. Note
+  signal-cli allows one process per account, so `--watch` and the TUI are
+  mutually exclusive.
+- **Signal usernames** -- @handle contacts are now first-class: username-
+  only contacts (no shared phone number) appear in the contacts overlay as
+  `@handle` instead of being dropped, `/join @name.123` resolves unknown
+  handles through the server, the chat header shows `Name (@handle)`
+  behind a new **Show usernames** setting, and `siggy --send @name.123`
+  works from the CLI (closes #612).
+
+### Internal
+
+- New `trigger` module (engine, TOML rules, evaluation rails) shared by
+  the TUI and `--watch` hosts.
+- `Contact.number` is now optional; conversations for username-only
+  contacts key by ACI uuid, consistent with the existing envelope
+  fallback.
+- +37 tests since v1.12.0 (1,057 total).
+
+---
+
 ## v1.12.0
 
 The power-user release: a fuzzy command palette, sender-generated link

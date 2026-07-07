@@ -95,12 +95,13 @@
 - [x] Outgoing link previews (`/preview <url>`, explicit fetch only)
 - [x] Inline sticker rendering (cached packs via the image pipeline)
 - [x] Sixel image tuning (sizing config, palette/dithering options, guard row) -- thanks @justinledwards
+- [x] Scriptable message triggers (`triggers.toml`, `/triggers`, headless `--watch` mode)
+- [x] Signal username support (@handle contacts, `/join @name.123`, `--send @name.123`)
 
 ## Future
 
 Tracked in GitHub issues:
 
-- [Signal username support (#612)](https://github.com/johnsideserf/siggy/issues/612)
-- [Scriptable message triggers / auto-responder (#615)](https://github.com/johnsideserf/siggy/issues/615)
+- [Native backend (presage) epic (#637)](https://github.com/johnsideserf/siggy/issues/637) -- an opt-in, in-process Signal engine to drop the signal-cli / JVM dependency, phased behind Cargo features (RFC in [#635](https://github.com/johnsideserf/siggy/issues/635))
 
 Have an idea? [Open an issue](https://github.com/johnsideserf/siggy/issues).
