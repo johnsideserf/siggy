@@ -190,11 +190,8 @@ fn no_duplicate_on_repeated_messages(mut app: App) {
 
     for _ in 0..3 {
         let msg = SignalMessage {
-            source: "+1".to_string(),
             source_name: Some("Alice".to_string()),
-            timestamp: chrono::Utc::now(),
-            body: Some("msg".to_string()),
-            ..Default::default()
+            ..make_msg("+1", Some("msg"), None, false)
         };
         app.handle_signal_event(SignalEvent::MessageReceived(msg));
     }
@@ -3274,11 +3271,8 @@ fn unread_bar_clears_on_active_incoming_message(mut app: App) {
 
     // Deliver a message while conversation is NOT active → creates unread
     let msg1 = SignalMessage {
-        source: "+15551234567".to_string(),
         source_name: Some("Alice".to_string()),
-        timestamp: chrono::Utc::now(),
-        body: Some("first".to_string()),
-        ..Default::default()
+        ..make_msg("+15551234567", Some("first"), None, false)
     };
     app.handle_signal_event(SignalEvent::MessageReceived(msg1));
 
@@ -3297,11 +3291,8 @@ fn unread_bar_clears_on_active_incoming_message(mut app: App) {
 
     // Deliver another message while conversation IS active
     let msg2 = SignalMessage {
-        source: "+15551234567".to_string(),
         source_name: Some("Alice".to_string()),
-        timestamp: chrono::Utc::now(),
-        body: Some("second".to_string()),
-        ..Default::default()
+        ..make_msg("+15551234567", Some("second"), None, false)
     };
     app.handle_signal_event(SignalEvent::MessageReceived(msg2));
 
@@ -4797,11 +4788,25 @@ fn make_msg(
     group_id: Option<&str>,
     is_outgoing: bool,
 ) -> SignalMessage {
+    // Distinct, strictly increasing timestamps: Signal message identity is
+    // (sender, timestamp), so two messages from one sender never share a
+    // millisecond on the real wire. Tests that loop make_msg() faster than
+    // the clock ticks would otherwise collide with the U6 dedup index.
+    static NEXT_TS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = chrono::Utc::now().timestamp_millis();
+    let ts_ms = NEXT_TS
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |prev| Some(prev.max(now - 1) + 1),
+        )
+        .map(|prev| prev.max(now - 1) + 1)
+        .unwrap_or(now);
     SignalMessage {
         source: source.to_string(),
         source_name: None,
         source_uuid: None,
-        timestamp: chrono::Utc::now(),
+        timestamp: chrono::DateTime::from_timestamp_millis(ts_ms).expect("valid ts"),
         body: body.map(|s| s.to_string()),
         attachments: vec![],
         group_id: group_id.map(|s| s.to_string()),
@@ -6551,6 +6556,7 @@ fn send_confirm_timestamp_rewrite_survives_reload() {
         outgoing_sending_msg(local_ts, "hello"),
         WireQuote::default(),
         false,
+        0,
     );
     app.pending
         .sends
@@ -6586,6 +6592,7 @@ fn send_failed_status_survives_reload() {
         outgoing_sending_msg(local_ts, "doomed"),
         WireQuote::default(),
         false,
+        0,
     );
     app.pending
         .sends
@@ -6616,7 +6623,7 @@ fn receipt_upgrades_persist_across_reload() {
     let ts = 1_700_000_000_000_i64;
     let mut msg = outgoing_sending_msg(ts, "hello");
     msg.status = Some(MessageStatus::Sent);
-    app.on_message_added(conv_id, msg, WireQuote::default(), false);
+    app.on_message_added(conv_id, msg, WireQuote::default(), false, 0);
 
     app.handle_signal_event(SignalEvent::ReceiptReceived {
         sender: conv_id.to_string(),
@@ -6646,7 +6653,7 @@ fn out_of_order_receipt_does_not_downgrade_after_reload() {
     let ts = 1_700_000_000_000_i64;
     let mut msg = outgoing_sending_msg(ts, "hello");
     msg.status = Some(MessageStatus::Sent);
-    app.on_message_added(conv_id, msg, WireQuote::default(), false);
+    app.on_message_added(conv_id, msg, WireQuote::default(), false, 0);
 
     // Read arrives before Delivery (receipts are not ordered on the wire).
     app.handle_signal_event(SignalEvent::ReceiptReceived {
@@ -6701,4 +6708,125 @@ fn read_marker_and_unread_count_survive_reload() {
     fresh.load_from_db().unwrap();
     assert_eq!(fresh.store.conversations[conv_id].unread, 1);
     assert_eq!(fresh.store.conversations[conv_id].messages.len(), 2);
+}
+
+// --- U6 (#640): incoming replay idempotency ---
+//
+// At-least-once delivery (reconnect replays, the native backend's ack
+// window) must be safe: a replayed envelope may not duplicate rows or
+// re-fire side effects. These lock the behavior end to end through
+// handle_signal_event.
+
+#[rstest]
+fn replayed_incoming_message_is_fully_suppressed(mut app: App) {
+    app.sync.active = false;
+    let msg = make_msg_with_ts("+1", Some("hi"), None, false, 5_000);
+    app.handle_signal_event(SignalEvent::MessageReceived(msg.clone()));
+    assert_eq!(app.store.conversations["+1"].messages.len(), 1);
+    assert_eq!(app.store.conversations["+1"].unread, 1);
+
+    // Archive the conversation and put another on top of the sidebar so the
+    // replay's suppressed side effects are observable.
+    app.store.conversations.get_mut("+1").unwrap().archived = true;
+    let other = make_msg_with_ts("+2", Some("yo"), None, false, 6_000);
+    app.handle_signal_event(SignalEvent::MessageReceived(other));
+    assert_eq!(app.store.conversation_order[0], "+2");
+
+    // Replay the first envelope verbatim.
+    app.handle_signal_event(SignalEvent::MessageReceived(msg));
+
+    let conv = &app.store.conversations["+1"];
+    assert_eq!(conv.messages.len(), 1, "no duplicate in-memory row");
+    assert_eq!(conv.unread, 1, "no unread inflation on replay");
+    assert!(
+        conv.archived,
+        "replay must not unarchive (#611 side effect)"
+    );
+    assert_eq!(
+        app.store.conversation_order[0], "+2",
+        "replay must not bump the conversation in the sidebar"
+    );
+    assert_eq!(
+        app.db.load_messages_page("+1", 50, 0).unwrap().len(),
+        1,
+        "exactly one persisted row"
+    );
+}
+
+#[rstest]
+fn same_timestamp_distinct_senders_in_group_both_survive(mut app: App) {
+    // Sender-chosen client clocks collide across senders routinely in a
+    // group; the dedup key includes sender_id precisely so this is NOT a
+    // duplicate (a wrong dedup is unrecoverable).
+    let m1 = make_msg_with_ts("+1", Some("from alice"), Some("grp"), false, 7_000);
+    let m2 = make_msg_with_ts("+2", Some("from bob"), Some("grp"), false, 7_000);
+    app.handle_signal_event(SignalEvent::MessageReceived(m1));
+    app.handle_signal_event(SignalEvent::MessageReceived(m2));
+    assert_eq!(app.store.conversations["grp"].messages.len(), 2);
+    assert_eq!(app.db.load_messages_page("grp", 50, 0).unwrap().len(), 2);
+}
+
+#[rstest]
+fn attachment_message_rows_survive_and_replay_dedups(mut app: App) {
+    // One incoming message = several rows (body + one per attachment), all
+    // sharing (conv, sender_id, timestamp). entry_seq keeps them distinct
+    // under the dedup index; a replayed envelope re-derives the same seqs
+    // and every row conflict-skips.
+    let mut msg = make_msg_with_ts("+1", Some("look at this"), None, false, 8_000);
+    msg.attachments.push(Attachment {
+        id: "att-1".to_string(),
+        content_type: "application/pdf".to_string(),
+        filename: Some("doc.pdf".to_string()),
+        local_path: None,
+    });
+    app.handle_signal_event(SignalEvent::MessageReceived(msg.clone()));
+    assert_eq!(
+        app.store.conversations["+1"].messages.len(),
+        2,
+        "body row + attachment row"
+    );
+    assert_eq!(app.db.load_messages_page("+1", 50, 0).unwrap().len(), 2);
+
+    app.handle_signal_event(SignalEvent::MessageReceived(msg));
+    assert_eq!(app.store.conversations["+1"].messages.len(), 2);
+    assert_eq!(app.db.load_messages_page("+1", 50, 0).unwrap().len(), 2);
+}
+
+#[rstest]
+fn own_sync_echo_replay_inserts_once(mut app: App) {
+    // The sync transcript of your own send (from another device) is an
+    // outgoing-shaped row OUTSIDE the dedup index (#480 rewrites outgoing
+    // timestamps); the app-level exists-check catches its replay instead.
+    let mut echo = make_msg_with_ts("+10000000000", Some("sent elsewhere"), None, true, 9_000);
+    echo.destination = Some("+2".to_string());
+    app.handle_signal_event(SignalEvent::MessageReceived(echo.clone()));
+    assert_eq!(app.store.conversations["+2"].messages.len(), 1);
+
+    app.handle_signal_event(SignalEvent::MessageReceived(echo));
+    assert_eq!(
+        app.store.conversations["+2"].messages.len(),
+        1,
+        "replayed sync echo must not duplicate"
+    );
+    assert_eq!(app.db.load_messages_page("+2", 50, 0).unwrap().len(), 1);
+}
+
+#[rstest]
+fn replayed_message_does_not_refire_triggers(mut app: App) {
+    // The trigger engine's own rails (cooldown) are per-rule; the U6 newness
+    // gate must stop a replayed envelope from even reaching evaluation.
+    app.triggers = crate::trigger::TriggerEngine::from_toml_str(
+        "[[trigger]]\nmatch = \"ping\"\nreply = \"pong\"\nrate_limit_secs = 0\n",
+        0,
+    );
+    let msg = make_msg_with_ts("+1", Some("ping"), None, false, 10_000);
+    app.handle_signal_event(SignalEvent::MessageReceived(msg.clone()));
+    assert_eq!(app.pending.trigger_sends.len(), 1);
+
+    app.handle_signal_event(SignalEvent::MessageReceived(msg));
+    assert_eq!(
+        app.pending.trigger_sends.len(),
+        1,
+        "replay must not queue a second auto-reply"
+    );
 }

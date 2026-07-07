@@ -627,19 +627,26 @@ fn resolve_incoming(app: &App, msg: &SignalMessage) -> Option<ResolvedMessage> {
 /// Returns the final accepted-state of the conversation so the caller can pass
 /// the same snapshot to `apply_notification_policy` without re-reading the
 /// store (nothing else mutates `accepted` after this point).
-fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) -> bool {
-    refresh_sidebar_after_move(app, &r.conv_id);
+/// Returns `(conv_accepted, any_new)`: `any_new` is false when every entry
+/// of the message was a replayed duplicate (#640 U6), in which case all
+/// newness-driven side effects (sidebar reorder, extras persistence, read
+/// state, notification, triggers) are skipped.
+fn push_resolved(app: &mut App, r: &ResolvedMessage, is_active: bool) -> (bool, bool) {
     track_sync_progress(app, r);
     remember_sender_identity(app, r);
 
     let conv_accepted = accept_or_create_conversation(app, r);
-    append_entries(app, r);
+    let any_new = append_entries(app, r);
+    if !any_new {
+        return (conv_accepted, false);
+    }
+    refresh_sidebar_after_move(app, &r.conv_id);
     persist_message_extras(app, r);
 
     if is_active {
         update_active_read_state(app, r, conv_accepted);
     }
-    conv_accepted
+    (conv_accepted, true)
 }
 
 /// Move this conversation to the top of the sidebar order. If the sidebar
@@ -737,14 +744,17 @@ fn accept_or_create_conversation(app: &mut App, r: &ResolvedMessage) -> bool {
 /// - `entry_wire_quote`: the message's quote payload, which historically
 ///   got copy-persisted to every attachment row and produced duplicate
 ///   quote rendering on reload.
-fn append_entries(app: &mut App, r: &ResolvedMessage) {
+///
+/// Returns true when at least one entry was newly persisted (not a replay).
+fn append_entries(app: &mut App, r: &ResolvedMessage) -> bool {
     let mut deferred_poll = app
         .poll_vote
         .pending_polls
         .remove(&(r.conv_id.clone(), r.msg_ts_ms));
     let mut entry_wire_quote = Some(r.wire_quote.clone());
+    let mut any_new = false;
 
-    for entry in &r.entries {
+    for (entry_seq, entry) in r.entries.iter().enumerate() {
         let display = DisplayMessage {
             sender: r.sender_display.clone(),
             timestamp: r.timestamp,
@@ -773,8 +783,14 @@ fn append_entries(app: &mut App, r: &ResolvedMessage) {
             preview_image_path: None,
         };
         let wq = entry_wire_quote.take().unwrap_or_default();
-        app.on_message_added(&r.conv_id, display, wq, true);
+        if app
+            .on_message_added(&r.conv_id, display, wq, true, entry_seq as i64)
+            .is_some()
+        {
+            any_new = true;
+        }
     }
+    any_new
 }
 
 /// Persist the artifacts that hang off a message but live outside the
@@ -923,9 +939,13 @@ fn handle_message(app: &mut App, msg: SignalMessage) {
         .as_ref()
         .map(|a| a == &resolved.conv_id)
         .unwrap_or(false);
-    let conv_accepted = push_resolved(app, &resolved, is_active);
-    apply_notification_policy(app, &resolved, is_active, conv_accepted);
-    evaluate_triggers(app, &msg, &resolved);
+    let (conv_accepted, any_new) = push_resolved(app, &resolved, is_active);
+    // A fully-replayed message (every row already persisted, #640 U6) fires
+    // no notification and no triggers: its side effects ran the first time.
+    if any_new {
+        apply_notification_policy(app, &resolved, is_active, conv_accepted);
+        evaluate_triggers(app, &msg, &resolved);
+    }
 }
 
 /// Run the message through the trigger engine (#615). Replies queue on
@@ -1004,7 +1024,7 @@ fn queue_trigger_reply(app: &mut App, conv_id: String, is_group: bool, text: Str
         preview_image_lines: None,
         preview_image_path: None,
     };
-    app.on_message_added(&conv_id, echo, WireQuote::default(), false);
+    app.on_message_added(&conv_id, echo, WireQuote::default(), false, 0);
     app.pending
         .trigger_sends
         .push(crate::app::SendRequest::Message {
@@ -1070,7 +1090,7 @@ pub(super) fn handle_system_message(
         preview_image_lines: None,
         preview_image_path: None,
     };
-    app.on_message_added(conv_id, msg, WireQuote::default(), true);
+    app.on_message_added(conv_id, msg, WireQuote::default(), true, 0);
 }
 
 fn handle_reaction(

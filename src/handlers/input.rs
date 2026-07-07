@@ -327,6 +327,7 @@ fn send_text(app: &mut App, raw_text: String) -> Option<SendRequest> {
             timestamp: quote_timestamp,
         },
         false,
+        0,
     );
     app.scroll.offset = 0;
     app.scroll.focused_index = None;
@@ -873,7 +874,7 @@ fn create_poll(
         preview_image_lines: None,
         preview_image_path: None,
     };
-    app.on_message_added(&conv_id, poll_msg, WireQuote::default(), false);
+    app.on_message_added(&conv_id, poll_msg, WireQuote::default(), false, 0);
     app.db_warn_visible(
         app.db
             .upsert_poll_data(&conv_id, local_ts_ms, &poll_data_for_db),

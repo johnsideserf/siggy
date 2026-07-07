@@ -100,14 +100,27 @@ impl App {
     /// scroll/focus reset) remain at the call sites; see issue #209 for further
     /// unification.
     ///
+    /// The DB insert runs FIRST and is idempotent for incoming rows (#640 U6):
+    /// a replayed envelope (at-least-once delivery, reconnect replay) is
+    /// detected by the dedup index and the entire side-effect chain -- the
+    /// in-memory append, unarchive, read-marker bump, expiring count, and
+    /// sidebar reorder -- is skipped. Outgoing sync-transcript replays are
+    /// caught by an app-level exists-check (they live outside the index
+    /// because #480 rewrites their timestamp).
+    ///
+    /// `entry_seq` numbers the rows of one multi-row message (body plus one
+    /// row per attachment share a timestamp) and is part of the dedup key;
+    /// single-row paths pass 0.
+    ///
     /// Returns the index where the message was placed, or `None` if the
-    /// conversation no longer exists.
+    /// conversation no longer exists or the message was a replayed duplicate.
     pub(crate) fn on_message_added(
         &mut self,
         conv_id: &str,
         msg: DisplayMessage,
         wire_quote: WireQuote,
         ordered_insert: bool,
+        entry_seq: i64,
     ) -> Option<usize> {
         // Snapshot the fields we need for DB persistence before the message moves.
         let ts_rfc3339 = msg.timestamp.to_rfc3339();
@@ -119,6 +132,61 @@ impl App {
         let timestamp_ms = msg.timestamp_ms;
         let expires_in_seconds = msg.expires_in_seconds;
         let expiration_start_ms = msg.expiration_start_ms;
+
+        if !self.store.conversations.contains_key(conv_id) {
+            return None;
+        }
+
+        // Outgoing sync-transcript replay check (#640 U6). Only sync echoes
+        // carry a pre-confirmed status AND the 'you' sender; locally composed
+        // echoes have a fresh unique local timestamp and never match.
+        if !is_system
+            && sender == "you"
+            && self
+                .db
+                .outgoing_message_exists(conv_id, timestamp_ms, &body)
+        {
+            return None;
+        }
+
+        // DB persist first: its conflict result is the "was it new?" gate.
+        let db_result = if is_system {
+            self.db
+                .insert_message(
+                    conv_id,
+                    &sender,
+                    &ts_rfc3339,
+                    &body,
+                    true,
+                    status,
+                    timestamp_ms,
+                )
+                .map(Some)
+        } else {
+            self.db.insert_message_full(
+                conv_id,
+                &sender,
+                &ts_rfc3339,
+                &body,
+                false,
+                status,
+                timestamp_ms,
+                &sender_id,
+                wire_quote.author.as_deref(),
+                wire_quote.body.as_deref(),
+                wire_quote.timestamp,
+                expires_in_seconds,
+                expiration_start_ms,
+                entry_seq,
+            )
+        };
+        let was_duplicate = matches!(db_result, Ok(None));
+        self.db_warn_visible(db_result, "on_message_added");
+        if was_duplicate {
+            // Replayed incoming entry: row already persisted, all side
+            // effects already fired the first time. Do nothing.
+            return None;
+        }
 
         // Insert into the in-memory store.
         let (insert_idx, unarchived) = {
@@ -150,36 +218,6 @@ impl App {
         if expires_in_seconds > 0 {
             self.expiring_msg_count += 1;
         }
-
-        // DB persist.
-        let db_result = if is_system {
-            self.db.insert_message(
-                conv_id,
-                &sender,
-                &ts_rfc3339,
-                &body,
-                true,
-                status,
-                timestamp_ms,
-            )
-        } else {
-            self.db.insert_message_full(
-                conv_id,
-                &sender,
-                &ts_rfc3339,
-                &body,
-                false,
-                status,
-                timestamp_ms,
-                &sender_id,
-                wire_quote.author.as_deref(),
-                wire_quote.body.as_deref(),
-                wire_quote.timestamp,
-                expires_in_seconds,
-                expiration_start_ms,
-            )
-        };
-        self.db_warn_visible(db_result, "on_message_added");
 
         // Sidebar reorder (skip for system messages, which shouldn't bump
         // conversations to the top just because someone changed the group name).

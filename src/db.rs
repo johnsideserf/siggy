@@ -221,6 +221,49 @@ const MIGRATIONS: &[Migration] = &[
             COMMIT;
         ",
     },
+    // Incoming-message idempotency (#640 U6, KTD-2): at-least-once delivery
+    // from the backend must be safe, so replayed envelopes may not duplicate
+    // rows or re-fire side effects.
+    //
+    // Key design: one incoming message persists as SEVERAL rows sharing
+    // (conversation_id, sender_id, timestamp_ms) -- the body row plus one row
+    // per attachment -- so that triple alone cannot be unique. `entry_seq`
+    // numbers the rows of one message in insertion order (0 = body/first
+    // entry), which is deterministic across a replayed parse, so the 4-column
+    // key dedups exact replays while multi-entry messages survive.
+    //
+    // The backfill numbers existing rows per key by rowid, which makes the
+    // index build on any populated table without deleting anything: rows that
+    // LOOK like duplicates under the 3-column key are indistinguishable from
+    // legitimate multi-entry messages, and a wrong dedup is unrecoverable
+    // while a missed one is cosmetic. Historical duplicates therefore stay;
+    // only post-migration replays are suppressed.
+    //
+    // Outgoing rows (sender = 'you') are deliberately outside the partial
+    // index: the #480 send-confirm dance rewrites their timestamp_ms, which
+    // a covering unique index would corrupt or reject. They get an app-level
+    // exists-check in on_message_added instead.
+    Migration {
+        version: 16,
+        sql: "
+            BEGIN;
+            ALTER TABLE messages ADD COLUMN entry_seq INTEGER NOT NULL DEFAULT 0;
+            UPDATE messages SET entry_seq = sub.rn - 1
+              FROM (SELECT rowid AS r,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY conversation_id, sender_id, timestamp_ms
+                               ORDER BY rowid
+                           ) AS rn
+                      FROM messages
+                     WHERE sender <> 'you' AND sender_id <> '') AS sub
+             WHERE messages.rowid = sub.r;
+            CREATE UNIQUE INDEX idx_messages_incoming_dedup
+                ON messages(conversation_id, sender_id, timestamp_ms, entry_seq)
+                WHERE sender <> 'you' AND sender_id <> '';
+            UPDATE schema_version SET version = 16;
+            COMMIT;
+        ",
+    },
 ];
 
 pub struct Database {
@@ -238,6 +281,12 @@ impl Database {
         conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch("PRAGMA secure_delete=ON;")?;
+        // Wait for a competing writer instead of failing with SQLITE_BUSY.
+        // WAL allows exactly one writer at a time; the native backend's
+        // adapter connection (#640 U6/U11) inserts from another thread while
+        // the main loop may hold a drain batch, so both sides must queue
+        // rather than error. Drain batches are short; 5s is generous.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
@@ -570,23 +619,36 @@ impl Database {
         status: Option<MessageStatus>,
         timestamp_ms: i64,
     ) -> Result<i64> {
-        self.insert_message_full(
-            conv_id,
-            sender,
-            timestamp,
-            body,
-            is_system,
-            status,
-            timestamp_ms,
-            "",
-            None,
-            None,
-            None,
-            0,
-            0,
-        )
+        // sender_id is '' here, which keeps the row outside the dedup index,
+        // so the insert can never be conflict-skipped (unwrap_or unreachable).
+        Ok(self
+            .insert_message_full(
+                conv_id,
+                sender,
+                timestamp,
+                body,
+                is_system,
+                status,
+                timestamp_ms,
+                "",
+                None,
+                None,
+                None,
+                0,
+                0,
+                0,
+            )?
+            .unwrap_or(-1))
     }
 
+    /// Insert one message row. Returns `Ok(Some(rowid))` for a new row and
+    /// `Ok(None)` when the row was a replay of an already-persisted incoming
+    /// entry (#640 U6): the insert is conflict-targeted at the partial unique
+    /// index on (conversation_id, sender_id, timestamp_ms, entry_seq), so
+    /// only genuine key collisions are skipped -- any other constraint
+    /// violation still surfaces as an error rather than being swallowed.
+    /// Callers must skip the full side-effect chain (in-memory append,
+    /// notification, unarchive, sidebar reorder) on `None`.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_message_full(
         &self,
@@ -603,14 +665,44 @@ impl Database {
         quote_ts_ms: Option<i64>,
         expires_in_seconds: i64,
         expiration_start_ms: i64,
-    ) -> Result<i64> {
+        entry_seq: i64,
+    ) -> Result<Option<i64>> {
         let status_i32 = status.map(|s| s.to_i32()).unwrap_or(0);
-        self.conn.execute(
-            "INSERT INTO messages (conversation_id, sender, timestamp, body, is_system, status, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![conv_id, sender, timestamp, body, is_system as i32, status_i32, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms],
+        let changed = self.conn.execute(
+            "INSERT INTO messages (conversation_id, sender, timestamp, body, is_system, status, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms, entry_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT (conversation_id, sender_id, timestamp_ms, entry_seq)
+                 WHERE sender <> 'you' AND sender_id <> ''
+                 DO NOTHING",
+            params![conv_id, sender, timestamp, body, is_system as i32, status_i32, timestamp_ms, sender_id, quote_author, quote_body, quote_ts_ms, expires_in_seconds, expiration_start_ms, entry_seq],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(Some(self.conn.last_insert_rowid()))
+    }
+
+    /// App-level duplicate check for outgoing rows, which live outside the
+    /// dedup index because the #480 send-confirm dance rewrites their
+    /// timestamp_ms (#640 U6). Matches the sync-transcript replay shape: an
+    /// outgoing row in this conversation with this (server) timestamp and
+    /// this body already exists. Body is included so multi-entry outgoing
+    /// messages (text + attachments, same timestamp) are not misjudged.
+    pub fn outgoing_message_exists(&self, conv_id: &str, timestamp_ms: i64, body: &str) -> bool {
+        use rusqlite::OptionalExtension;
+        self.conn
+            .query_row(
+                "SELECT 1 FROM messages
+                  WHERE conversation_id = ?1 AND timestamp_ms = ?2
+                    AND sender = 'you' AND body = ?3
+                  LIMIT 1",
+                params![conv_id, timestamp_ms, body],
+                |_| Ok(()),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Update delivery status for an outgoing message by its ms epoch timestamp.
@@ -2077,5 +2169,174 @@ mod tests {
         // Most recent first
         assert_eq!(results[0].3, "+2"); // Bob's conversation
         assert_eq!(results[1].3, "+1"); // Alice's conversation
+    }
+
+    // --- U6 (#640): incoming-message dedup index ---
+
+    // Upgrade-day path for the v16 migration: a populated messages table with
+    // a legitimate multi-entry message (body + attachment rows share conv,
+    // sender_id, and timestamp) AND a pre-existing true duplicate. The
+    // migration must build the index without deleting anything: entry_seq
+    // backfills by rowid, making every existing row unique under the new key.
+    #[test]
+    fn upgrade_from_v15_backfills_entry_seq_and_builds_dedup_index() {
+        let db = db_at_version(15);
+        db.conn
+            .execute(
+                "INSERT INTO conversations (id, name, is_group) VALUES ('+1', 'Alice', 0)",
+                [],
+            )
+            .unwrap();
+        for body in ["hello", "[attachment: photo.jpg]", "hello"] {
+            // Third row simulates a historical replay of the body row.
+            db.conn
+                .execute(
+                    "INSERT INTO messages (conversation_id, sender, timestamp, body, sender_id, timestamp_ms)
+                     VALUES ('+1', 'Alice', '2026-01-01T00:00:00Z', ?1, '+1', 1000)",
+                    params![body],
+                )
+                .unwrap();
+        }
+
+        db.migrate().unwrap();
+
+        // All three rows survive (a wrong dedup is unrecoverable; historical
+        // duplicates are only cosmetic), numbered by insertion order.
+        let seqs: Vec<i64> = db
+            .conn
+            .prepare("SELECT entry_seq FROM messages ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(seqs, vec![0, 1, 2]);
+
+        // The index now enforces idempotency: a post-migration replay of the
+        // first entry is conflict-skipped, not inserted and not an error.
+        let replay = db
+            .insert_message_full(
+                "+1",
+                "Alice",
+                "2026-01-01T00:00:00Z",
+                "hello",
+                false,
+                None,
+                1000,
+                "+1",
+                None,
+                None,
+                None,
+                0,
+                0,
+                0,
+            )
+            .unwrap();
+        assert!(replay.is_none(), "replayed entry must be conflict-skipped");
+        // A genuinely new entry_seq still inserts.
+        let new_entry = db
+            .insert_message_full(
+                "+1",
+                "Alice",
+                "2026-01-01T00:00:00Z",
+                "[attachment: second.jpg]",
+                false,
+                None,
+                1000,
+                "+1",
+                None,
+                None,
+                None,
+                0,
+                0,
+                3,
+            )
+            .unwrap();
+        assert!(new_entry.is_some());
+    }
+
+    // Outgoing rows stay OUTSIDE the dedup index so the #480 send-confirm
+    // timestamp rewrite can land on a timestamp an incoming row already
+    // occupies (sender-chosen clocks collide across senders routinely).
+    #[rstest]
+    fn outgoing_rewrite_onto_incoming_timestamp_succeeds(db: Database) {
+        db.upsert_conversation("+1", "Alice", false).unwrap();
+        db.insert_message_full(
+            "+1", "Alice", "t", "incoming", false, None, 5000, "+1", None, None, None, 0, 0, 0,
+        )
+        .unwrap();
+        // Outgoing row at a local timestamp, then rewritten to 5000.
+        db.insert_message(
+            "+1",
+            "you",
+            "t",
+            "mine",
+            false,
+            Some(MessageStatus::Sending),
+            4900,
+        )
+        .unwrap();
+        db.update_message_timestamp_ms("+1", 4900, 5000, MessageStatus::Sent.to_i32())
+            .unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE timestamp_ms = 5000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2, "incoming and rewritten outgoing rows coexist");
+    }
+
+    // Connection topology settled by U6: a second connection (the future
+    // native adapter's durable-insert path, #640 U11) inserting while the
+    // main connection holds an open drain batch must queue on busy_timeout
+    // and succeed once the batch commits -- never error with SQLITE_BUSY.
+    #[test]
+    fn adapter_connection_insert_queues_behind_main_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dedup-test.db");
+        let main_db = Database::open(&path).unwrap();
+        main_db.upsert_conversation("+1", "Alice", false).unwrap();
+        let adapter_db = Database::open(&path).unwrap();
+
+        main_db.begin_batch();
+        main_db
+            .insert_message("+1", "Alice", "t", "from main", false, None, 1000)
+            .unwrap();
+
+        let handle = std::thread::spawn(move || {
+            adapter_db.insert_message_full(
+                "+1",
+                "Bob",
+                "t",
+                "from adapter",
+                false,
+                None,
+                2000,
+                "+2",
+                None,
+                None,
+                None,
+                0,
+                0,
+                0,
+            )
+        });
+        // Let the adapter thread hit the write lock, then release it.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        main_db.commit_batch();
+
+        let inserted = handle.join().unwrap().unwrap();
+        assert!(
+            inserted.is_some(),
+            "adapter insert must succeed after the batch commits"
+        );
+        let count: i64 = main_db
+            .conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
     }
 }
