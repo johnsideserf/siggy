@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.14.0
+
+The foundation release for the native backend epic
+([#637](https://github.com/johnsideserf/siggy/issues/637)): an internal
+backend-boundary refactor with no intended user-facing changes beyond the
+items below. This release soaks before any native engine code merges, so
+anything odd is worth [reporting](https://github.com/johnsideserf/siggy/issues).
+
+### Changed
+
+- **License: GPL-3.0 to AGPL-3.0-only.** The planned native Signal engine
+  builds on presage and Signal's libsignal (both AGPL), and the relicense
+  lands ahead of that code. AGPL keeps every GPL obligation and adds the
+  network-source clause.
+- **`siggy --check` now actually checks.** It previously reported ready
+  without verifying registration; it now probes the account's link state,
+  prints the backend engine and a `link:` line, and exits nonzero with a
+  pointer to `siggy --setup` when the account is not linked.
+- **Replay protection.** Incoming messages are deduplicated at the
+  database level (new `entry_seq` schema column and unique index), so
+  replayed envelopes after a reconnect can no longer duplicate messages,
+  inflate unread counts, unarchive conversations, or re-fire
+  notifications and message triggers.
+
+### Internal
+
+- The messaging engine now lives behind a `Backend` trait in
+  `src/backend/` (signal-cli adapter, demo adapter, test mock), selected
+  at compile time by mutually exclusive Cargo features
+  (`signal-cli-backend`, the default, and the not-yet-implemented
+  `native-backend`).
+- Send correlation, link state, connection events, and sync completion
+  are backend-neutral vocabulary types; linking, startup registration
+  checks, and reconnect supervision route through the boundary.
+- 30 characterization tests lock the signal-cli backend's observable
+  behavior as the refactor's regression gate.
+- Schema migration to v16 (entry_seq backfill + dedup index), verified
+  against a real database copy before shipping.
+- +89 tests since v1.13.0 (1,146 total).
+
+---
+
 ## v1.13.0
 
 The automation and identity release: scriptable message triggers with a
