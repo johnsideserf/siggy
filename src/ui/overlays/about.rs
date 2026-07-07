@@ -34,7 +34,7 @@ pub(in crate::ui) fn draw_about(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme.fg_secondary),
         )),
         Line::from(Span::styled(
-            "  License: GPL-3.0",
+            "  License: AGPL-3.0",
             Style::default().fg(theme.fg_secondary),
         )),
         Line::from(Span::styled(

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/johnsideserf/siggy/actions/workflows/ci.yml"><img src="https://github.com/johnsideserf/siggy/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/johnsideserf/siggy/releases/latest"><img src="https://img.shields.io/github/v/release/johnsideserf/siggy" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/johnsideserf/siggy" alt="License: GPL-3.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/johnsideserf/siggy" alt="License: AGPL-3.0"></a>
   <a href="https://crates.io/crates/siggy"><img src="https://img.shields.io/crates/v/siggy" alt="crates.io"></a>
   <a href="https://johnsideserf.github.io/siggy/"><img src="https://img.shields.io/badge/docs-siggy-blue" alt="Docs"></a>
   <a href="https://ko-fi.com/johnsideserf"><img src="https://img.shields.io/badge/Ko--fi-Support%20siggy-ff5e5b?logo=ko-fi&logoColor=white" alt="Ko-fi"></a>
@@ -305,4 +305,13 @@ Built with [Ratatui](https://ratatui.rs/) + [Crossterm](https://github.com/cross
 
 ## License
 
-[GPL-3.0](LICENSE)
+[AGPL-3.0](LICENSE)
+
+siggy relicensed from GPL-3.0 to AGPL-3.0 in preparation for the native
+Signal engine ([#635](https://github.com/johnsideserf/siggy/issues/635)),
+which builds on [presage](https://github.com/whisperfish/presage) by the
+Whisperfish project and Signal's official
+[libsignal](https://github.com/signalapp/libsignal), both AGPL-3.0.
+
+siggy is an independent project and is not affiliated with or endorsed by
+Signal Messenger LLC or the Signal Foundation.

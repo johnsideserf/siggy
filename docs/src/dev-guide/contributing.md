@@ -84,4 +84,4 @@ Describe the problem you're trying to solve before proposing a solution.
 ## License
 
 By contributing, you agree that your contributions will be licensed under
-[GPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE).
+[AGPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE).

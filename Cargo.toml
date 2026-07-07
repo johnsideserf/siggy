@@ -2,7 +2,7 @@
 name = "siggy"
 version = "1.13.0"
 edition = "2024"
-license = "GPL-3.0-only"
+license = "AGPL-3.0-only"
 description = "Terminal-based Signal messenger client with vim keybindings"
 repository = "https://github.com/johnsideserf/siggy"
 keywords = ["signal", "tui", "terminal", "messenger", "ratatui"]

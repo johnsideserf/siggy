@@ -63,4 +63,4 @@ If you want to contribute a README translation, see [TRANSLATING.md](TRANSLATING
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under [GPL-3.0](LICENSE).
+By contributing, you agree that your contributions will be licensed under [AGPL-3.0](LICENSE).
