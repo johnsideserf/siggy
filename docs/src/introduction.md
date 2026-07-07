@@ -58,4 +58,4 @@ the interface without a Signal account or signal-cli installed.
 
 ## License
 
-[GPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE)
+[AGPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE)

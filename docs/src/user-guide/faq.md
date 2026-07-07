@@ -84,5 +84,5 @@ cargo install --git https://github.com/johnsideserf/siggy.git --force
 
 ## What license is siggy under?
 
-[GPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE).
+[AGPL-3.0](https://github.com/johnsideserf/siggy/blob/master/LICENSE).
 This is a copyleft license -- forks must remain open source under the same terms.
