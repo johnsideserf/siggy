@@ -6413,3 +6413,267 @@ fn toggle_sidebar_action_flips_visibility(mut app: App) {
     app.handle_global_key(KeyModifiers::CONTROL, KeyCode::Char('b'));
     assert_eq!(app.sidebar_visible, !before);
 }
+
+// --- U2 characterization: conversation-id format lock (KTD-6) ---
+//
+// Pins the KTD-6 boundary contract from
+// docs/superpowers/plans/2026-07-07-native-backend-presage-plan.md: siggy.db
+// keys conversations by E.164 / ACI uuid / base64 group id exactly as
+// signal-cli renders them, with the selection rule E.164-when-known,
+// else-uuid. Regression gate for the #640 boundary refactor; these tests
+// MAY NOT be weakened to make a refactor pass.
+
+#[rstest]
+fn conversation_ids_key_db_rows_by_e164_uuid_and_base64(mut app: App) {
+    // 1:1 with a known number: keyed by the E.164 string even though the
+    // envelope also carried a uuid.
+    let mut m = make_msg_with_ts("+15551234567", Some("hi"), None, false, 1_000);
+    m.source_uuid = Some("abcdef12-3456-7890-abcd-ef1234567890".to_string());
+    app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+    // 1:1 with phone-number privacy: the parser fell back to sourceUuid, so
+    // the conversation keys by the lowercase-hyphenated ACI uuid.
+    let m = make_msg_with_ts(
+        "11111111-2222-3333-4444-555555555555",
+        Some("hi"),
+        None,
+        false,
+        2_000,
+    );
+    app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+    // Group: keyed by the base64 string with trailing "=" padding preserved
+    // exactly as signal-cli renders it.
+    let m = make_msg_with_ts(
+        "+15551234567",
+        Some("hi"),
+        Some("dGVzdGdyb3VwaWQ="),
+        false,
+        3_000,
+    );
+    app.handle_signal_event(SignalEvent::MessageReceived(m));
+
+    let mut ids: Vec<String> = app
+        .db
+        .load_conversations(10)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![
+            "+15551234567".to_string(),
+            "11111111-2222-3333-4444-555555555555".to_string(),
+            "dGVzdGdyb3VwaWQ=".to_string(),
+        ],
+        "DB conversation ids must be exactly the signal-cli formats (KTD-6)"
+    );
+    // The in-memory store keys on the same strings.
+    for id in &ids {
+        assert!(
+            app.store.conversations.contains_key(id.as_str()),
+            "store must key on {id}"
+        );
+    }
+    assert!(app.store.conversations["dGVzdGdyb3VwaWQ="].is_group);
+}
+
+// --- U2 characterization: persisted-state assertions ---
+//
+// These assert state RELOADED FROM SQLITE through a fresh connection, not
+// just in-memory state: the monotonic-status-guard incident showed that
+// in-memory-only coverage hides DB bugs. Regression gate for the #640
+// boundary refactor (docs/superpowers/plans/2026-07-07-native-backend-presage-plan.md,
+// unit U2); do not weaken to make a refactor pass.
+
+/// App backed by a file DB (unlike the in-memory `app()` fixture) so a test
+/// can reopen the same file and assert what a fresh process would load.
+/// Returns the app plus the DB path for reloading.
+fn app_with_file_db() -> (App, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("siggy-test.db");
+    let config_path = dir.path().join("config.toml");
+    // Leaked like the app() fixture: the OS reclaims temp dirs on exit.
+    std::mem::forget(dir);
+    let db = Database::open(&db_path).expect("open file db");
+    let mut app = App::new("+10000000000".to_string(), db, &config_path);
+    app.set_connected();
+    (app, db_path)
+}
+
+/// Reload a conversation's messages the way a restart would: through a
+/// brand-new `Database::open` on the same file.
+fn reload_messages(db_path: &std::path::Path, conv_id: &str) -> Vec<DisplayMessage> {
+    let db = Database::open(db_path).expect("reopen file db");
+    db.load_messages_page(conv_id, 50, 0).expect("load page")
+}
+
+// Pins: the #480 send-confirm rewrite persists. A message inserted with the
+// local timestamp must, after SendTimestamp, reload with the server
+// timestamp and status Sent.
+#[test]
+fn send_confirm_timestamp_rewrite_survives_reload() {
+    let (mut app, db_path) = app_with_file_db();
+    let conv_id = "+15551234567";
+    app.store
+        .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+    let local_ts = 1_700_000_000_000_i64;
+    let server_ts = 1_700_000_000_450_i64;
+    app.on_message_added(
+        conv_id,
+        outgoing_sending_msg(local_ts, "hello"),
+        WireQuote::default(),
+        false,
+    );
+    app.pending
+        .sends
+        .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
+
+    app.handle_signal_event(SignalEvent::SendTimestamp {
+        rpc_id: "rpc-1".to_string(),
+        server_ts,
+    });
+
+    drop(app);
+    let rows = reload_messages(&db_path, conv_id);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].timestamp_ms, server_ts,
+        "DB row must carry the server timestamp after the rewrite"
+    );
+    assert_eq!(rows[0].status, Some(MessageStatus::Sent));
+}
+
+// Pins: the Sending -> Failed transition (which bypasses the monotonic
+// status guard via mark_message_failed, #486) is persisted, not just
+// applied in memory.
+#[test]
+fn send_failed_status_survives_reload() {
+    let (mut app, db_path) = app_with_file_db();
+    let conv_id = "+15551234567";
+    app.store
+        .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+    let local_ts = 1_700_000_000_000_i64;
+    app.on_message_added(
+        conv_id,
+        outgoing_sending_msg(local_ts, "doomed"),
+        WireQuote::default(),
+        false,
+    );
+    app.pending
+        .sends
+        .insert("rpc-1".to_string(), (conv_id.to_string(), local_ts));
+
+    app.handle_signal_event(SignalEvent::SendFailed {
+        rpc_id: "rpc-1".to_string(),
+    });
+
+    drop(app);
+    let rows = reload_messages(&db_path, conv_id);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, Some(MessageStatus::Failed));
+    assert_eq!(
+        rows[0].timestamp_ms, local_ts,
+        "a failed send keeps its local timestamp (no server rewrite happened)"
+    );
+}
+
+// Pins: the receipt status ladder (Sent -> Delivered -> Read) is persisted
+// step by step and survives reload.
+#[test]
+fn receipt_upgrades_persist_across_reload() {
+    let (mut app, db_path) = app_with_file_db();
+    let conv_id = "+15551234567";
+    app.store
+        .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+    let ts = 1_700_000_000_000_i64;
+    let mut msg = outgoing_sending_msg(ts, "hello");
+    msg.status = Some(MessageStatus::Sent);
+    app.on_message_added(conv_id, msg, WireQuote::default(), false);
+
+    app.handle_signal_event(SignalEvent::ReceiptReceived {
+        sender: conv_id.to_string(),
+        receipt_type: ReceiptKind::Delivery,
+        timestamps: vec![ts],
+    });
+    app.handle_signal_event(SignalEvent::ReceiptReceived {
+        sender: conv_id.to_string(),
+        receipt_type: ReceiptKind::Read,
+        timestamps: vec![ts],
+    });
+
+    drop(app);
+    let rows = reload_messages(&db_path, conv_id);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].status, Some(MessageStatus::Read));
+}
+
+// Pins: an out-of-order receipt (Read first, Delivery second) must not
+// downgrade the persisted status; the reloaded row stays Read.
+#[test]
+fn out_of_order_receipt_does_not_downgrade_after_reload() {
+    let (mut app, db_path) = app_with_file_db();
+    let conv_id = "+15551234567";
+    app.store
+        .get_or_create_conversation(conv_id, "Alice", false, &app.db);
+    let ts = 1_700_000_000_000_i64;
+    let mut msg = outgoing_sending_msg(ts, "hello");
+    msg.status = Some(MessageStatus::Sent);
+    app.on_message_added(conv_id, msg, WireQuote::default(), false);
+
+    // Read arrives before Delivery (receipts are not ordered on the wire).
+    app.handle_signal_event(SignalEvent::ReceiptReceived {
+        sender: conv_id.to_string(),
+        receipt_type: ReceiptKind::Read,
+        timestamps: vec![ts],
+    });
+    app.handle_signal_event(SignalEvent::ReceiptReceived {
+        sender: conv_id.to_string(),
+        receipt_type: ReceiptKind::Delivery,
+        timestamps: vec![ts],
+    });
+
+    drop(app);
+    let rows = reload_messages(&db_path, conv_id);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].status,
+        Some(MessageStatus::Read),
+        "late Delivery receipt must not downgrade the persisted Read status"
+    );
+}
+
+// Pins: the persisted read marker (and therefore the unread count) survives
+// reload, both through raw unread_count and through the real
+// App::load_from_db startup path.
+#[test]
+fn read_marker_and_unread_count_survive_reload() {
+    let (mut app, db_path) = app_with_file_db();
+    let conv_id = "+15551234567";
+    let mut m1 = make_msg_with_ts(conv_id, Some("one"), None, false, 1_000);
+    m1.source_name = Some("Alice".to_string());
+    app.handle_signal_event(SignalEvent::MessageReceived(m1));
+    let m2 = make_msg_with_ts(conv_id, Some("two"), None, false, 2_000);
+    app.handle_signal_event(SignalEvent::MessageReceived(m2));
+
+    // Mark exactly the first message read, leaving the second unread.
+    let first_rowid = app
+        .db
+        .max_rowid_up_to_timestamp(conv_id, 1_000)
+        .unwrap()
+        .expect("first row exists");
+    app.db.save_read_marker(conv_id, first_rowid).unwrap();
+    let config_path = db_path.parent().unwrap().join("config.toml");
+    drop(app);
+
+    let db = Database::open(&db_path).expect("reopen file db");
+    assert_eq!(db.unread_count(conv_id).unwrap(), 1);
+
+    // The production reload path agrees with the raw count.
+    let mut fresh = App::new("+10000000000".to_string(), db, &config_path);
+    fresh.load_from_db().unwrap();
+    assert_eq!(fresh.store.conversations[conv_id].unread, 1);
+    assert_eq!(fresh.store.conversations[conv_id].messages.len(), 2);
+}

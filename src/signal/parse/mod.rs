@@ -18,6 +18,8 @@
 //! and bare-string member representations.
 
 pub(super) mod envelope;
+#[cfg(test)]
+mod fixtures;
 pub(super) mod helpers;
 pub(super) mod message;
 pub(super) mod poll;
