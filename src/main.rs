@@ -5,6 +5,17 @@
 //! Orchestrates the first-run flow: setup wizard -> device linking -> app
 //! startup.
 
+// Backend features are mutually exclusive (#640 U7, plan R2/KTD-1): the
+// boundary is compile-time selected and exactly one engine exists per binary.
+#[cfg(all(feature = "signal-cli-backend", feature = "native-backend"))]
+compile_error!(
+    "features `signal-cli-backend` and `native-backend` are mutually exclusive; enable exactly one"
+);
+#[cfg(not(any(feature = "signal-cli-backend", feature = "native-backend")))]
+compile_error!(
+    "one backend feature is required: `signal-cli-backend` (default) or `native-backend`"
+);
+
 mod app;
 mod audio;
 mod autocomplete;
