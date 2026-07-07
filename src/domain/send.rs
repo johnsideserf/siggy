@@ -1,10 +1,10 @@
 //! Outgoing-request value type.
 //!
 //! [`SendRequest`] is the message the input/overlay handlers hand back to the
-//! main loop, which routes each variant to its `SignalClient` RPC method
-//! (`dispatch_send` in `main.rs`). It is pure data with no `App` coupling, so it
-//! lives in `domain` as a leaf type that `app`, `handlers`, and the main loop
-//! import from.
+//! main loop, which routes each variant through the active backend
+//! (`Backend::dispatch` in `src/backend/`). It is pure data with no `App`
+//! coupling, so it lives in `domain` as a leaf type that `app`, `handlers`,
+//! and the main loop import from.
 
 use std::path::PathBuf;
 

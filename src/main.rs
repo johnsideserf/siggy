@@ -8,6 +8,7 @@
 mod app;
 mod audio;
 mod autocomplete;
+mod backend;
 mod compose;
 mod config;
 mod conversation_store;
@@ -706,7 +707,7 @@ async fn run_main_flow(
         };
         return run_app(
             terminal,
-            MessagingBackend::Demo,
+            backend::DemoBackend,
             &demo_config,
             database,
             false,
@@ -826,9 +827,12 @@ async fn run_main_flow(
     }
 
     // Run the app
+    // ActiveBackend is the cfg-selected engine (signal-cli today, see
+    // src/backend/). It borrows the client: run_main_flow keeps ownership
+    // because shutdown happens after run_app returns.
     let result = run_app(
         terminal,
-        MessagingBackend::Signal(&mut signal_client),
+        backend::ActiveBackend::new(&mut signal_client),
         config,
         database,
         incognito,
@@ -1222,547 +1226,9 @@ fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App)
     Ok(())
 }
 
-/// Dispatch a SendRequest to signal-cli.
-async fn dispatch_send(signal_client: &mut SignalClient, app: &mut App, req: SendRequest) {
-    match req {
-        SendRequest::Message {
-            recipient,
-            body,
-            is_group,
-            local_ts_ms,
-            mentions,
-            text_styles,
-            attachment,
-            preview,
-            quote_timestamp,
-            quote_author,
-            quote_body,
-        } => {
-            let attachments: Vec<std::path::PathBuf> = attachment.into_iter().collect();
-            let quote = match (quote_author, quote_timestamp, quote_body) {
-                (Some(author), Some(ts), Some(body_text)) => Some((author, ts, body_text)),
-                _ => None,
-            };
-            let att_refs: Vec<&std::path::Path> = attachments.iter().map(|p| p.as_path()).collect();
-            match signal_client
-                .send_message(
-                    &recipient,
-                    &body,
-                    is_group,
-                    &mentions,
-                    &text_styles,
-                    &att_refs,
-                    preview.as_ref(),
-                    quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str())),
-                )
-                .await
-            {
-                Ok(token) => {
-                    debug_log::logf(format_args!(
-                        "send: to={} ts={local_ts_ms}",
-                        debug_log::mask_phone(&recipient)
-                    ));
-                    app.pending
-                        .sends
-                        .insert(token.clone(), (recipient.to_string(), local_ts_ms));
-                    // Register any paste temp file for deferred deletion. The actual delete is
-                    // triggered after send confirmation; this sentinel keeps it alive until then.
-                    // Only one paste attachment per send is expected; break after the first match.
-                    for path in &attachments {
-                        if path.starts_with(&app.paste_temp_path) {
-                            let sentinel = Instant::now()
-                                + Duration::from_secs(app::PASTE_CLEANUP_SENTINEL_SECS);
-                            app.pending_paste_cleanups
-                                .insert(token.clone(), (path.clone(), sentinel));
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    app.status_message = format!("send error: {e}");
-                    // The request never reached signal-cli, so no SendFailed event
-                    // will ever arrive — mark the optimistic message Failed here
-                    // or it stays in Sending forever (#486).
-                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
-                    // RPC failed to send — delete temp file immediately (signal-cli never saw it)
-                    for path in &attachments {
-                        if path.starts_with(&app.paste_temp_path) {
-                            let _ = std::fs::remove_file(path);
-                        }
-                    }
-                }
-            }
-        }
-        SendRequest::Reaction {
-            conv_id,
-            emoji,
-            is_group,
-            target_author,
-            target_timestamp,
-            remove,
-        } => {
-            if let Err(e) = signal_client
-                .send_reaction(
-                    &conv_id,
-                    is_group,
-                    &emoji,
-                    &target_author,
-                    target_timestamp,
-                    remove,
-                )
-                .await
-            {
-                app.status_message = format!("reaction error: {e}");
-            }
-        }
-        SendRequest::Edit {
-            recipient,
-            body,
-            is_group,
-            edit_timestamp,
-            local_ts_ms,
-            mentions,
-            text_styles,
-            quote_timestamp,
-            quote_author,
-            quote_body,
-        } => {
-            let quote = match (quote_author, quote_timestamp, quote_body) {
-                (Some(author), Some(ts), Some(body_text)) => Some((author, ts, body_text)),
-                _ => None,
-            };
-            match signal_client
-                .send_edit_message(
-                    &recipient,
-                    &body,
-                    is_group,
-                    edit_timestamp,
-                    &mentions,
-                    &text_styles,
-                    quote.as_ref().map(|(a, t, b)| (a.as_str(), *t, b.as_str())),
-                )
-                .await
-            {
-                Ok(token) => {
-                    debug_log::logf(format_args!(
-                        "edit: to={} ts={edit_timestamp}",
-                        debug_log::mask_phone(&recipient)
-                    ));
-                    app.pending
-                        .sends
-                        .insert(token, (recipient.to_string(), local_ts_ms));
-                }
-                Err(e) => {
-                    app.status_message = format!("edit error: {e}");
-                }
-            }
-        }
-        SendRequest::RemoteDelete {
-            recipient,
-            is_group,
-            target_timestamp,
-        } => {
-            if let Err(e) = signal_client
-                .send_remote_delete(&recipient, is_group, target_timestamp)
-                .await
-            {
-                app.status_message = format!("delete error: {e}");
-            }
-        }
-        SendRequest::Typing {
-            recipient,
-            is_group,
-            stop,
-        } => {
-            let _ = signal_client.send_typing(&recipient, is_group, stop).await;
-        }
-        SendRequest::ReadReceipt {
-            recipient,
-            timestamps,
-        } => {
-            if let Err(e) = signal_client
-                .send_read_receipt(&recipient, &timestamps)
-                .await
-            {
-                debug_log::logf(format_args!("read receipt error: {e}"));
-            }
-        }
-        SendRequest::UpdateExpiration {
-            conv_id,
-            is_group,
-            seconds,
-        } => {
-            let result = if is_group {
-                signal_client
-                    .send_update_group_expiration(&conv_id, seconds)
-                    .await
-            } else {
-                signal_client
-                    .send_update_contact_expiration(&conv_id, seconds)
-                    .await
-            };
-            if let Err(e) = result {
-                app.status_message = format!("expiration error: {e}");
-            } else if seconds == 0 {
-                app.status_message = "Disappearing messages disabled".to_string();
-            } else {
-                app.status_message = format!(
-                    "Disappearing messages set to {}",
-                    input::format_compact_duration(seconds),
-                );
-            }
-        }
-        SendRequest::CreateGroup { name } => match signal_client.create_group(&name, &[]).await {
-            Err(e) => {
-                app.status_message = format!("create group error: {e}");
-            }
-            _ => {
-                app.status_message = format!("Created group \"{}\"", name);
-                let _ = signal_client.list_groups().await;
-            }
-        },
-        SendRequest::AddGroupMembers { group_id, members } => {
-            match signal_client.add_group_members(&group_id, &members).await {
-                Err(e) => {
-                    app.status_message = format!("add member error: {e}");
-                }
-                _ => {
-                    let names: Vec<String> = members
-                        .iter()
-                        .map(|m| {
-                            app.store
-                                .contact_names
-                                .get(m)
-                                .cloned()
-                                .unwrap_or_else(|| m.clone())
-                        })
-                        .collect();
-                    app.status_message = format!("Added {}", names.join(", "));
-                    let _ = signal_client.list_groups().await;
-                }
-            }
-        }
-        SendRequest::RemoveGroupMembers { group_id, members } => {
-            match signal_client
-                .remove_group_members(&group_id, &members)
-                .await
-            {
-                Err(e) => {
-                    app.status_message = format!("remove member error: {e}");
-                }
-                _ => {
-                    let names: Vec<String> = members
-                        .iter()
-                        .map(|m| {
-                            app.store
-                                .contact_names
-                                .get(m)
-                                .cloned()
-                                .unwrap_or_else(|| m.clone())
-                        })
-                        .collect();
-                    app.status_message = format!("Removed {}", names.join(", "));
-                    let _ = signal_client.list_groups().await;
-                }
-            }
-        }
-        SendRequest::RenameGroup { group_id, name } => {
-            match signal_client.rename_group(&group_id, &name).await {
-                Err(e) => {
-                    app.status_message = format!("rename group error: {e}");
-                }
-                _ => {
-                    // Update locally for instant visual feedback
-                    if let Some(conv) = app.store.conversations.get_mut(&group_id) {
-                        conv.name = name.clone();
-                    }
-                    app.store
-                        .contact_names
-                        .insert(group_id.clone(), name.clone());
-                    app.status_message = format!("Renamed group to \"{}\"", name);
-                    let _ = signal_client.list_groups().await;
-                }
-            }
-        }
-        SendRequest::LeaveGroup { group_id } => match signal_client.quit_group(&group_id).await {
-            Err(e) => {
-                app.status_message = format!("leave group error: {e}");
-            }
-            _ => {
-                let name = app
-                    .store
-                    .conversations
-                    .get(&group_id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| group_id.clone());
-                app.store.conversations.remove(&group_id);
-                app.store.conversation_order.retain(|id| id != &group_id);
-                app.store.groups.remove(&group_id);
-                if app.active_conversation.as_ref() == Some(&group_id) {
-                    app.active_conversation = None;
-                }
-                app.status_message = format!("Left group \"{}\"", name);
-            }
-        },
-        SendRequest::Block {
-            recipient,
-            is_group,
-        } => {
-            if let Err(e) = signal_client.block_contact(&recipient, is_group).await {
-                app.status_message = format!("block error: {e}");
-            }
-        }
-        SendRequest::Unblock {
-            recipient,
-            is_group,
-        } => {
-            if let Err(e) = signal_client.unblock_contact(&recipient, is_group).await {
-                app.status_message = format!("unblock error: {e}");
-            }
-        }
-        SendRequest::Pin {
-            recipient,
-            is_group,
-            target_author,
-            target_timestamp,
-            pin_duration,
-        } => {
-            if let Err(e) = signal_client
-                .send_pin_message(
-                    &recipient,
-                    is_group,
-                    &target_author,
-                    target_timestamp,
-                    pin_duration,
-                )
-                .await
-            {
-                app.status_message = format!("pin error: {e}");
-            }
-        }
-        SendRequest::Unpin {
-            recipient,
-            is_group,
-            target_author,
-            target_timestamp,
-        } => {
-            if let Err(e) = signal_client
-                .send_unpin_message(&recipient, is_group, &target_author, target_timestamp)
-                .await
-            {
-                app.status_message = format!("unpin error: {e}");
-            }
-        }
-        SendRequest::PollCreate {
-            recipient,
-            is_group,
-            question,
-            options,
-            allow_multiple,
-            local_ts_ms,
-        } => {
-            match signal_client
-                .send_poll_create(&recipient, is_group, &question, &options, allow_multiple)
-                .await
-            {
-                Ok(token) => {
-                    app.pending.sends.insert(token, (recipient, local_ts_ms));
-                }
-                Err(e) => {
-                    app.status_message = format!("poll error: {e}");
-                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
-                }
-            }
-        }
-        SendRequest::PollVote {
-            recipient,
-            is_group,
-            poll_author,
-            poll_timestamp,
-            option_indexes,
-            vote_count,
-        } => {
-            if let Err(e) = signal_client
-                .send_poll_vote(
-                    &recipient,
-                    is_group,
-                    &poll_author,
-                    poll_timestamp,
-                    &option_indexes,
-                    vote_count,
-                )
-                .await
-            {
-                app.status_message = format!("vote error: {e}");
-            }
-        }
-        SendRequest::PollTerminate {
-            recipient,
-            is_group,
-            poll_timestamp,
-        } => {
-            if let Err(e) = signal_client
-                .send_poll_terminate(&recipient, is_group, poll_timestamp)
-                .await
-            {
-                app.status_message = format!("end poll error: {e}");
-            }
-        }
-        SendRequest::MessageRequestResponse {
-            recipient,
-            is_group,
-            response_type,
-        } => {
-            match signal_client
-                .send_message_request_response(&recipient, is_group, &response_type)
-                .await
-            {
-                Err(e) => {
-                    app.status_message = format!("message request error: {e}");
-                }
-                _ => {
-                    app.status_message = match response_type.as_str() {
-                        "accept" => "Message request accepted".to_string(),
-                        "delete" => "Message request deleted".to_string(),
-                        _ => String::new(),
-                    };
-                }
-            }
-        }
-        SendRequest::ListIdentities => {
-            let _ = signal_client.list_identities().await;
-        }
-        SendRequest::ResolveUsername { username } => {
-            if let Err(e) = signal_client.get_user_status(&username).await {
-                app.pending.username_resolve = None;
-                app.status_message = format!("Username lookup failed: {e}");
-            }
-        }
-        SendRequest::TrustIdentity {
-            recipient,
-            safety_number,
-        } => {
-            match signal_client
-                .trust_identity(&recipient, &safety_number)
-                .await
-            {
-                Err(e) => {
-                    app.status_message = format!("trust error: {e}");
-                }
-                _ => {
-                    app.status_message = format!(
-                        "Verified {}",
-                        app.store
-                            .contact_names
-                            .get(&recipient)
-                            .unwrap_or(&recipient)
-                    );
-                    // Re-fetch identities to update trust levels
-                    let _ = signal_client.list_identities().await;
-                }
-            }
-        }
-        SendRequest::UpdateProfile {
-            given_name,
-            family_name,
-            about,
-            about_emoji,
-        } => {
-            match signal_client
-                .update_profile(&given_name, &family_name, &about, &about_emoji)
-                .await
-            {
-                Err(e) => {
-                    app.status_message = format!("profile error: {e}");
-                }
-                _ => {
-                    app.status_message = "Profile updated".to_string();
-                }
-            }
-        }
-    }
-}
-
-enum MessagingBackend<'a> {
-    Signal(&'a mut SignalClient),
-    Demo,
-}
-
-impl MessagingBackend<'_> {
-    async fn dispatch(&mut self, app: &mut App, req: SendRequest) {
-        if let MessagingBackend::Signal(sc) = self {
-            dispatch_send(sc, app, req).await;
-        }
-    }
-
-    /// Attempt to respawn signal-cli and swap it in behind the existing `&mut`
-    /// borrow. Returns true on success. The previous client's child is already
-    /// dead (that is why we are reconnecting), so dropping it here is safe (#497).
-    async fn try_reconnect(&mut self, config: &Config) -> bool {
-        if let MessagingBackend::Signal(sc) = self {
-            match SignalClient::spawn(config).await {
-                Ok(client) => {
-                    **sc = client;
-                    true
-                }
-                Err(e) => {
-                    debug_log::logf(format_args!("reconnect spawn failed: {e}"));
-                    false
-                }
-            }
-        } else {
-            false
-        }
-    }
-
-    fn drain_events(&mut self, app: &mut App) -> bool {
-        let MessagingBackend::Signal(sc) = self else {
-            return false;
-        };
-        let mut changed = false;
-        // Batch every DB write from this drain into one transaction. During
-        // the initial sync burst this turns thousands of per-message
-        // autocommits into a single commit per loop iteration (#489).
-        app.db.begin_batch();
-        loop {
-            match sc.event_rx.try_recv() {
-                Ok(ev) => {
-                    app.handle_signal_event(ev);
-                    changed = true;
-                }
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    if app.connection_error.is_none() {
-                        let stderr = sc.stderr_output();
-                        let exit_info = sc.try_child_exit();
-                        let msg = if let Some(last_line) =
-                            stderr.lines().last().filter(|l| !l.is_empty())
-                        {
-                            format!("signal-cli: {last_line}")
-                        } else if let Some(code) = exit_info {
-                            match code {
-                                Some(c) => format!("signal-cli exited with code {c}"),
-                                None => "signal-cli killed by signal".to_string(),
-                            }
-                        } else {
-                            "signal-cli disconnected".to_string()
-                        };
-                        debug_log::logf(format_args!("disconnect: {msg}"));
-                        app.connection_error = Some(msg);
-                        app.connected = false;
-                    }
-                    break;
-                }
-                Err(_) => break,
-            }
-        }
-        app.db.commit_batch();
-        changed
-    }
-}
-
-async fn run_app(
+async fn run_app<B: backend::Backend>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    mut backend: MessagingBackend<'_>,
+    mut backend: B,
     config: &Config,
     db: db::Database,
     incognito: bool,
@@ -1814,28 +1280,9 @@ async fn run_app(
         .flat_map(|c| &c.messages)
         .filter(|m| m.expires_in_seconds > 0)
         .count();
-    if let MessagingBackend::Signal(sc) = &mut backend {
-        app.set_connected();
-
-        // Purge messages that expired while the app was closed
-        app.sweep_expired_messages();
-
-        // Ask primary device to sync contacts/groups, then fetch them (best-effort)
-        app.startup_status = "Syncing with primary device...".to_string();
-        let _ = sc.send_sync_request().await;
-        app.startup_status = "Loading contacts...".to_string();
-        let _ = sc.list_contacts().await;
-        app.startup_status = "Loading groups...".to_string();
-        let _ = sc.list_groups().await;
-        app.startup_status = "Loading identities...".to_string();
-        let _ = sc.list_identities().await;
-    } else {
-        app.is_demo = true;
-        app.connected = true;
-        app.loading = false;
-        app.status_message = "connected | demo mode".to_string();
-        app.populate_demo_data(chrono::Utc::now().date_naive());
-    }
+    // Per-backend startup: mark connected and kick off the initial sync
+    // (signal-cli), or populate the demo fixtures (see src/backend/).
+    backend.startup(&mut app).await;
 
     let mut last_expiry_sweep = Instant::now();
     let mut last_sync_redraw = Instant::now();
@@ -2097,7 +1544,7 @@ async fn run_app(
         // backend, and only up to the attempt cap. The first attempt fires
         // immediately; subsequent ones wait for the backoff (#497).
         if app.connection_error.is_some()
-            && matches!(backend, MessagingBackend::Signal(_))
+            && backend.supports_reconnect()
             && reconnect_attempts < MAX_RECONNECT_ATTEMPTS
         {
             let now = Instant::now();
@@ -2114,12 +1561,7 @@ async fn run_app(
                     app.connection_error = None;
                     app.set_connected();
                     // Re-run the startup sync against the fresh child (best-effort).
-                    if let MessagingBackend::Signal(sc) = &mut backend {
-                        let _ = sc.send_sync_request().await;
-                        let _ = sc.list_contacts().await;
-                        let _ = sc.list_groups().await;
-                        let _ = sc.list_identities().await;
-                    }
+                    backend.resync_after_reconnect().await;
                 } else if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
                     app.status_message =
                         "signal-cli disconnected; reconnect failed. Restart siggy.".to_string();
