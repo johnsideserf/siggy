@@ -15,9 +15,16 @@ use crate::config::Config;
 use crate::debug_log;
 use crate::handlers;
 use crate::input;
+use crate::link;
 use crate::signal::client::SignalClient;
+use crate::signal::types::LinkState;
 
 use super::Backend;
+
+/// User-facing engine name (flow gap G7). Also exposed instance-free as
+/// [`super::ACTIVE_ENGINE_NAME`] for surfaces that run before any backend
+/// exists (`--check`).
+pub const ENGINE_NAME: &str = "signal-cli";
 
 pub struct SignalCliBackend<'a> {
     client: &'a mut SignalClient,
@@ -27,11 +34,56 @@ impl<'a> SignalCliBackend<'a> {
     pub fn new(client: &'a mut SignalClient) -> Self {
         Self { client }
     }
+
+    /// Probe whether the configured account is registered as a linked device
+    /// (plan U5, flow gap G1, #640). Spawns a one-shot `signal-cli
+    /// listContacts` and reads its exit code - the same probe the wizard's
+    /// linking step has always used. An associated fn rather than a trait
+    /// method because every caller (`--check`, the setup wizard) runs before
+    /// any engine instance or connection exists; see the [`Backend`] docs for
+    /// the convention. U10 adds the native twin (open store, inspect
+    /// registration state).
+    pub async fn link_state(config: &Config) -> LinkState {
+        link_state_from_probe(link::check_account_registered(config).await)
+    }
+
+    /// Registration sniff on a freshly spawned jsonRpc child (plan U5, flow
+    /// gap G1, #640): signal-cli exits within milliseconds when the account
+    /// is not registered, so a child still alive after 500ms is treated as
+    /// linked. Byte-identical relocation of `run_main_flow`'s old inline
+    /// `wait_for_ready` + stderr debug log; only the *inference* moved here -
+    /// the raw process plumbing (`wait_for_ready`, stderr capture) stays on
+    /// [`SignalClient`]. This sniff can only distinguish "exited early" from
+    /// "still running", so it never reports [`LinkState::Corrupt`].
+    pub async fn startup_link_state(client: &mut SignalClient) -> LinkState {
+        if client.wait_for_ready(Duration::from_millis(500)).await {
+            LinkState::Linked
+        } else {
+            let stderr = client.stderr_output();
+            debug_log::logf(format_args!(
+                "signal-cli exited early during startup, stderr: {stderr}"
+            ));
+            LinkState::Unlinked
+        }
+    }
+}
+
+/// Map the registration probe's outcome to a [`LinkState`]. Free function so
+/// tests can inject probe results without spawning signal-cli (plan U5 test
+/// scenarios). A probe that could not run cannot prove a link, so a spawn
+/// failure maps to `Unlinked` - matching the wizard's old
+/// `check_account_registered(..).unwrap_or(false)` exactly; `--check` reports
+/// a missing binary separately before this is consulted.
+pub(crate) fn link_state_from_probe(registered: anyhow::Result<bool>) -> LinkState {
+    match registered {
+        Ok(true) => LinkState::Linked,
+        Ok(false) | Err(_) => LinkState::Unlinked,
+    }
 }
 
 impl Backend for SignalCliBackend<'_> {
     fn display_name(&self) -> &'static str {
-        "signal-cli"
+        ENGINE_NAME
     }
 
     /// Dispatch a SendRequest to signal-cli.
@@ -581,5 +633,25 @@ impl Backend for SignalCliBackend<'_> {
         let _ = self.client.list_contacts().await;
         let _ = self.client.list_groups().await;
         let _ = self.client.list_identities().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mocked-probe mapping (plan U5 test scenarios): `link_state()`
+    /// delegates to this, so these pin `--check`'s registration input
+    /// without spawning signal-cli.
+    #[test]
+    fn link_state_from_probe_maps_registration_outcomes() {
+        assert_eq!(link_state_from_probe(Ok(true)), LinkState::Linked);
+        assert_eq!(link_state_from_probe(Ok(false)), LinkState::Unlinked);
+        // A probe that could not run cannot prove a link (fails toward
+        // relinking, like the wizard's old unwrap_or(false)).
+        assert_eq!(
+            link_state_from_probe(Err(anyhow::anyhow!("spawn failed"))),
+            LinkState::Unlinked
+        );
     }
 }

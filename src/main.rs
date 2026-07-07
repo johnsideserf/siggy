@@ -75,6 +75,7 @@ use app::{App, InputMode, OverlayKind, SendRequest};
 use config::Config;
 use setup::SetupResult;
 use signal::client::SignalClient;
+use signal::types::LinkState;
 
 /// Keyboard polling interval for the main event loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(50);
@@ -86,18 +87,6 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(50);
 /// diagnostic hint, and let the user reach the rest of the app. Generous enough
 /// not to fire on a slow-but-healthy first sync.
 const STARTUP_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// How many times to retry spawning signal-cli after the child dies before
-/// giving up and leaving the disconnect error on screen (#497).
-const MAX_RECONNECT_ATTEMPTS: u32 = 6;
-
-/// Exponential backoff before the next signal-cli reconnect attempt, capped at
-/// 30s. `attempt` is 1-based (the delay applied *after* attempt N fails, before
-/// attempt N+1). The first attempt fires immediately on disconnect, so this is
-/// only consulted after a failure.
-fn reconnect_backoff(attempt: u32) -> Duration {
-    Duration::from_secs((1u64 << attempt.min(6)).min(30))
-}
 
 /// Translate signal-cli stderr into a clearer message for the non-interactive
 /// CLI commands when it indicates a well-known fatal condition. signal-cli
@@ -137,6 +126,12 @@ fn oneshot_target(recipient: &str) -> (String, bool) {
 /// Send a single message non-interactively, await confirmation, and return
 /// whether it was accepted (#257). Spawns signal-cli, sends, then waits up to
 /// 30s for the correlated `SendTimestamp` (ok) or `SendFailed`.
+///
+/// Drives the signal-cli client directly rather than the [`backend::Backend`]
+/// trait: the headless modes need raw send/event access without an [`App`],
+/// which the trait deliberately does not expose. They stay engine-specific
+/// until the native backend implements them (#640; R8's native half lands
+/// with U17). Same applies to `run_receive_stream` and `run_watch`.
 async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Result<bool> {
     let mut client = SignalClient::spawn(config).await?;
     let (target, is_group) = oneshot_target(recipient);
@@ -305,6 +300,89 @@ async fn run_watch(config: &Config) -> Result<()> {
         Some(hint) => Err(anyhow::anyhow!("{hint}")),
         None => Ok(()),
     }
+}
+
+/// Pure core of the `--check` verdict (plan U5, #640): exit code plus the
+/// actionable stderr hint, from the probe results. `link_state` is `None`
+/// when the registration probe was skipped because it could not succeed
+/// (missing binary or no account configured). Ready requires an actual
+/// [`LinkState::Linked`] answer - `--check` used to report "ready" without
+/// verifying registration at all (flow gap G1).
+fn check_verdict(
+    found: bool,
+    account_ok: bool,
+    link_state: Option<LinkState>,
+) -> (i32, Option<&'static str>) {
+    let ready = found && account_ok && link_state == Some(LinkState::Linked);
+    let hint = match link_state {
+        // Same phrasing as cli_stderr_hint's unregistered case, so every
+        // surface gives the same recovery instruction.
+        Some(LinkState::Unlinked) => {
+            Some("this account is not registered - run `siggy --setup` to link a device")
+        }
+        Some(LinkState::Corrupt) => Some(
+            "local account data is unusable - run `siggy --reset-account`, then `siggy --setup`",
+        ),
+        _ => None,
+    };
+    (if ready { 0 } else { 1 }, hint)
+}
+
+/// Non-interactive setup health report for scripts/CI (#257; rewritten on the
+/// adapter's link-state probe in #640 U5). Plain stdout, no TUI. Reports the
+/// active engine and, when it can be probed, the account's actual link
+/// state; exit 0 only when the binary is found, an account is set, and that
+/// account is registered. Note: the registration probe spawns a one-shot
+/// signal-cli, so it shares `--send`'s caveat - while the siggy TUI holds the
+/// account lock the probe times out and reports unlinked.
+async fn run_check(config: &Config, resolved_config_path: &std::path::Path) -> i32 {
+    let (found, location, _resolved) = setup::check_signal_cli(&config.signal_cli_path).await;
+    let account_ok = !config.account.is_empty();
+    println!("siggy {}", env!("CARGO_PKG_VERSION"));
+    println!("backend:      {}", backend::ACTIVE_ENGINE_NAME);
+    println!("config:       {}", resolved_config_path.display());
+    println!(
+        "account:      {}",
+        if account_ok {
+            config.account.as_str()
+        } else {
+            "(not set)"
+        }
+    );
+    println!(
+        "signal-cli:   {}",
+        if found {
+            location
+        } else {
+            format!("NOT FOUND (configured: {})", config.signal_cli_path)
+        }
+    );
+    println!("download dir: {}", config.download_dir.display());
+    // Probe registration only when the probe can succeed: it needs the
+    // binary and an account. Otherwise the report is already "not ready".
+    let link_state = if found && account_ok {
+        let state = backend::signal_cli::SignalCliBackend::link_state(config).await;
+        println!(
+            "link:         {}",
+            match state {
+                LinkState::Linked => "linked",
+                LinkState::Unlinked => "NOT LINKED",
+                LinkState::Corrupt => "CORRUPT",
+            }
+        );
+        Some(state)
+    } else {
+        None
+    };
+    let (exit_code, hint) = check_verdict(found, account_ok, link_state);
+    println!(
+        "status:       {}",
+        if exit_code == 0 { "ready" } else { "not ready" }
+    );
+    if let Some(hint) = hint {
+        eprintln!("{hint}");
+    }
+    exit_code
 }
 
 /// Whether the session should auto-lock now (#438). `timeout_mins == 0` disables
@@ -550,36 +628,11 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Non-interactive setup health report for scripts/CI (#257). Plain stdout,
-    // no TUI; exit 0 only when signal-cli is detected and an account is set.
+    // Non-interactive setup health report for scripts/CI (#257). Exit 0 only
+    // when signal-cli is detected, an account is set, and the account is
+    // actually registered (#640 U5 - the old report never checked the link).
     if check {
-        let (found, location, _resolved) = setup::check_signal_cli(&config.signal_cli_path).await;
-        let account_ok = !config.account.is_empty();
-        println!("siggy {}", env!("CARGO_PKG_VERSION"));
-        println!("config:       {}", resolved_config_path.display());
-        println!(
-            "account:      {}",
-            if account_ok {
-                config.account.as_str()
-            } else {
-                "(not set)"
-            }
-        );
-        println!(
-            "signal-cli:   {}",
-            if found {
-                location
-            } else {
-                format!("NOT FOUND (configured: {})", config.signal_cli_path)
-            }
-        );
-        println!("download dir: {}", config.download_dir.display());
-        let ready = found && account_ok;
-        println!(
-            "status:       {}",
-            if ready { "ready" } else { "not ready" }
-        );
-        std::process::exit(if ready { 0 } else { 1 });
+        std::process::exit(run_check(&config, &resolved_config_path).await);
     }
 
     // Non-interactive conversation list for scripts (#257). Reads the cached DB
@@ -796,22 +849,25 @@ async fn run_main_flow(
         Ok(client) => client,
         Err(e) => {
             let msg = format!("{e}");
-            show_error_screen(terminal, "Failed to Start signal-cli", &msg).await?;
+            show_error_screen(
+                terminal,
+                &format!("Failed to Start {}", backend::ACTIVE_ENGINE_NAME),
+                &msg,
+            )
+            .await?;
             return Ok(());
         }
     };
 
-    // Give signal-cli a brief window to fail if the account is unregistered.
-    // If the process exits early, check stderr and fall back to linking.
+    // Registration gating goes through the adapter's link-state sniff
+    // (#640 U5, flow gap G1): the 500ms child-exit window and stderr read
+    // live in backend::signal_cli now, so main no longer interprets process
+    // behavior. Anything short of Linked falls back to the linking flow,
+    // exactly as the old inline wait_for_ready check did.
     if !setup_handled_linking
-        && !signal_client
-            .wait_for_ready(std::time::Duration::from_millis(500))
-            .await
+        && backend::signal_cli::SignalCliBackend::startup_link_state(&mut signal_client).await
+            != LinkState::Linked
     {
-        let stderr = signal_client.stderr_output();
-        debug_log::logf(format_args!(
-            "signal-cli exited early during startup, stderr: {stderr}"
-        ));
         signal_client.shutdown().await?;
 
         match link::run_linking_flow(terminal, config).await {
@@ -831,7 +887,12 @@ async fn run_main_flow(
             Ok(client) => client,
             Err(e) => {
                 let msg = format!("{e}");
-                show_error_screen(terminal, "Failed to Start signal-cli", &msg).await?;
+                show_error_screen(
+                    terminal,
+                    &format!("Failed to Start {}", backend::ACTIVE_ENGINE_NAME),
+                    &msg,
+                )
+                .await?;
                 return Ok(());
             }
         };
@@ -1237,6 +1298,65 @@ fn emit_native_images(backend: &mut CrosstermBackend<io::Stdout>, app: &mut App)
     Ok(())
 }
 
+/// One pass of the supervised-reconnect state machine (#497; routed through
+/// the [`backend::Backend`] trait with an adapter-supplied retry policy in
+/// #640 U5, flow gaps G2/G7). Runs only while disconnected, only for
+/// backends that support reconnecting, and only up to the policy's attempt
+/// cap; the first attempt fires immediately, later ones wait out the
+/// policy's backoff. Status copy renders the engine via `display_name()`,
+/// which keeps the strings byte-identical for signal-cli ("Reconnecting to
+/// signal-cli (attempt 1/6)..."). Returns true when it did anything (the
+/// caller schedules a redraw).
+async fn reconnect_tick<B: backend::Backend>(
+    backend: &mut B,
+    app: &mut App,
+    config: &Config,
+    attempts: &mut u32,
+    next_attempt_at: &mut Option<Instant>,
+) -> bool {
+    let policy = backend.reconnect_policy();
+    if app.connection_error.is_none()
+        || !backend.supports_reconnect()
+        || *attempts >= policy.max_attempts
+    {
+        return false;
+    }
+    let now = Instant::now();
+    let due = next_attempt_at.map(|t| now >= t).unwrap_or(true);
+    if !due {
+        return false;
+    }
+    *attempts += 1;
+    app.status_message = format!(
+        "Reconnecting to {} (attempt {}/{})...",
+        backend.display_name(),
+        attempts,
+        policy.max_attempts
+    );
+    if backend.try_reconnect(config).await {
+        *attempts = 0;
+        *next_attempt_at = None;
+        app.connection_error = None;
+        app.set_connected();
+        // Re-run the startup sync against the fresh connection (best-effort).
+        backend.resync_after_reconnect().await;
+    } else if *attempts >= policy.max_attempts {
+        app.status_message = format!(
+            "{} disconnected; reconnect failed. Restart siggy.",
+            backend.display_name()
+        );
+    } else {
+        let delay = policy.backoff(*attempts);
+        *next_attempt_at = Some(now + delay);
+        app.status_message = format!(
+            "{} reconnect failed; retrying in {}s",
+            backend.display_name(),
+            delay.as_secs()
+        );
+    }
+    true
+}
+
 async fn run_app<B: backend::Backend>(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut backend: B,
@@ -1306,8 +1426,9 @@ async fn run_app<B: backend::Backend>(
         .unwrap_or_else(Instant::now);
     let mut needs_redraw = true;
     let mut last_title: Option<String> = None;
-    // Supervised signal-cli reconnect state (#497). `next_reconnect_at` is the
-    // earliest time the next spawn attempt may run; None means "try now".
+    // Supervised reconnect state (#497, adapter policy per #640 U5).
+    // `next_reconnect_at` is the earliest time the next attempt may run;
+    // None means "try now".
     let mut reconnect_attempts: u32 = 0;
     let mut next_reconnect_at: Option<Instant> = None;
     // Auto-lock idle tracking (#438): reset on every keypress (not mouse).
@@ -1551,40 +1672,19 @@ async fn run_app<B: backend::Backend>(
             }
         }
 
-        // Supervised reconnect: only while disconnected, only for the Signal
-        // backend, and only up to the attempt cap. The first attempt fires
-        // immediately; subsequent ones wait for the backoff (#497).
-        if app.connection_error.is_some()
-            && backend.supports_reconnect()
-            && reconnect_attempts < MAX_RECONNECT_ATTEMPTS
+        // Supervised reconnect (#497), one tick per loop iteration. The
+        // attempt cap, backoff, and engine naming all come from the backend
+        // (#640 U5, flow gaps G2/G7).
+        if reconnect_tick(
+            &mut backend,
+            &mut app,
+            config,
+            &mut reconnect_attempts,
+            &mut next_reconnect_at,
+        )
+        .await
         {
-            let now = Instant::now();
-            let due = next_reconnect_at.map(|t| now >= t).unwrap_or(true);
-            if due {
-                reconnect_attempts += 1;
-                app.status_message = format!(
-                    "Reconnecting to signal-cli (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})..."
-                );
-                needs_redraw = true;
-                if backend.try_reconnect(config).await {
-                    reconnect_attempts = 0;
-                    next_reconnect_at = None;
-                    app.connection_error = None;
-                    app.set_connected();
-                    // Re-run the startup sync against the fresh child (best-effort).
-                    backend.resync_after_reconnect().await;
-                } else if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
-                    app.status_message =
-                        "signal-cli disconnected; reconnect failed. Restart siggy.".to_string();
-                } else {
-                    let delay = reconnect_backoff(reconnect_attempts);
-                    next_reconnect_at = Some(now + delay);
-                    app.status_message = format!(
-                        "signal-cli reconnect failed; retrying in {}s",
-                        delay.as_secs()
-                    );
-                }
-            }
+            needs_redraw = true;
         }
 
         // Check if initial sync burst has ended
@@ -1782,15 +1882,130 @@ mod tests {
         assert!(startup_sync_timed_out(true, STARTUP_SYNC_TIMEOUT * 2));
     }
 
+    // The reconnect backoff test moved to src/backend/mod.rs
+    // (reconnect_policy_backoff_is_exponential_and_capped) when the schedule
+    // became adapter policy (#640 U5).
+
+    // --- --check verdict (plan U5: fix the "reports OK without checking" lie) ---
+
     #[test]
-    fn reconnect_backoff_is_exponential_and_capped() {
-        assert_eq!(reconnect_backoff(1), Duration::from_secs(2));
-        assert_eq!(reconnect_backoff(2), Duration::from_secs(4));
-        assert_eq!(reconnect_backoff(3), Duration::from_secs(8));
-        assert_eq!(reconnect_backoff(4), Duration::from_secs(16));
-        // Capped at 30s, and never overflows the shift for large attempts.
-        assert_eq!(reconnect_backoff(5), Duration::from_secs(30));
-        assert_eq!(reconnect_backoff(6), Duration::from_secs(30));
-        assert_eq!(reconnect_backoff(100), Duration::from_secs(30));
+    fn check_verdict_requires_a_verified_link_for_ready() {
+        // Fully configured and registered: ready, exit 0, no hint.
+        assert_eq!(
+            check_verdict(true, true, Some(LinkState::Linked)),
+            (0, None)
+        );
+        // Unlinked account: nonzero with the actionable relink instruction.
+        let (code, hint) = check_verdict(true, true, Some(LinkState::Unlinked));
+        assert_eq!(code, 1);
+        let hint = hint.expect("unlinked must carry an actionable hint");
+        assert!(
+            hint.contains("--setup"),
+            "hint should say how to relink: {hint}"
+        );
+        // Corrupt local data: nonzero with reset guidance.
+        let (code, hint) = check_verdict(true, true, Some(LinkState::Corrupt));
+        assert_eq!(code, 1);
+        assert!(
+            hint.expect("corrupt must carry a hint")
+                .contains("--reset-account")
+        );
+        // Probe skipped (missing binary or no account): not ready, as before.
+        assert_eq!(check_verdict(false, true, None).0, 1);
+        assert_eq!(check_verdict(true, false, None).0, 1);
+    }
+
+    // --- Reconnect supervisor through the trait (plan U5, flow gap G2) ---
+
+    fn test_app() -> App {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("config.toml");
+        // Leak the tempdir so it lives as long as the test process, matching
+        // the app_tests fixture. The OS reclaims temp dirs on exit.
+        std::mem::forget(dir);
+        let db = db::Database::open_in_memory().unwrap();
+        App::new("+10000000000".to_string(), db, &config_path)
+    }
+
+    #[tokio::test]
+    async fn reconnect_supervisor_counts_attempts_through_the_trait() {
+        use backend::Backend as _;
+        let mut app = test_app();
+        let mut mock = backend::mock::MockBackend {
+            reconnectable: true,
+            ..Default::default()
+        };
+        let cap = mock.reconnect_policy().max_attempts;
+        let config = Config::default();
+        let mut attempts = 0u32;
+        let mut next_at: Option<Instant> = None;
+
+        // Connected: the supervisor must not fire at all.
+        assert!(!reconnect_tick(&mut mock, &mut app, &config, &mut attempts, &mut next_at).await);
+        assert_eq!(mock.reconnect_calls, 0);
+
+        // Disconnected: every attempt goes through Backend::try_reconnect,
+        // with the backoff schedule applied between failures.
+        app.connection_error = Some("gone".to_string());
+        for expected in 1..=cap {
+            assert!(
+                reconnect_tick(&mut mock, &mut app, &config, &mut attempts, &mut next_at).await
+            );
+            assert_eq!(mock.reconnect_calls, expected);
+            if expected < cap {
+                assert!(next_at.is_some(), "a failed attempt schedules a backoff");
+                assert_eq!(
+                    app.status_message,
+                    format!(
+                        "mock reconnect failed; retrying in {}s",
+                        mock.reconnect_policy().backoff(expected).as_secs()
+                    )
+                );
+                next_at = None; // simulate the backoff having elapsed
+            }
+        }
+        assert_eq!(
+            app.status_message,
+            "mock disconnected; reconnect failed. Restart siggy."
+        );
+
+        // Cap reached: no further attempts reach the trait.
+        assert!(!reconnect_tick(&mut mock, &mut app, &config, &mut attempts, &mut next_at).await);
+        assert_eq!(mock.reconnect_calls, cap);
+    }
+
+    #[tokio::test]
+    async fn reconnect_success_resets_supervisor_and_resyncs() {
+        let mut app = test_app();
+        let mut mock = backend::mock::MockBackend {
+            reconnectable: true,
+            reconnect_ok: true,
+            ..Default::default()
+        };
+        let config = Config::default();
+        let mut attempts = 0u32;
+        let mut next_at: Option<Instant> = None;
+        app.connection_error = Some("gone".to_string());
+
+        assert!(reconnect_tick(&mut mock, &mut app, &config, &mut attempts, &mut next_at).await);
+        assert_eq!(mock.reconnect_calls, 1);
+        assert_eq!(mock.resync_calls, 1, "success re-runs the startup sync");
+        assert_eq!(attempts, 0, "attempt counter resets on success");
+        assert!(next_at.is_none());
+        assert!(app.connection_error.is_none());
+        assert!(app.connected);
+    }
+
+    #[tokio::test]
+    async fn reconnect_supervisor_skips_backends_without_reconnect() {
+        let mut app = test_app();
+        let mut mock = backend::mock::MockBackend::default(); // reconnectable: false
+        let config = Config::default();
+        let mut attempts = 0u32;
+        let mut next_at: Option<Instant> = None;
+        app.connection_error = Some("gone".to_string());
+
+        assert!(!reconnect_tick(&mut mock, &mut app, &config, &mut attempts, &mut next_at).await);
+        assert_eq!(mock.reconnect_calls, 0);
     }
 }
