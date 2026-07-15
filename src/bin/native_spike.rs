@@ -58,6 +58,16 @@ async fn cmd_link() {
     });
     match rx.await {
         Ok(url) => {
+            // Terminal QR so a phone can actually scan it. Inverted colors
+            // (light modules on the dark terminal background); Signal's
+            // scanner reads inverted codes fine.
+            let qr = qrcode::QrCode::new(url.to_string().as_bytes()).expect("qr encode");
+            let image = qr
+                .render::<qrcode::render::unicode::Dense1x2>()
+                .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                .build();
+            println!("{image}");
             println!("provisioning URI:\n{url}");
             println!("(scan with Signal -> Settings -> Linked devices -> +)");
         }
