@@ -599,6 +599,15 @@ async fn main() -> Result<()> {
         config.account = acct;
     }
 
+    // Refuse to run with `proxy` set (#656): the old passthrough used a
+    // signal-cli flag that never existed, and every other spawn (linking,
+    // --check probes) ignored the proxy entirely. Erroring out here beats
+    // silently sending traffic the user asked to proxy out directly.
+    if let Some(msg) = config.proxy_unsupported_error() {
+        eprintln!("{msg}");
+        std::process::exit(1);
+    }
+
     // Non-interactive counterpart to the relink guard (#603/#607): clear stale
     // local signal-cli account data so a subsequent `--setup` can relink from a
     // clean slate. Exits without launching the TUI. Note: this only removes

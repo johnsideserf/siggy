@@ -132,7 +132,6 @@ inline_images = true
 mouse_enabled = true
 send_read_receipts = true
 theme = "Default"
-proxy = ""
 ```
 
 Kaikki kentät ovat valinnaisia. `signal_cli_path` on oletuksena `"signal-cli"` (haetaan PATH-polulta), ja `download_dir` on oletuksena `~/signal-downloads/`. Käytä Windowsissa täyttä polkua `signal-cli.bat`-tiedostoon, jos se ei ole PATH-polullasi.
@@ -189,7 +188,6 @@ Jos `SIGGY_IMAGE_PROTOCOL`-muuttujaa ei ole asetettu, käytössä on tavallinen 
 - **Asetuspaneeli** -- Ilmoitukset, sivupalkki ja upotetut kuvat kytkettävissä päälle ja pois sovelluksen sisältä
 - **Mukautuva asettelu** -- Sivupalkin kokoa voi muuttaa, ja se piiloutuu automaattisesti kapeissa päätteissä (<60 saraketta)
 - **Incognito-tila** -- `--incognito` käyttää muistinvaraista tallennusta; mitään ei säily sulkemisen jälkeen
-- **Välityspalvelintuki** -- Määritä Signalin TLS-välityspalvelin `proxy`-asetuksella rajoitettuja verkkoja varten
 - **Demotila** -- Kokeile käyttöliittymää ilman signal-cli:tä (`--demo`)
 
 ## Komennot

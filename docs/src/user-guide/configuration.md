@@ -49,7 +49,6 @@ sidebar_on_right = false
 theme = "Default"
 keybinding_profile = "Default"
 settings_profile = "Default"
-proxy = ""
 ```
 
 ### Field reference
@@ -87,7 +86,13 @@ proxy = ""
 | `theme` | string | `"Default"` | Color theme name |
 | `keybinding_profile` | string | `"Default"` | Keybinding profile (`Default`, `Emacs`, `Minimal`, or custom) |
 | `settings_profile` | string | `"Default"` | Settings profile preset (`Default`, `Minimal`, `Full`, or custom) |
-| `proxy` | string | `""` | Signal TLS proxy URL passed through to signal-cli |
+
+> **Removed: `proxy`.** Earlier versions documented a `proxy` field that was passed to
+> signal-cli as `--proxy`, a flag signal-cli does not have, so it never worked and
+> connections were never proxied ([#656](https://github.com/johnsideserf/siggy/issues/656)).
+> siggy now refuses to start while `proxy` is set; remove the line from config.toml.
+> To route signal-cli through a proxy, use an OS-level mechanism such as JVM proxy
+> properties (`JAVA_TOOL_OPTIONS`) or proxychains.
 
 ## CLI flags
 
