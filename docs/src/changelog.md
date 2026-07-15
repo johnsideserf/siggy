@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.14.1
+
+Patch release for the broken proxy config
+([#656](https://github.com/johnsideserf/siggy/issues/656)).
+
+### Fixed
+
+- **Removed the `proxy` config field; siggy now refuses to start while it
+  is set.** The field was passed to signal-cli as `--proxy`, a flag that
+  does not exist in any signal-cli version, so it never worked: with a
+  proxy configured the message process died at startup (no messages,
+  spurious relink prompts), while linking and `--check` probes connected
+  to Signal directly, unproxied. signal-cli has no proxy support of any
+  kind, so the field is gone; if you had it set, siggy exits with an
+  explanation and pointers to OS-level alternatives (JVM proxy properties
+  via `JAVA_TOOL_OPTIONS`, proxychains). If you relied on this setting
+  for privacy, be aware your traffic was never proxied.
+
 ## v1.14.0
 
 The foundation release for the native backend epic
