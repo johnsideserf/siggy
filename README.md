@@ -127,7 +127,6 @@ inline_images = true
 mouse_enabled = true
 send_read_receipts = true
 theme = "Default"
-proxy = ""
 ```
 
 All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via PATH), and `download_dir` defaults to `~/signal-downloads/`. On Windows, use the full path to `signal-cli.bat` if it isn't in your PATH.
@@ -194,7 +193,6 @@ sixel_diffusion = 0.875
 - **Settings overlay** -- Toggle notifications, sidebar, inline images from within the app
 - **Responsive layout** -- Resizable sidebar that auto-hides on narrow terminals (<60 columns)
 - **Incognito mode** -- `--incognito` uses in-memory storage; nothing persists after exit
-- **Proxy support** -- Configure a Signal TLS proxy via the `proxy` config field for use in restricted networks
 - **Demo mode** -- Try the UI without signal-cli (`--demo`)
 
 ## Commands

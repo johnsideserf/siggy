@@ -131,7 +131,6 @@ inline_images = true
 mouse_enabled = true
 send_read_receipts = true
 theme = "Default"
-proxy = ""
 ```
 
 Tous les champs sont facultatifs. La valeur par défaut de `signal_cli_path` est `"signal-cli"` (recherché via le PATH), et celle de `download_dir` est `~/signal-downloads/`. Sous Windows, indiquez le chemin d'accès complet vers `signal-cli.bat` s'il ne figure pas dans votre PATH.
@@ -188,7 +187,6 @@ Si `SIGGY_IMAGE_PROTOCOL` n'est pas définie, la détection automatique existant
 - **Overlay des paramètres** -- Activation/désactivation des notifications, de la barre latérale et des images intégrées depuis l'application
 - **Mise en page responsive** -- Barre latérale redimensionnable qui se masque automatiquement sur les terminaux étroits (<60 colonnes)
 - **Mode incognito** -- `--incognito` utilise le stockage en mémoire ; rien n'est conservé après la fermeture
-- **Prise en charge des proxys** -- Configurez un proxy TLS Signal via le champ de configuration `proxy` pour une utilisation sur des réseaux restreints
 - **Mode démo** -- Essayez l'interface utilisateur sans signal-cli (`--demo`)
 
 ## Commandes

@@ -131,7 +131,6 @@ inline_images = true
 mouse_enabled = true
 send_read_receipts = true
 theme = "Default"
-proxy = ""
 ```
 
 所有字段均为可选。`signal_cli_path` 默认为 `"signal-cli"`（通过 PATH 查找），`download_dir` 默认为 `~/signal-downloads/`。在 Windows 上，如果 `signal-cli.bat` 不在 PATH 中，请使用其完整路径。
@@ -188,7 +187,6 @@ proxy = ""
 - **设置覆盖层** -- 可在应用内切换通知、侧边栏、内联图片
 - **响应式布局** -- 可调整大小的侧边栏，窄终端（<60 列）时自动隐藏
 - **无痕模式** -- `--incognito` 使用内存存储，退出后不留下任何痕迹
-- **代理支持** -- 通过 `proxy` 配置项设置 Signal TLS 代理，适用于受限网络环境
 - **演示模式** -- 无需 signal-cli 即可体验 UI（`--demo`）
 
 ## 命令

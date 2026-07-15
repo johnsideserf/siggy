@@ -132,7 +132,6 @@ inline_images = true
 mouse_enabled = true
 send_read_receipts = true
 theme = "Default"
-proxy = ""
 ```
 
 Alle velden zijn optioneel. `signal_cli_path` is standaard `"signal-cli"` (gevonden via PATH) en `download_dir` is standaard `~/signal-downloads/`. Gebruik op Windows het volledige pad naar `signal-cli.bat` als die niet in je PATH staat.
@@ -189,7 +188,6 @@ Als `SIGGY_IMAGE_PROTOCOL` niet is ingesteld, draait de gewone autodetectie (cor
 - **Instellingenoverlay** -- Schakel meldingen, de zijbalk en inline afbeeldingen in of uit vanuit de app
 - **Responsieve indeling** -- Verstelbare zijbalk die zich automatisch verbergt op smalle terminals (<60 kolommen)
 - **Incognitomodus** -- `--incognito` gebruikt opslag in het geheugen; na afsluiten blijft er niets bewaard
-- **Proxyondersteuning** -- Stel via het configuratieveld `proxy` een Signal TLS-proxy in voor gebruik op beperkte netwerken
 - **Demomodus** -- Probeer de interface zonder signal-cli (`--demo`)
 
 ## Commando's

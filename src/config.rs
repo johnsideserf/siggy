@@ -235,8 +235,11 @@ pub struct Config {
     #[serde(default = "default_settings_profile")]
     pub settings_profile: String,
 
-    /// Signal TLS proxy URL passed through to signal-cli (e.g., `<https://signal-proxy.example.com>`)
-    #[serde(default)]
+    /// REMOVED (#656): this was passed to signal-cli as `--proxy`, a flag
+    /// that does not exist in any signal-cli version, so it never worked.
+    /// Still deserialized so startup can refuse to run with it set instead
+    /// of silently connecting unproxied; never written back to disk.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub proxy: String,
 }
 
@@ -422,6 +425,25 @@ impl Config {
         self.account.is_empty()
     }
 
+    /// Hard startup error when `proxy` is set (#656). The old passthrough
+    /// invented a `--proxy` flag signal-cli never had: the main process died
+    /// at arg parsing while linking and `--check` probes ran WITHOUT the
+    /// proxy, i.e. unproxied. Refusing to start is the only honest behavior;
+    /// anything else silently leaks traffic a user asked to route elsewhere.
+    pub fn proxy_unsupported_error(&self) -> Option<String> {
+        if self.proxy.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "the `proxy` config field is set (\"{}\"), but proxying is not supported by the signal-cli backend.\n\
+             signal-cli has no proxy option; earlier siggy versions passed it a flag that does not exist, so\n\
+             connections were never proxied. Traffic would go out directly, NOT through your proxy.\n\
+             Remove the `proxy` line from config.toml to start siggy. To route signal-cli through a proxy,\n\
+             use an OS-level mechanism instead (e.g. JAVA_TOOL_OPTIONS JVM proxy properties or proxychains).",
+            self.proxy
+        ))
+    }
+
     pub fn default_config_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from(".config"))
@@ -487,4 +509,46 @@ mod tests {
     // Filesystem migrations are tested in db::tests::migrate_path_*.
     // The Config::load wiring is exercised by integration; the rename
     // semantics live in `db::migrate_path`.
+
+    // --- proxy guard (#656: the old `--proxy` passthrough never existed in
+    // signal-cli, so a set proxy must be a hard startup error, not a silent
+    // unproxied connection) ---
+
+    #[test]
+    fn proxy_unset_passes_guard() {
+        assert_eq!(Config::default().proxy_unsupported_error(), None);
+    }
+
+    #[test]
+    fn proxy_set_is_a_hard_error_mentioning_the_field() {
+        let c = Config {
+            proxy: "https://signal-proxy.example.com".to_string(),
+            ..Config::default()
+        };
+        let msg = c.proxy_unsupported_error().expect("set proxy must error");
+        assert!(msg.contains("proxy"), "error must name the config field");
+        assert!(
+            msg.contains("not supported"),
+            "error must say proxying is unsupported"
+        );
+        assert!(
+            msg.to_lowercase().contains("not proxied") || msg.to_lowercase().contains("directly"),
+            "error must warn that traffic would go out unproxied: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_proxy_is_not_serialized_into_saved_configs() {
+        let toml = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(
+            !toml.contains("proxy"),
+            "fresh configs must not advertise the removed proxy field:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn set_proxy_still_deserializes_so_the_guard_can_fire() {
+        let c: Config = toml::from_str("proxy = \"https://p.example.com\"").unwrap();
+        assert_eq!(c.proxy, "https://p.example.com");
+    }
 }
