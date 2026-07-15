@@ -1,6 +1,6 @@
 [package]
 name = "siggy"
-version = "1.14.0"
+version = "1.14.1"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Terminal-based Signal messenger client with vim keybindings"
