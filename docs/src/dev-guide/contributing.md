@@ -18,6 +18,25 @@ Use `--demo` mode to test the UI without a Signal account:
 cargo run -- --demo
 ```
 
+### Building the native backend (experimental)
+
+The in-progress native engine ([#642](https://github.com/johnsideserf/siggy/issues/642))
+compiles behind a non-default Cargo feature and has extra prerequisites:
+
+- **protoc** (the protobuf compiler) on your PATH; the presage dependency
+  tree compiles .proto files at build time
+- Network access to git dependencies on first build (presage is pinned to
+  a git revision, not a crates.io release)
+
+```sh
+cargo build --no-default-features --features native-backend
+```
+
+Note that `--all-features` fails by design: the two backend features are
+mutually exclusive, one engine per binary. The native build currently
+produces a skeleton (no linking, receive, or send yet) and is not for
+daily use.
+
 ## Making changes
 
 1. Create a feature branch from `master`:

@@ -361,7 +361,7 @@ async fn run_check(config: &Config, resolved_config_path: &std::path::Path) -> i
     // Probe registration only when the probe can succeed: it needs the
     // binary and an account. Otherwise the report is already "not ready".
     let link_state = if found && account_ok {
-        let state = backend::signal_cli::SignalCliBackend::link_state(config).await;
+        let state = backend::probe_link_state(config).await;
         println!(
             "link:         {}",
             match state {
@@ -851,6 +851,41 @@ async fn run_main_flow(
         None
     };
 
+    // Everything from engine spawn to engine shutdown is cfg-dispatched
+    // (#642 U9): the two engines have different lifecycles (signal-cli owns
+    // a child process the adapter borrows; native owns its engine thread
+    // outright), so each gets its own helper instead of a shared shape with
+    // holes in it.
+    let result = run_with_engine(
+        terminal,
+        config,
+        database,
+        incognito,
+        config_path,
+        setup_handled_linking,
+    )
+    .await;
+
+    // Clean up incognito temp directory
+    if let Some(ref tmp) = incognito_tmp_dir {
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    result
+}
+
+/// signal-cli engine lifecycle (extracted verbatim from `run_main_flow` in
+/// #642 U9): spawn the child, sniff registration, fall back to the linking
+/// flow when unlinked, run the app on the borrowing adapter, shut down.
+#[cfg(feature = "signal-cli-backend")]
+async fn run_with_engine(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config: &mut Config,
+    database: db::Database,
+    incognito: bool,
+    config_path: &std::path::Path,
+    setup_handled_linking: bool,
+) -> Result<()> {
     // Spawn signal-cli backend directly (skip the old pre-flight check that spawned
     // a throwaway JVM process). If the account isn't registered, signal-cli will exit
     // quickly and we fall back to the linking flow.
@@ -909,7 +944,7 @@ async fn run_main_flow(
 
     // Run the app
     // ActiveBackend is the cfg-selected engine (signal-cli today, see
-    // src/backend/). It borrows the client: run_main_flow keeps ownership
+    // src/backend/). It borrows the client: run_with_engine keeps ownership
     // because shutdown happens after run_app returns.
     let result = run_app(
         terminal,
@@ -924,15 +959,37 @@ async fn run_main_flow(
     // Shut down signal-cli
     signal_client.shutdown().await?;
 
-    // Clean up incognito temp directory
-    if let Some(ref tmp) = incognito_tmp_dir {
-        let _ = std::fs::remove_dir_all(tmp);
-    }
-
     result
 }
 
+/// Native engine lifecycle, U9 skeleton (#642): no engine to spawn and no
+/// linking flow yet (U10), so run the UI on the stub adapter. Exists so a
+/// native build is a launchable, inspectable binary rather than a compile
+/// artifact; the status line says exactly what is missing.
+#[cfg(feature = "native-backend")]
+async fn run_with_engine(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config: &mut Config,
+    database: db::Database,
+    incognito: bool,
+    config_path: &std::path::Path,
+    _setup_handled_linking: bool,
+) -> Result<()> {
+    run_app(
+        terminal,
+        backend::ActiveBackend::new(),
+        config,
+        database,
+        incognito,
+        config_path,
+    )
+    .await
+}
+
 /// Show a full-screen error in the TUI instead of crashing to stderr.
+// Unused under the U9 native skeleton (its run_with_engine has no failure
+// paths yet); U10's native linking flow starts calling this again.
+#[cfg_attr(feature = "native-backend", allow(dead_code))]
 async fn show_error_screen(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     title: &str,

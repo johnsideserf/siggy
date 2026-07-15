@@ -412,13 +412,13 @@ impl Config {
 
     /// Set restrictive permissions (0700) on a sensitive directory (Unix only).
     #[cfg(unix)]
-    fn set_dir_permissions(path: &std::path::Path) {
+    pub(crate) fn set_dir_permissions(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
     }
 
     #[cfg(not(unix))]
-    fn set_dir_permissions(_path: &std::path::Path) {}
+    pub(crate) fn set_dir_permissions(_path: &std::path::Path) {}
 
     /// Returns true if the account is empty and setup is needed.
     pub fn needs_setup(&self) -> bool {

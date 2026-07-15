@@ -42,6 +42,8 @@ pub enum LinkResult {
 /// signal-cli-specific probe (a one-shot `listContacts` exit-code read);
 /// callers outside this module go through the signal-cli adapter's
 /// `link_state()` instead of calling this directly (#640 U5, flow gap G1).
+/// signal-cli only: the native engine's probe reads its store (U10).
+#[cfg(feature = "signal-cli-backend")]
 pub async fn check_account_registered(config: &Config) -> Result<bool> {
     let result = tokio::time::timeout(Duration::from_secs(10), async {
         let output = Command::new(&config.signal_cli_path)

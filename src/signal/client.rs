@@ -36,6 +36,12 @@ pub struct SignalClient {
     stderr_buffer: Arc<Mutex<String>>,
 }
 
+// Under the native feature the signal-cli adapter (this impl's main caller)
+// is compiled out, but SignalClient itself stays: the one-shot CLI modes
+// (--receive/--send/--watch) still drive it directly under either feature
+// until U12/U13 migrate them through the boundary. Allow the orphaned
+// methods rather than cfg-ing them one by one; drop with that migration.
+#[cfg_attr(feature = "native-backend", allow(dead_code))]
 impl SignalClient {
     pub async fn spawn(config: &Config) -> Result<Self> {
         let mut cmd = Command::new(&config.signal_cli_path);

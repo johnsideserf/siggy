@@ -22,6 +22,8 @@
 pub mod demo;
 #[cfg(test)]
 pub mod mock;
+#[cfg(feature = "native-backend")]
+pub mod native;
 #[cfg(feature = "signal-cli-backend")]
 pub mod signal_cli;
 
@@ -29,8 +31,24 @@ use std::time::Duration;
 
 use crate::app::{App, SendRequest};
 use crate::config::Config;
+use crate::signal::types::LinkState;
 
 pub use demo::DemoBackend;
+
+/// Instance-free link-state probe for the compiled-in engine (#642 U9).
+/// Callers that run before any engine instance exists (`--check`, the
+/// wizard's linking step) go through this instead of naming an adapter, so
+/// they compile identically under either feature.
+pub async fn probe_link_state(config: &Config) -> LinkState {
+    #[cfg(feature = "signal-cli-backend")]
+    {
+        signal_cli::SignalCliBackend::link_state(config).await
+    }
+    #[cfg(feature = "native-backend")]
+    {
+        native::NativeBackend::link_state(config).await
+    }
+}
 
 /// The concrete backend the binary is built with, selected at compile time
 /// by the mutually exclusive `signal-cli-backend` / `native-backend`
@@ -38,16 +56,12 @@ pub use demo::DemoBackend;
 #[cfg(feature = "signal-cli-backend")]
 pub type ActiveBackend<'a> = signal_cli::SignalCliBackend<'a>;
 
-// The native engine arrives with #642 (U9): pinned presage, store, and the
-// LocalSet runtime shim. The feature exists ahead of it so the CI matrix,
-// mutual-exclusion guard, and lockfile canary are in place before any
-// presage code merges; until U9 lands, a native build stops here with a
-// clear message instead of a wall of missing-type errors. U9 replaces this
-// with `pub mod native;` and the corresponding ActiveBackend alias.
+/// Native engine skeleton (#642 U9). The lifetime parameter is unused here
+/// (the native adapter owns its engine thread rather than borrowing a
+/// client) but kept so main-loop code writes `ActiveBackend<'_>` uniformly
+/// across both engines.
 #[cfg(feature = "native-backend")]
-compile_error!(
-    "the `native-backend` engine is not implemented yet (it lands with #642); build with the default `signal-cli-backend` feature until then"
-);
+pub type ActiveBackend<'a> = native::NativeBackend;
 
 /// User-facing name of the compiled-in engine, for surfaces that run before
 /// any backend instance exists (`--check`'s backend line, spawn-failure
@@ -55,12 +69,18 @@ compile_error!(
 /// gap G7). Cfg-selected alongside the alias above; U9 adds the native arm.
 #[cfg(feature = "signal-cli-backend")]
 pub const ACTIVE_ENGINE_NAME: &str = signal_cli::ENGINE_NAME;
+#[cfg(feature = "native-backend")]
+pub const ACTIVE_ENGINE_NAME: &str = native::ENGINE_NAME;
 
 /// Whether the compiled-in engine drives an external binary the setup wizard
 /// must locate (plan U5 wizard hook, #640). True for signal-cli; U10's
 /// native backend flips this so the wizard skips its binary-detection step.
 #[cfg(feature = "signal-cli-backend")]
 pub const NEEDS_CLI_BINARY: bool = true;
+/// The native engine is in-process: no external binary to locate (U10 makes
+/// the wizard consume this).
+#[cfg(feature = "native-backend")]
+pub const NEEDS_CLI_BINARY: bool = false;
 
 /// Retry policy for the main loop's reconnect supervisor (plan U5, flow gap
 /// G2, #640). Adapters expose it via [`Backend::reconnect_policy`] so the

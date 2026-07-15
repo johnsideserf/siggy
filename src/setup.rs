@@ -199,9 +199,8 @@ pub async fn run_setup(
                 // link-state probe (#640 U5, flow gap G1) rather than a raw
                 // listContacts exit-code read. Same probe, same semantics
                 // (a failed probe reads as unlinked).
-                let registered = backend::signal_cli::SignalCliBackend::link_state(&working_config)
-                    .await
-                    == LinkState::Linked;
+                let registered =
+                    backend::probe_link_state(&working_config).await == LinkState::Linked;
                 if registered {
                     // Already registered, skip linking
                     terminal.draw(|frame| {
@@ -806,6 +805,7 @@ fn draw_account_step(
 /// so signal-cli always uses this default on every platform (including Windows,
 /// where it still uses `~/.local/share`, not `%APPDATA%`). Returns `None` only
 /// if the home directory cannot be resolved (#603).
+#[cfg(feature = "signal-cli-backend")]
 fn signal_cli_accounts_path() -> Option<std::path::PathBuf> {
     let base = match std::env::var_os("XDG_DATA_HOME") {
         Some(x) if !x.is_empty() => std::path::PathBuf::from(x),
@@ -830,36 +830,56 @@ fn accounts_json_contains(json: &str, account: &str) -> bool {
         })
 }
 
-/// Whether `account` already has local signal-cli account data. Fails open: any
-/// error (no home dir, missing/unreadable/malformed file) returns false so the
-/// relink guard can only ever add a prompt, never block setup (#603).
+/// Whether `account` already has local account data for the compiled-in
+/// engine (#642 U9: per-backend dispatch so the #603 relink guard and
+/// `--reset-account` inspect the store the build actually uses). Fails open:
+/// any error (no home dir, missing/unreadable/malformed file) returns false
+/// so the relink guard can only ever add a prompt, never block setup (#603).
 pub(crate) fn account_exists_locally(account: &str) -> bool {
-    signal_cli_accounts_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .is_some_and(|contents| accounts_json_contains(&contents, account))
+    #[cfg(feature = "signal-cli-backend")]
+    {
+        signal_cli_accounts_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .is_some_and(|contents| accounts_json_contains(&contents, account))
+    }
+    #[cfg(feature = "native-backend")]
+    {
+        crate::backend::native::store::account_data_exists(account)
+    }
 }
 
-/// Run `signal-cli deleteLocalAccountData` to clear stale local data for a
-/// number before relinking. `--ignore-registered` lets it proceed even when
-/// signal-cli still considers the (now unlinked) account registered. Does not
-/// touch the Signal servers, so it is safe for the local-conflict case (#603).
+/// Clear stale local account data for a number before relinking, on the
+/// compiled-in engine's store (#642 U9). Neither arm touches the Signal
+/// servers, so both are safe for the local-conflict case (#603).
+///
+/// signal-cli arm: runs `signal-cli deleteLocalAccountData`;
+/// `--ignore-registered` lets it proceed even when signal-cli still
+/// considers the (now unlinked) account registered. Native arm: deletes the
+/// account's store directory.
 pub(crate) async fn delete_local_account_data(config: &Config) -> Result<()> {
-    let status = Command::new(&config.signal_cli_path)
-        .arg("-a")
-        .arg(&config.account)
-        .arg("deleteLocalAccountData")
-        .arg("--ignore-registered")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await?;
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "signal-cli deleteLocalAccountData exited with {:?}",
-            status.code()
-        )
+    #[cfg(feature = "signal-cli-backend")]
+    {
+        let status = Command::new(&config.signal_cli_path)
+            .arg("-a")
+            .arg(&config.account)
+            .arg("deleteLocalAccountData")
+            .arg("--ignore-registered")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await?;
+        if status.success() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "signal-cli deleteLocalAccountData exited with {:?}",
+                status.code()
+            )
+        }
+    }
+    #[cfg(feature = "native-backend")]
+    {
+        crate::backend::native::store::delete_account_data(&config.account)
     }
 }
 
@@ -1231,10 +1251,14 @@ mod tests {
         assert!(!native.contains(&Step::SignalCli));
         assert_eq!(native.first(), Some(&Step::Account));
         assert_eq!(native.len(), 4);
-        // The compiled-in backend today starts at binary detection: the
-        // list run_setup actually uses must lead with it.
+        // The list run_setup actually uses must match the compiled-in
+        // engine: signal-cli leads with binary detection; native (#642 U9)
+        // has no binary to detect and starts at the account step.
         let compiled = wizard_steps(backend::NEEDS_CLI_BINARY);
+        #[cfg(feature = "signal-cli-backend")]
         assert_eq!(compiled.first(), Some(&Step::SignalCli));
+        #[cfg(feature = "native-backend")]
+        assert_eq!(compiled.first(), Some(&Step::Account));
     }
 
     #[tokio::test]
