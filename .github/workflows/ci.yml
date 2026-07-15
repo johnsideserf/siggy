@@ -46,16 +46,19 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-  # The native-backend feature lane (#640 U7). Allowed to fail until Phase 3
+  # The native-backend feature lane (#640 U7). Informational until Phase 3
   # (#643) per the plan's R11 schedule: pre-U9 the feature intentionally
   # stops at a compile_error! marker, and during Phases 0-2 upstream churn
-  # may break it without blocking unrelated work. NOT in the required-check
-  # set (branch ruleset 13341653 pins Lint + the three Test jobs by name;
-  # this job is additional and must never rename those).
+  # may break it without blocking unrelated work. The expected failure is
+  # caught INSIDE the step (warning annotation, job stays green) because
+  # GitHub renders continue-on-error jobs with the same red X as real
+  # failures, which made every PR look broken. A step failure here still
+  # reds the job only for infra errors (checkout/toolchain). NOT in the
+  # required-check set (branch ruleset 13341653 pins Lint + the three Test
+  # jobs by name; this job is additional and must never rename those).
   native:
-    name: Native lane (allowed-to-fail until Phase 3)
+    name: Native lane (informational until Phase 3)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -65,11 +68,18 @@ jobs:
         with:
           key: native-backend
 
-      - name: Clippy (native-backend)
-        run: cargo clippy --locked --tests --no-default-features --features native-backend -- -D warnings
-
-      - name: Test (native-backend)
-        run: cargo test --locked --no-default-features --features native-backend
+      - name: Clippy and test (native-backend, failure expected until #642)
+        run: |
+          status=0
+          cargo clippy --locked --tests --no-default-features --features native-backend -- -D warnings || status=1
+          if [ "$status" -eq 0 ]; then
+            cargo test --locked --no-default-features --features native-backend || status=1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::warning title=Native lane failed (expected until #642 lands)::the native-backend feature does not build or pass tests yet; this lane is informational until Phase 3 (#643)."
+          else
+            echo "::notice title=Native lane passes::native-backend builds and tests green -- time to make this lane enforcing (#643)."
+          fi
 
   fuzz:
     name: Fuzz (${{ matrix.target }})
