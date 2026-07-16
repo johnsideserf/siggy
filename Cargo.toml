@@ -29,7 +29,7 @@ include = [
 [features]
 default = ["signal-cli-backend"]
 signal-cli-backend = []
-native-backend = []
+native-backend = ["dep:presage", "dep:presage-store-sqlite", "dep:futures"]
 
 [package.metadata.docs.rs]
 # Build with the default backend only; --all-features would hit the
@@ -47,7 +47,10 @@ dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 toml = "1.1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+# 0.38, not latest: presage-store-sqlite pins libsqlite3-sys 0.36, and the
+# `links = "sqlite3"` constraint allows only one libsqlite3-sys in the graph
+# (spike finding, #639). Applies to both backends; revisit when presage bumps.
+rusqlite = { version = "0.38", features = ["bundled"] }
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 base64 = "0.22"
@@ -61,7 +64,35 @@ emojis = "0.9"
 icy_sixel = "0.5"
 ureq = "3.3.0"
 
+# Native engine deps (#642 U9), active only under `native-backend`. Pinned to
+# the spike-validated rev (#639 findings): main HEAD of 2026-07-07 (63482efd),
+# the first rev with the merged linking fix (upstream presage PR #421,
+# required against Signal mobile 8.17+). default-features = false keeps CDSI
+# (and its boring/cmake tree) out. Build prereq: protoc on PATH.
+[dependencies.presage]
+git = "https://github.com/whisperfish/presage"
+rev = "63482efd0cbdc0780baf0650517c7d55f1cac05d"
+default-features = false
+optional = true
+
+[dependencies.presage-store-sqlite]
+git = "https://github.com/whisperfish/presage"
+rev = "63482efd0cbdc0780baf0650517c7d55f1cac05d"
+default-features = false
+optional = true
+
+[dependencies.futures]
+version = "0.3"
+optional = true
+
 [dev-dependencies]
 insta = "1"
 rstest = "0.26"
 tempfile = "3"
+
+# Required by the libsignal dependency tree whenever presage is in the graph
+# (presage README documents this for all downstream consumers). Inert for
+# default builds: the patched crate only enters the graph under
+# `native-backend`. Spike finding, #639.
+[patch.crates-io]
+curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }

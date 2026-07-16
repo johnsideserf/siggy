@@ -11,6 +11,11 @@ use std::path::PathBuf;
 use crate::signal::types::{LinkPreview, StyleType};
 
 /// A request from the UI to the main loop to send something.
+// Under the native feature only the U9 stub adapter exists, which ignores
+// request payloads, so field-read analysis flags most of the vocabulary.
+// Every field is read again when U12 implements native dispatch; drop the
+// allow then.
+#[cfg_attr(feature = "native-backend", allow(dead_code))]
 pub enum SendRequest {
     Message {
         recipient: String,
