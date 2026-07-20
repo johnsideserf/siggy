@@ -20,7 +20,7 @@
 pub(super) mod envelope;
 #[cfg(test)]
 mod fixtures;
-pub(super) mod helpers;
+pub(crate) mod helpers;
 pub(super) mod message;
 pub(super) mod poll;
 pub(super) mod rpc;

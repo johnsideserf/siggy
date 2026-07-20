@@ -7,6 +7,7 @@
 //! with U11/U12.
 
 pub mod linking;
+pub mod receive;
 pub mod runtime;
 pub mod store;
 
