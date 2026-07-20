@@ -962,10 +962,11 @@ async fn run_with_engine(
     result
 }
 
-/// Native engine lifecycle, U9 skeleton (#642): no engine to spawn and no
-/// linking flow yet (U10), so run the UI on the stub adapter. Exists so a
-/// native build is a launchable, inspectable binary rather than a compile
-/// artifact; the status line says exactly what is missing.
+/// Native engine lifecycle (#642): registration gating through the store
+/// probe, fall back to the native linking flow when unlinked (U10), then
+/// run the UI. Still the receive/send stub adapter until U11/U12; there is
+/// no engine process to spawn or shut down - the linking session owns its
+/// own thread and the store is the only persistent artifact.
 #[cfg(feature = "native-backend")]
 async fn run_with_engine(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -973,8 +974,29 @@ async fn run_with_engine(
     database: db::Database,
     incognito: bool,
     config_path: &std::path::Path,
-    _setup_handled_linking: bool,
+    setup_handled_linking: bool,
 ) -> Result<()> {
+    // Same gate order as the signal-cli arm: anything short of Linked falls
+    // back to the linking flow. Corrupt also lands here - the flow's
+    // provisioning restart clears the registration row (presage calls
+    // clear_registration at session start), which is the native equivalent
+    // of the #603 relink path.
+    if !setup_handled_linking
+        && backend::native::NativeBackend::link_state(config).await != LinkState::Linked
+    {
+        match link::run_linking_flow(terminal, config).await {
+            Ok(link::LinkResult::Success) => {}
+            Ok(link::LinkResult::Cancelled) => {
+                return Ok(());
+            }
+            Err(e) => {
+                let msg = format!("{e}");
+                show_error_screen(terminal, "Device Linking Failed", &msg).await?;
+                return Ok(());
+            }
+        }
+    }
+
     run_app(
         terminal,
         backend::ActiveBackend::new(),
@@ -987,9 +1009,6 @@ async fn run_with_engine(
 }
 
 /// Show a full-screen error in the TUI instead of crashing to stderr.
-// Unused under the U9 native skeleton (its run_with_engine has no failure
-// paths yet); U10's native linking flow starts calling this again.
-#[cfg_attr(feature = "native-backend", allow(dead_code))]
 async fn show_error_screen(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     title: &str,
