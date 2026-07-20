@@ -47,6 +47,13 @@ impl<T: Send + 'static> EngineThread<T> {
     pub fn join(self) -> thread::Result<T> {
         self.handle.join()
     }
+
+    /// Non-blocking completion check, for callers that poll from an event
+    /// loop (U10's linking session). True once the engine future has
+    /// finished; [`join`](EngineThread::join) then returns without blocking.
+    pub fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
 }
 
 #[cfg(test)]

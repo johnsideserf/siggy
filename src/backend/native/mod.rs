@@ -1,11 +1,12 @@
 //! Native in-process Signal engine (#642, plan U9-U12).
 //!
-//! U9 skeleton: the pinned presage dependency tree compiles, the per-account
-//! store path resolves ([`store`]), and the `!Send` runtime shim exists
-//! ([`runtime`]). The [`Backend`] impl is an honest stub: a native build
-//! launches, says so in the status line, and does nothing else. Linking
-//! lands with U10, receive with U11, send with U12.
+//! U9 landed the skeleton (pinned presage tree, per-account store paths in
+//! [`store`], the `!Send` runtime shim in [`runtime`]); U10 adds device
+//! linking and the real store-backed link-state probe ([`linking`]). The
+//! [`Backend`] impl remains an honest stub for receive/send: those land
+//! with U11/U12.
 
+pub mod linking;
 pub mod runtime;
 pub mod store;
 
@@ -29,14 +30,13 @@ impl NativeBackend {
     }
 
     /// Instance-free link-state probe, same signature as
-    /// `SignalCliBackend::link_state` (plan U5, flow gap G1).
-    ///
-    /// U9 stub: always [`LinkState::Unlinked`]. Truthful for the skeleton
-    /// (nothing can have linked through it), but it does NOT yet inspect the
-    /// store; U10 replaces this with a real registration read so relinked /
-    /// pre-existing stores answer correctly.
-    pub async fn link_state(_config: &Config) -> LinkState {
-        LinkState::Unlinked
+    /// `SignalCliBackend::link_state` (plan U5, flow gap G1). Reads the
+    /// account's store registration row (#642 U10); note this reflects
+    /// LOCAL state - a device unlinked from the phone still reads Linked
+    /// until the engine's next connection attempt fails (same caveat as
+    /// signal-cli's probe).
+    pub async fn link_state(config: &Config) -> LinkState {
+        linking::link_state(config).await
     }
 }
 

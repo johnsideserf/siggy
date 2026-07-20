@@ -7,8 +7,11 @@
 //! `link_state()` wraps) - are signal-cli-shaped, spawning `signal-cli link`
 //! and reading its stdout/exit code. The QR rendering and screen flow
 //! ([`render_qr_lines`], `show_qr_and_wait`) are backend-agnostic and stay
-//! unchanged; U10 implements the same three-step seam natively via presage's
-//! `link_secondary_device` and reuses the rendering as-is.
+//! unchanged. U10 (#642) implements the same three-step seam natively via
+//! presage's `link_secondary_device` (`backend::native::linking`); the
+//! cfg-selected `ActiveLinkSession` / `ActivePoll` aliases pick the
+//! compiled-in engine's session, and everything downstream of the URI is
+//! shared.
 
 use std::io;
 use std::time::Duration;
@@ -23,10 +26,24 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+#[cfg(feature = "signal-cli-backend")]
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+#[cfg(feature = "signal-cli-backend")]
 use tokio::process::Command;
 
 use crate::config::Config;
+
+/// The compiled-in engine's provisioning session and poll vocabulary. Both
+/// sessions expose the same `poll`/`cancel` shape, so `show_qr_and_wait`
+/// compiles against whichever the feature selects.
+#[cfg(feature = "signal-cli-backend")]
+type ActiveLinkSession = LinkSession;
+#[cfg(feature = "signal-cli-backend")]
+use LinkPoll as ActivePoll;
+#[cfg(feature = "native-backend")]
+type ActiveLinkSession = crate::backend::native::linking::NativeLinkSession;
+#[cfg(feature = "native-backend")]
+use crate::backend::native::linking::NativeLinkPoll as ActivePoll;
 
 /// Result of a device-linking flow.
 pub enum LinkResult {
@@ -76,13 +93,15 @@ pub async fn check_account_registered(config: &Config) -> Result<bool> {
 
 /// An in-flight signal-cli provisioning session (plan U5, #640): owns the
 /// `signal-cli link` child between "URI obtained" and "handshake complete".
-/// Engine-specific step 2 of the linking seam; U10's native backend replaces
-/// this with presage's provisioning future behind the same poll shape.
+/// Engine-specific step 2 of the linking seam; the native twin is
+/// `backend::native::linking::NativeLinkSession` (#642 U10).
+#[cfg(feature = "signal-cli-backend")]
 struct LinkSession {
     child: tokio::process::Child,
 }
 
 /// What one non-blocking [`LinkSession::poll`] observed.
+#[cfg(feature = "signal-cli-backend")]
 enum LinkPoll {
     /// Handshake still in progress; keep showing the QR.
     Pending,
@@ -90,6 +109,7 @@ enum LinkPoll {
     Completed,
 }
 
+#[cfg(feature = "signal-cli-backend")]
 impl LinkSession {
     /// Non-blocking completion check. Failure errors carry signal-cli's
     /// stderr detail, byte-identical to the old inline `try_wait` handling
@@ -129,9 +149,17 @@ impl LinkSession {
     }
 }
 
+/// Obtain a provisioning URI from the compiled-in engine (plan U5, #640):
+/// engine-specific step 1 of the linking seam, native arm (#642 U10).
+#[cfg(feature = "native-backend")]
+async fn start_link_session(config: &Config) -> Result<(String, ActiveLinkSession)> {
+    crate::backend::native::linking::start_link_session(config).await
+}
+
 /// Obtain a provisioning URI by spawning `signal-cli link` (plan U5, #640):
 /// engine-specific step 1 of the linking seam. Returns the URI (for the
 /// backend-agnostic QR renderer) plus the session to poll for completion.
+#[cfg(feature = "signal-cli-backend")]
 async fn start_link_session(config: &Config) -> Result<(String, LinkSession)> {
     // Spawn signal-cli link
     let mut child = Command::new(&config.signal_cli_path)
@@ -273,7 +301,7 @@ fn render_qr_lines(qr: &qrcode::QrCode) -> Vec<Line<'static>> {
 async fn show_qr_and_wait(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     qr_lines: &[Line<'static>],
-    session: &mut LinkSession,
+    session: &mut ActiveLinkSession,
 ) -> Result<LinkResult> {
     loop {
         // Draw
@@ -282,7 +310,7 @@ async fn show_qr_and_wait(
         // Check if the handshake finished (non-blocking); failure details
         // propagate as errors from the session poll.
         match session.poll().await? {
-            LinkPoll::Completed => {
+            ActivePoll::Completed => {
                 // Show success briefly
                 terminal.draw(|frame| {
                     let msg = Paragraph::new("Device linked successfully!")
@@ -294,7 +322,7 @@ async fn show_qr_and_wait(
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 return Ok(LinkResult::Success);
             }
-            LinkPoll::Pending => {} // Still running
+            ActivePoll::Pending => {} // Still running
         }
 
         // Poll for keyboard input
