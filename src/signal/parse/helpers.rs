@@ -246,7 +246,9 @@ fn mime_to_ext(mime: &str) -> &str {
 }
 
 /// Format an expiration timer value as a human-readable string.
-pub(super) fn format_expiration(seconds: i64) -> String {
+/// `pub(crate)`: the native receive mapper (#642 U11) emits the same
+/// system-message copy so timer changes render identically per engine.
+pub(crate) fn format_expiration(seconds: i64) -> String {
     if seconds == 0 {
         return "Disappearing messages disabled".to_string();
     }
