@@ -51,7 +51,8 @@ impl MessageStatus {
 /// `_ => return` for any unrecognized value (#500): a casing or spelling drift
 /// between the parser and the handler dropped receipts silently. The mapping to
 /// `MessageStatus` is now total.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Serde: journaled by the native receive path (#642 U11, KTD-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReceiptKind {
     Delivery,
     Read,
@@ -453,7 +454,8 @@ impl SignalEvent {
 }
 
 /// A message from Signal
-#[derive(Debug, Clone)]
+// Serde: journaled by the native receive path (#642 U11, KTD-2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalMessage {
     pub source: String,
     pub source_name: Option<String>,
@@ -513,7 +515,8 @@ pub struct LinkPreview {
 }
 
 /// An attachment on a message
-#[derive(Debug, Clone)]
+// Serde: journaled by the native receive path (#642 U11, KTD-2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     #[allow(dead_code)]
     pub id: String,
@@ -560,7 +563,8 @@ pub struct Mention {
 }
 
 /// A text style range from signal-cli's textStyles/bodyRanges array.
-#[derive(Debug, Clone)]
+// Serde: journaled by the native receive path (#642 U11, KTD-2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextStyle {
     pub start: usize,  // UTF-16 offset in body
     pub length: usize, // UTF-16 length
@@ -568,7 +572,8 @@ pub struct TextStyle {
 }
 
 /// Type of text styling applied to a range.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Serde: journaled by the native receive path (#642 U11, KTD-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StyleType {
     Bold,
     Italic,

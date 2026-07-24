@@ -264,6 +264,26 @@ const MIGRATIONS: &[Migration] = &[
             COMMIT;
         ",
     },
+    // Native receive journal (#642 U11, plan KTD-2). The native adapter's
+    // engine thread appends each mapped incoming event here (own
+    // connection) BEFORE pulling the next stream item, because
+    // libsignal-service acks envelopes before yielding them: this table is
+    // what makes an acked-but-unprocessed envelope survive a crash. The
+    // main thread deletes a row after committing the event's effects;
+    // startup replays whatever is left and the entry_seq dedup (v16) makes
+    // replays silent. Empty and unused under the signal-cli backend.
+    Migration {
+        version: 17,
+        sql: "
+            BEGIN;
+            CREATE TABLE native_journal (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payload TEXT NOT NULL
+            );
+            UPDATE schema_version SET version = 17;
+            COMMIT;
+        ",
+    },
 ];
 
 pub struct Database {
@@ -315,6 +335,37 @@ impl Database {
         if let Err(e) = self.conn.execute_batch("COMMIT;") {
             crate::debug_log::logf(format_args!("commit_batch failed: {e}"));
         }
+    }
+
+    /// Filesystem path of the open database, `None` for in-memory DBs.
+    /// The native adapter's engine thread opens its own journal connection
+    /// to the same file (#642 U11, KTD-2).
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        self.conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from)
+    }
+
+    // --- Native receive journal (#642 U11, KTD-2) ---
+
+    /// Journal rows the native adapter persisted but the main thread has not
+    /// yet confirmed processed: `(id, payload)` in insertion order. Appends
+    /// happen on the adapter's own connection (`backend::native::journal`);
+    /// this side only replays and deletes.
+    pub fn journal_pending(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, payload FROM native_journal ORDER BY id")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Drop one journal row after its event's effects are committed.
+    pub fn journal_delete(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM native_journal WHERE id = ?1", params![id])?;
+        Ok(())
     }
 
     fn migrate(&self) -> Result<()> {
@@ -1297,6 +1348,57 @@ mod tests {
     #[fixture]
     fn db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    // --- Native receive journal (#642 U11, KTD-2) ---
+
+    /// Simulate the adapter side (a second connection appending) with a
+    /// direct insert; the Database API only replays and deletes.
+    fn journal_append(db: &Database, payload: &str) -> i64 {
+        db.conn
+            .execute(
+                "INSERT INTO native_journal (payload) VALUES (?1)",
+                params![payload],
+            )
+            .unwrap();
+        db.conn.last_insert_rowid()
+    }
+
+    #[rstest]
+    fn journal_pending_returns_rows_in_insertion_order(db: Database) {
+        assert!(db.journal_pending().unwrap().is_empty());
+        let first = journal_append(&db, "a");
+        let second = journal_append(&db, "b");
+        let rows = db.journal_pending().unwrap();
+        assert_eq!(
+            rows,
+            vec![(first, "a".to_string()), (second, "b".to_string())]
+        );
+    }
+
+    #[rstest]
+    fn journal_delete_removes_exactly_one_row(db: Database) {
+        let first = journal_append(&db, "a");
+        let second = journal_append(&db, "b");
+        db.journal_delete(first).unwrap();
+        let rows = db.journal_pending().unwrap();
+        assert_eq!(rows, vec![(second, "b".to_string())]);
+        // Deleting an already-gone row is a no-op, not an error (replay
+        // after a crash between delete and commit hits this).
+        db.journal_delete(first).unwrap();
+    }
+
+    #[rstest]
+    fn path_is_none_for_in_memory(db: Database) {
+        assert_eq!(db.path(), None);
+    }
+
+    #[test]
+    fn path_reports_file_backed_location() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("t.db");
+        let db = Database::open(&file).unwrap();
+        assert_eq!(db.path(), Some(file));
     }
 
     /// Build an in-memory database migrated only up to schema version `k`, to
