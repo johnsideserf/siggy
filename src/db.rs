@@ -1398,7 +1398,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("t.db");
         let db = Database::open(&file).unwrap();
-        assert_eq!(db.path(), Some(file));
+        // SQLite reports the symlink-resolved absolute path; on macOS the
+        // temp dir crosses the /var -> /private/var symlink, so compare
+        // canonicalized forms rather than raw strings.
+        assert_eq!(
+            db.path().map(|p| p.canonicalize().unwrap()),
+            Some(file.canonicalize().unwrap())
+        );
     }
 
     /// Build an in-memory database migrated only up to schema version `k`, to
