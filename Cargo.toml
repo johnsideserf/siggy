@@ -1,7 +1,11 @@
 [package]
 name = "siggy"
-version = "1.14.1"
+version = "1.14.2"
 edition = "2024"
+# Verified floor of the default (signal-cli-backend) dependency tree, enforced
+# by the CI msrv job. Without this, users on older toolchains get an opaque
+# compile error deep inside a dependency instead of a clean cargo error (#668).
+rust-version = "1.90"
 license = "AGPL-3.0-only"
 description = "Terminal-based Signal messenger client with vim keybindings"
 repository = "https://github.com/johnsideserf/siggy"
@@ -29,7 +33,11 @@ include = [
 [features]
 default = ["signal-cli-backend"]
 signal-cli-backend = []
+# BEGIN CRATES-IO-STRIP (scripts/publish-crate.sh removes marked blocks: git
+# dependencies cannot be published to crates.io, so the crates.io artifact is
+# signal-cli-backend only, which is the only supported engine there anyway)
 native-backend = ["dep:presage", "dep:presage-store-sqlite", "dep:futures"]
+# END CRATES-IO-STRIP
 
 [package.metadata.docs.rs]
 # Build with the default backend only; --all-features would hit the
@@ -64,6 +72,7 @@ emojis = "0.9"
 icy_sixel = "0.5"
 ureq = "3.3.0"
 
+# BEGIN CRATES-IO-STRIP
 # Native engine deps (#642 U9), active only under `native-backend`. Pinned to
 # the spike-validated rev (#639 findings): main HEAD of 2026-07-07 (63482efd),
 # the first rev with the merged linking fix (upstream presage PR #421,
@@ -84,15 +93,18 @@ optional = true
 [dependencies.futures]
 version = "0.3"
 optional = true
+# END CRATES-IO-STRIP
 
 [dev-dependencies]
 insta = "1"
 rstest = "0.26"
 tempfile = "3"
 
+# BEGIN CRATES-IO-STRIP
 # Required by the libsignal dependency tree whenever presage is in the graph
 # (presage README documents this for all downstream consumers). Inert for
 # default builds: the patched crate only enters the graph under
 # `native-backend`. Spike finding, #639.
 [patch.crates-io]
 curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
+# END CRATES-IO-STRIP
