@@ -368,6 +368,59 @@ impl Database {
         Ok(())
     }
 
+    /// Atomically fold every row of conversation `from` into `to` (#642 U11
+    /// stage 3, the KTD-6 late-sync re-key): a message that arrived before
+    /// contact sync created a uuid-keyed conversation, and the peer's E.164
+    /// is now known. Runs inside a SAVEPOINT rather than BEGIN because the
+    /// caller may already hold a drain batch transaction.
+    ///
+    /// `UPDATE OR IGNORE`: a moved row that collides with an identical twin
+    /// already under `to` (same dedup key - the envelope was delivered on
+    /// both sides of the re-key boundary) stays behind and is dropped with
+    /// the rest of the source conversation, which is exactly dedup.
+    pub fn merge_conversation(&self, from: &str, to: &str) -> Result<()> {
+        self.conn.execute_batch("SAVEPOINT rekey;")?;
+        let moved = (|| -> Result<()> {
+            self.conn.execute(
+                "UPDATE OR IGNORE messages SET conversation_id = ?2 WHERE conversation_id = ?1",
+                params![from, to],
+            )?;
+            self.conn.execute(
+                "UPDATE OR IGNORE reactions SET conversation_id = ?2 WHERE conversation_id = ?1",
+                params![from, to],
+            )?;
+            self.conn.execute(
+                "UPDATE OR IGNORE read_markers SET conversation_id = ?2 WHERE conversation_id = ?1",
+                params![from, to],
+            )?;
+            self.conn.execute(
+                "DELETE FROM messages WHERE conversation_id = ?1",
+                params![from],
+            )?;
+            self.conn.execute(
+                "DELETE FROM reactions WHERE conversation_id = ?1",
+                params![from],
+            )?;
+            self.conn.execute(
+                "DELETE FROM read_markers WHERE conversation_id = ?1",
+                params![from],
+            )?;
+            self.conn
+                .execute("DELETE FROM conversations WHERE id = ?1", params![from])?;
+            Ok(())
+        })();
+        match moved {
+            Ok(()) => {
+                self.conn.execute_batch("RELEASE rekey;")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK TO rekey; RELEASE rekey;");
+                Err(e)
+            }
+        }
+    }
+
     fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);",
@@ -1391,6 +1444,53 @@ mod tests {
     #[rstest]
     fn path_is_none_for_in_memory(db: Database) {
         assert_eq!(db.path(), None);
+    }
+
+    /// KTD-6 re-key plumbing (#642 U11 stage 3): rows move atomically, a
+    /// row colliding with an identical twin under the target dedups away,
+    /// and the SAVEPOINT nests correctly inside a drain batch transaction.
+    #[rstest]
+    fn merge_conversation_moves_dedups_and_nests_in_a_batch(db: Database) {
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let number = "+15551234567";
+        db.upsert_conversation(uuid, uuid, false).unwrap();
+        db.upsert_conversation(number, "Ada", false).unwrap();
+        let insert = |conv: &str, ts_ms: i64, body: &str| {
+            db.insert_message_full(
+                conv,
+                "Ada",
+                "2026-07-24T12:00:00+00:00",
+                body,
+                false,
+                None,
+                ts_ms,
+                uuid,
+                None,
+                None,
+                None,
+                0,
+                0,
+                0,
+            )
+            .unwrap()
+        };
+        // Unique message under the uuid conversation, plus one delivered on
+        // BOTH sides of the re-key boundary (same dedup key either side).
+        insert(uuid, 1000, "only under uuid").unwrap();
+        insert(uuid, 2000, "delivered twice").unwrap();
+        insert(number, 2000, "delivered twice").unwrap();
+
+        db.begin_batch();
+        db.merge_conversation(uuid, number).unwrap();
+        db.commit_batch();
+
+        let merged = db.load_messages_page(number, 50, 0).unwrap();
+        assert_eq!(
+            merged.len(),
+            2,
+            "unique row moved, colliding twin deduped away"
+        );
+        assert!(db.load_messages_page(uuid, 50, 0).unwrap().is_empty());
     }
 
     #[test]

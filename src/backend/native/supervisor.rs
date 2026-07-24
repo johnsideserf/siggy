@@ -208,10 +208,10 @@ async fn run_session(
     // Spike finding: contact sync is NOT automatic on a linked device. On
     // a fresh store, ask the primary for it (best-effort; the payload
     // arrives as Received::Contacts below).
-    if resolver.by_aci.is_empty() {
-        if let Err(e) = manager.request_contacts().await {
-            debug_log::logf(format_args!("request_contacts failed: {e}"));
-        }
+    if resolver.by_aci.is_empty()
+        && let Err(e) = manager.request_contacts().await
+    {
+        debug_log::logf(format_args!("request_contacts failed: {e}"));
     }
 
     // Directory snapshot so conversations render with names immediately
