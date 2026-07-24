@@ -1494,6 +1494,33 @@ fn handle_contact_list(app: &mut App, contacts: Vec<Contact>) {
         let Some(key) = contact.key().map(|k| k.to_string()) else {
             continue;
         };
+        // KTD-6 race repair (#642 U11 stage 3): a message that arrived
+        // before this sync created a uuid-keyed conversation; the number
+        // is now known, so fold it into the canonical E.164 key before
+        // the name update below, or history splits across two sidebar
+        // entries. Both backends benefit; the native engine hits this on
+        // every freshly linked device (contact sync is not automatic).
+        if let Some(ref uuid) = contact.uuid
+            && contact.number.is_some()
+            && uuid != &key
+            && app.store.conversations.contains_key(uuid.as_str())
+        {
+            let display = contact
+                .name
+                .clone()
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| key.clone());
+            let was_active = |slot: &Option<String>| slot.as_deref() == Some(uuid.as_str());
+            let active = was_active(&app.active_conversation);
+            let prev_active = was_active(&app.prev_active_conversation);
+            app.store.rekey_conversation(&app.db, uuid, &key, &display);
+            if active {
+                app.active_conversation = Some(key.clone());
+            }
+            if prev_active {
+                app.prev_active_conversation = Some(key.clone());
+            }
+        }
         // Store name in lookup for future message resolution. A username-only
         // contact with no profile name still gets a displayable identity: the
         // @handle (#612).

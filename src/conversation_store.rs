@@ -361,6 +361,51 @@ impl ConversationStore {
         self.conversations.get_mut(id).unwrap()
     }
 
+    /// KTD-6 late-sync re-key (#642 U11 stage 3): fold conversation `from`
+    /// (uuid-keyed because a message arrived before contact sync supplied
+    /// the peer's number) into `to` (the canonical E.164 key), in memory
+    /// and in SQLite, so history never splits across the two keys. No-op
+    /// when `from` does not exist. `last_read_index` for the source is
+    /// dropped rather than translated - indices are positions within a
+    /// message list that just changed shape; the unread count carries the
+    /// user-visible state.
+    pub fn rekey_conversation(&mut self, db: &Database, from: &str, to: &str, name: &str) {
+        let Some(source) = self.conversations.remove(from) else {
+            return;
+        };
+        self.conversation_order.retain(|id| id != from);
+        self.last_read_index.remove(from);
+        // Target's conversations row must exist BEFORE rows move under it:
+        // messages.conversation_id carries a foreign key, and FK violations
+        // are not subject to OR IGNORE - the whole move would error.
+        self.get_or_create_conversation(to, name, source.is_group, db);
+        db_warn(db.merge_conversation(from, to), "merge_conversation");
+
+        let target = self
+            .conversations
+            .get_mut(to)
+            .expect("target created above");
+        target.messages.extend(source.messages);
+        // Stable sort: same-timestamp messages keep their relative order.
+        target.messages.sort_by_key(|m| m.timestamp_ms);
+        target.unread += source.unread;
+        target.accepted = target.accepted || source.accepted;
+        if target.expiration_timer == 0 {
+            target.expiration_timer = source.expiration_timer;
+        }
+
+        // Lookups that referenced the retired key follow the conversation.
+        if let Some(display) = self.contact_names.remove(from) {
+            self.contact_names.entry(to.to_string()).or_insert(display);
+        }
+        if let Some(handle) = self.usernames.remove(from) {
+            self.username_to_id
+                .insert(handle.to_lowercase(), to.to_string());
+            self.usernames.entry(to.to_string()).or_insert(handle);
+        }
+        self.has_more_messages.remove(from);
+    }
+
     /// Chat-pane title for a conversation: its name, with ` (@handle)`
     /// appended for 1:1 conversations whose contact has a Signal username —
     /// gated by [`Self::show_usernames`]. Skipped when the name already *is*

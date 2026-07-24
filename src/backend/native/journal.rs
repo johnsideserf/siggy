@@ -35,6 +35,9 @@ use crate::signal::types::{ReceiptKind, SignalEvent, SignalMessage};
 /// at a crash would be user-visible data loss. Transient events (typing,
 /// sync lifecycle, directory refreshes) are deliberately absent - they are
 /// re-derivable or harmless to drop.
+// large_enum_variant: mirrors SignalEvent's own allow - journal events are
+// short-lived single values, not bulk-stored collections.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JournalEvent {
     Message(SignalMessage),
@@ -266,8 +269,18 @@ impl JournalEvent {
 /// erroring). WAL is a database-level property already set by the main
 /// connection; `synchronous=NORMAL` matches it - commits survive app
 /// crash (the KTD-2 bar), not power loss.
+/// Crash-injection env var for the KTD-2 torture test (#642 U11 stage 3):
+/// when set to N, the process aborts immediately after the Nth successful
+/// journal append - deterministically landing on the
+/// committed-but-unprocessed boundary the replay leg must survive. Read
+/// once at `open`; absent in production.
+pub const ABORT_AFTER_ENV: &str = "SIGGY_TEST_JOURNAL_ABORT_AFTER";
+
 pub struct JournalWriter {
     conn: Connection,
+    /// Crash-injection budget from [`ABORT_AFTER_ENV`], `None` normally.
+    abort_after: Option<u64>,
+    appended: std::cell::Cell<u64>,
 }
 
 impl JournalWriter {
@@ -276,7 +289,14 @@ impl JournalWriter {
             .with_context(|| format!("open journal connection to {}", db_path.display()))?;
         conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        Ok(Self { conn })
+        let abort_after = std::env::var(ABORT_AFTER_ENV)
+            .ok()
+            .and_then(|n| n.parse().ok());
+        Ok(Self {
+            conn,
+            abort_after,
+            appended: std::cell::Cell::new(0),
+        })
     }
 
     /// Durably append one event; returns the row id the main thread deletes
@@ -289,7 +309,18 @@ impl JournalWriter {
             "INSERT INTO native_journal (payload) VALUES (?1)",
             params![payload],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        if let Some(limit) = self.abort_after {
+            let count = self.appended.get() + 1;
+            self.appended.set(count);
+            if count >= limit {
+                // Torture-test crash point: the row above is committed,
+                // nothing downstream has seen it. abort(), not panic - no
+                // unwinding, no destructors, the honest kill -9 analog.
+                std::process::abort();
+            }
+        }
+        Ok(id)
     }
 }
 
@@ -421,6 +452,71 @@ mod tests {
                 JournalEvent::from_signal(&event).is_none(),
                 "unexpectedly journaled: {event:?}"
             );
+        }
+    }
+
+    /// Subprocess half of the crash test below. Guarded by the env var so a
+    /// manual `cargo test -- --ignored` run without it is a no-op.
+    #[test]
+    #[ignore = "spawned as a subprocess by crash_after_n_appends_preserves_exactly_the_committed_prefix"]
+    fn torture_helper_appends_until_abort() {
+        let Some(db_path) = std::env::var_os("SIGGY_TORTURE_DB") else {
+            return;
+        };
+        let writer = JournalWriter::open(Path::new(&db_path)).unwrap();
+        for i in 0..10i64 {
+            let mut msg = sample_message();
+            msg.timestamp = ts_utc(1_700_000_000_000 + i);
+            msg.body = Some(format!("torture {i}"));
+            writer
+                .append(&JournalEvent::from_signal(&SignalEvent::MessageReceived(msg)).unwrap())
+                .unwrap();
+        }
+        unreachable!("the {ABORT_AFTER_ENV} hook should have aborted this process");
+    }
+
+    /// The deterministic leg of the U11 torture contract: crash exactly on
+    /// the committed-but-unprocessed boundary (via the abort-after-N hook),
+    /// then assert the survivors are precisely the committed prefix - every
+    /// journaled event is present, in order, and nothing else. The random
+    /// kill -9 chaos layer and the live end-to-end oracle are the Tier-3
+    /// manual run.
+    #[test]
+    fn crash_after_n_appends_preserves_exactly_the_committed_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_file = dir.path().join("torture.db");
+        let db = crate::db::Database::open(&db_file).unwrap();
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "backend::native::journal::tests::torture_helper_appends_until_abort",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("SIGGY_TORTURE_DB", &db_file)
+            .env(ABORT_AFTER_ENV, "3")
+            .status()
+            .expect("spawn torture helper");
+        assert!(
+            !status.success(),
+            "helper must die by abort, not exit clean"
+        );
+
+        let rows = db.journal_pending().unwrap();
+        assert_eq!(
+            rows.len(),
+            3,
+            "exactly the appends committed before the crash survive"
+        );
+        for (i, (_, payload)) in rows.iter().enumerate() {
+            let event: JournalEvent = serde_json::from_str(payload).unwrap();
+            match event {
+                JournalEvent::Message(msg) => {
+                    assert_eq!(msg.body.as_deref(), Some(format!("torture {i}").as_str()));
+                }
+                other => panic!("unexpected journal payload: {other:?}"),
+            }
         }
     }
 

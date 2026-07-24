@@ -6830,3 +6830,127 @@ fn replayed_message_does_not_refire_triggers(mut app: App) {
         "replay must not queue a second auto-reply"
     );
 }
+
+// --- KTD-6 late-contact-sync re-key (#642 U11 stage 3) ---
+// A message can arrive before contact sync supplies the sender's number
+// (the native engine hits this on every freshly linked device). The
+// conversation keys by ACI uuid at that point; when the ContactList later
+// maps that uuid to an E.164, the uuid conversation must fold into the
+// number-keyed one or history splits across two sidebar entries.
+
+const RACE_UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const RACE_NUMBER: &str = "+15551234567";
+
+fn uuid_keyed_message(ts_ms: i64, body: &str) -> SignalMessage {
+    SignalMessage {
+        source: RACE_UUID.to_string(),
+        source_uuid: Some(RACE_UUID.to_string()),
+        timestamp: chrono::DateTime::from_timestamp_millis(ts_ms).unwrap(),
+        body: Some(body.to_string()),
+        ..Default::default()
+    }
+}
+
+fn race_contact() -> Contact {
+    Contact {
+        number: Some(RACE_NUMBER.to_string()),
+        name: Some("Ada".to_string()),
+        uuid: Some(RACE_UUID.to_string()),
+        username: None,
+    }
+}
+
+#[rstest]
+fn late_contact_sync_rekeys_uuid_conversation_to_e164() {
+    let (mut app, db_path) = app_with_file_db();
+    app.handle_signal_event(SignalEvent::MessageReceived(uuid_keyed_message(
+        1_700_000_000_000,
+        "arrived before sync",
+    )));
+    assert!(app.store.conversations.contains_key(RACE_UUID));
+    let unread_before = app.store.conversations[RACE_UUID].unread;
+
+    app.handle_signal_event(SignalEvent::ContactList(vec![race_contact()]));
+
+    assert!(
+        !app.store.conversations.contains_key(RACE_UUID),
+        "uuid-keyed conversation must be retired"
+    );
+    let conv = &app.store.conversations[RACE_NUMBER];
+    assert_eq!(conv.name, "Ada");
+    assert_eq!(conv.messages.len(), 1);
+    assert_eq!(conv.unread, unread_before, "unread survives the re-key");
+    assert!(
+        !app.store
+            .conversation_order
+            .iter()
+            .any(|id| id == RACE_UUID),
+        "sidebar order drops the retired key"
+    );
+    // What a restart would load: rows live under the E.164 key only.
+    assert_eq!(reload_messages(&db_path, RACE_NUMBER).len(), 1);
+    assert!(reload_messages(&db_path, RACE_UUID).is_empty());
+}
+
+#[rstest]
+fn rekey_merges_into_existing_number_conversation_in_order() {
+    let (mut app, db_path) = app_with_file_db();
+    // The number-keyed conversation already exists (e.g. the user messaged
+    // them on another device after sync partially landed)...
+    let number_msg = SignalMessage {
+        source: RACE_NUMBER.to_string(),
+        timestamp: chrono::DateTime::from_timestamp_millis(1_700_000_000_500).unwrap(),
+        body: Some("later, number-keyed".to_string()),
+        ..Default::default()
+    };
+    app.handle_signal_event(SignalEvent::MessageReceived(number_msg));
+    // ...and an EARLIER message had landed under the uuid key.
+    app.handle_signal_event(SignalEvent::MessageReceived(uuid_keyed_message(
+        1_700_000_000_000,
+        "earlier, uuid-keyed",
+    )));
+    assert_eq!(
+        app.store.conversations.len(),
+        2,
+        "history is split pre-sync"
+    );
+
+    app.handle_signal_event(SignalEvent::ContactList(vec![race_contact()]));
+
+    assert_eq!(app.store.conversations.len(), 1, "split healed");
+    let conv = &app.store.conversations[RACE_NUMBER];
+    assert_eq!(conv.messages.len(), 2);
+    assert_eq!(
+        conv.messages[0].body, "earlier, uuid-keyed",
+        "merged messages interleave chronologically"
+    );
+    assert_eq!(conv.messages[1].body, "later, number-keyed");
+    assert_eq!(reload_messages(&db_path, RACE_NUMBER).len(), 2);
+}
+
+#[rstest]
+fn rekey_follows_the_active_conversation() {
+    let (mut app, _db_path) = app_with_file_db();
+    app.handle_signal_event(SignalEvent::MessageReceived(uuid_keyed_message(
+        1_700_000_000_000,
+        "hi",
+    )));
+    app.active_conversation = Some(RACE_UUID.to_string());
+
+    app.handle_signal_event(SignalEvent::ContactList(vec![race_contact()]));
+
+    assert_eq!(
+        app.active_conversation.as_deref(),
+        Some(RACE_NUMBER),
+        "the open chat must not dangle on a retired key"
+    );
+}
+
+#[rstest]
+fn contact_sync_without_prior_uuid_conversation_rekeys_nothing(mut app: App) {
+    app.handle_signal_event(SignalEvent::ContactList(vec![race_contact()]));
+    assert!(
+        app.store.conversations.is_empty(),
+        "re-key never conjures conversations from nothing"
+    );
+}
