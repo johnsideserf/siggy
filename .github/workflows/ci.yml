@@ -46,6 +46,37 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+  # MSRV canary (#668): Cargo.toml declares rust-version so users on an old
+  # toolchain get a clean "requires rustc X" error instead of an E0658 deep
+  # inside a dependency; this lane proves the declared floor still compiles
+  # the default tree. Plain `cargo check`, no -D warnings: older rustc's
+  # dead-code analysis differs from the pinned toolchain's, and lint drift
+  # is not an MSRV break. Not in the required-check set (see note on the
+  # native lane below).
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: echo "msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.msrv }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      - name: Check (default features)
+        env:
+          # override rust-toolchain.toml's pin for this job only
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.msrv }}
+        run: cargo check --locked
+
   # The native-backend feature lane (#640 U7). Informational until Phase 3
   # (#643) per the plan's R11 schedule: pre-U9 the feature intentionally
   # stops at a compile_error! marker, and during Phases 0-2 upstream churn

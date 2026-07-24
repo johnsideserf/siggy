@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.14.2
+
+Patch release for `cargo install siggy` failing on Rust toolchains older
+than 1.95 ([#668](https://github.com/johnsideserf/siggy/issues/668)).
+
+### Fixed
+
+- **`cargo install siggy` no longer requires a bleeding-edge Rust
+  toolchain.** v1.14.1 depended on rusqlite 0.40, whose libsqlite3-sys
+  0.38.1 build script uses the `cfg_select!` macro stabilized only in
+  Rust 1.95 (April 2026), failing on older toolchains with an opaque
+  `E0658` error. siggy now builds against rusqlite 0.38 / libsqlite3-sys
+  0.36, and declares an explicit `rust-version = "1.90"` (verified in CI)
+  so a too-old toolchain gets a clear, actionable error from cargo
+  instead.
+
 ## v1.14.1
 
 Patch release for the broken proxy config
