@@ -60,11 +60,14 @@ pub struct EngineEvent {
     pub event: SignalEvent,
 }
 
-/// Handle the adapter holds: the event queue, the status watch, and the
-/// engine thread keeping both alive.
+/// Handle the adapter holds: the event queue, the status watch, the send
+/// command channel (U12), and the engine thread keeping them all alive.
 pub struct ReceiveEngine {
     pub events: mpsc::UnboundedReceiver<EngineEvent>,
     pub status: watch::Receiver<EngineStatus>,
+    /// Adapter → engine send path (#642 U12). A closed receiver means the
+    /// engine thread is gone; `dispatch` fails the send honestly.
+    pub commands: mpsc::UnboundedSender<super::send::SendCommand>,
     /// `None` only in tests that fake the channels; production always
     /// carries the thread handle so the supervisor outlives frames.
     #[allow(dead_code)]
@@ -77,10 +80,12 @@ impl ReceiveEngine {
     pub fn for_test(
         events: mpsc::UnboundedReceiver<EngineEvent>,
         status: watch::Receiver<EngineStatus>,
+        commands: mpsc::UnboundedSender<super::send::SendCommand>,
     ) -> Self {
         Self {
             events,
             status,
+            commands,
             thread: None,
         }
     }
@@ -92,12 +97,22 @@ impl ReceiveEngine {
 pub fn spawn(store_file: PathBuf, journal_db: Option<PathBuf>) -> Result<ReceiveEngine> {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (status_tx, status_rx) = watch::channel(EngineStatus::Connecting);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
     let thread = EngineThread::spawn("siggy-native-receive", move || async move {
+        // The send loop shares the LocalSet with the receive supervisor
+        // (one engine thread, one Manager model each - plan KTD-8); it
+        // exits on its own when the command sender drops with the adapter.
+        tokio::task::spawn_local(super::send::run_send_loop(
+            store_file.clone(),
+            command_rx,
+            event_tx.clone(),
+        ));
         run_supervisor(store_file, journal_db, event_tx, status_tx).await;
     })?;
     Ok(ReceiveEngine {
         events: event_rx,
         status: status_rx,
+        commands: command_tx,
         thread: Some(thread),
     })
 }
@@ -300,7 +315,7 @@ async fn load_resolver(store: &SqliteStore) -> StoreResolver {
                 let Ok(contact) = contact else { continue };
                 by_aci.insert(
                     contact.uuid.to_string(),
-                    (e164(&contact), non_empty(&contact.name)),
+                    (contact_e164(&contact), non_empty(&contact.name)),
                 );
             }
         }
@@ -311,7 +326,7 @@ async fn load_resolver(store: &SqliteStore) -> StoreResolver {
 
 /// KTD-6 format lock: numbers cross the boundary in E.164 exactly as
 /// signal-cli renders them, never phonenumber's display formats.
-fn e164(contact: &presage::model::contacts::Contact) -> Option<String> {
+pub(super) fn contact_e164(contact: &presage::model::contacts::Contact) -> Option<String> {
     use presage::libsignal_service::prelude::phonenumber::Mode;
     contact
         .phone_number
@@ -339,7 +354,7 @@ async fn emit_directory(
     if let Ok(contacts) = store.contacts().await {
         for contact in contacts.flatten() {
             contacts_out.push(Contact {
-                number: e164(&contact),
+                number: contact_e164(&contact),
                 name: non_empty(&contact.name),
                 uuid: Some(contact.uuid.to_string()),
                 // presage's contact model has no username field at the
