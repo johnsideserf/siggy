@@ -46,6 +46,16 @@ pub enum SendCommand {
         /// Wire timestamp, already uniqueness-adjusted by the adapter.
         timestamp_ms: u64,
     },
+    #[allow(dead_code)]
+    GroupMessage {
+        token: SendToken,
+        /// Base64 group id (KTD-6 format lock) - resolved back to the
+        /// 32-byte master key against the store on the engine thread.
+        group_id: String,
+        body: String,
+        /// Wire timestamp, already uniqueness-adjusted by the adapter.
+        timestamp_ms: u64,
+    },
     ResolveUsername {
         username: String,
     },
@@ -100,6 +110,9 @@ pub(super) async fn run_send_loop(
                     event_tx,
                 ));
             }
+            SendCommand::GroupMessage { token, .. } => {
+                emit(&event_tx, SignalEvent::SendFailed { token });
+            }
             SendCommand::ResolveUsername { username } => {
                 resolve_username(manager, &username, &event_tx).await;
             }
@@ -123,6 +136,14 @@ async fn ensure_manager<'a>(
                 debug_log::logf(format_args!("native send: manager load failed: {e}"));
                 match command {
                     SendCommand::Message { token, .. } => {
+                        emit(
+                            event_tx,
+                            SignalEvent::SendFailed {
+                                token: token.clone(),
+                            },
+                        );
+                    }
+                    SendCommand::GroupMessage { token, .. } => {
                         emit(
                             event_tx,
                             SignalEvent::SendFailed {
