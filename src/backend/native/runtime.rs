@@ -20,6 +20,13 @@ pub struct EngineThread<T> {
     handle: thread::JoinHandle<T>,
 }
 
+/// Stack size for the engine thread. Spawned threads default to 2MiB, which
+/// presage/libsignal's receive futures overflowed on the first live boot
+/// (debug builds keep their giant async state machines on the stack). The
+/// spike never saw this because it ran on the main thread's 8MiB stack.
+/// 16MiB is virtual address space, committed only as touched.
+const ENGINE_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 impl<T: Send + 'static> EngineThread<T> {
     /// Spawn the dedicated thread and drive `make_future`'s output to
     /// completion on a `LocalSet`. The closure runs ON the engine thread,
@@ -32,6 +39,7 @@ impl<T: Send + 'static> EngineThread<T> {
     {
         let handle = thread::Builder::new()
             .name(name.to_string())
+            .stack_size(ENGINE_STACK_SIZE)
             .spawn(move || {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -80,6 +88,27 @@ mod tests {
         })
         .unwrap();
         assert_eq!(engine.join().unwrap(), 42);
+    }
+
+    /// The engine thread must carry presage/libsignal's receive machinery,
+    /// whose debug-build futures burn several MiB of stack - far past the
+    /// 2MiB spawned-thread default that overflowed on first live boot
+    /// (Tier-3, #642). Recurse ~6MiB deep on the engine thread: overflow
+    /// aborts the test process, so a regression here fails loudly.
+    #[test]
+    fn engine_thread_survives_deep_stacks() {
+        #[inline(never)]
+        fn burn(depth: u32) -> u64 {
+            let mut buf = [0u8; 256 * 1024];
+            std::hint::black_box(&mut buf);
+            if depth == 0 {
+                buf[0] as u64
+            } else {
+                burn(depth - 1) + std::hint::black_box(buf[1] as u64)
+            }
+        }
+        let engine = EngineThread::spawn("test-engine-stack", || async { burn(24) }).unwrap();
+        assert_eq!(engine.join().unwrap(), 0);
     }
 
     #[test]
