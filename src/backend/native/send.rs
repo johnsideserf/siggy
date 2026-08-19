@@ -20,6 +20,7 @@ use std::time::Duration;
 use presage::libsignal_service::content::DataMessage;
 use presage::libsignal_service::prelude::{Uuid, phonenumber};
 use presage::libsignal_service::protocol::{Aci, ServiceId};
+use presage::libsignal_service::zkgroup::GroupMasterKeyBytes;
 use presage::manager::{Manager, Registered};
 use presage::model::identity::OnNewIdentity;
 use presage::store::ContentsStore;
@@ -36,7 +37,7 @@ use super::supervisor::EngineEvent;
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The adapter → engine send vocabulary (U12: 1:1 messages and username
-/// resolution; groups are U13, attachments U14, rich bodies U15).
+/// resolution; U13 adds group sends; attachments U14, rich bodies U15).
 pub enum SendCommand {
     Message {
         token: SendToken,
@@ -46,7 +47,6 @@ pub enum SendCommand {
         /// Wire timestamp, already uniqueness-adjusted by the adapter.
         timestamp_ms: u64,
     },
-    #[allow(dead_code)]
     GroupMessage {
         token: SendToken,
         /// Base64 group id (KTD-6 format lock) - resolved back to the
@@ -110,8 +110,24 @@ pub(super) async fn run_send_loop(
                     event_tx,
                 ));
             }
-            SendCommand::GroupMessage { token, .. } => {
-                emit(&event_tx, SignalEvent::SendFailed { token });
+            SendCommand::GroupMessage {
+                token,
+                group_id,
+                body,
+                timestamp_ms,
+            } => {
+                // Per-send Manager clone: same isolation as 1:1 - one
+                // stuck 30s timeout must not serialize the rest.
+                let manager = manager.clone();
+                let event_tx = event_tx.clone();
+                tokio::task::spawn_local(send_group_one(
+                    manager,
+                    token,
+                    group_id,
+                    body,
+                    timestamp_ms,
+                    event_tx,
+                ));
             }
             SendCommand::ResolveUsername { username } => {
                 resolve_username(manager, &username, &event_tx).await;
@@ -135,15 +151,8 @@ async fn ensure_manager<'a>(
             Err(e) => {
                 debug_log::logf(format_args!("native send: manager load failed: {e}"));
                 match command {
-                    SendCommand::Message { token, .. } => {
-                        emit(
-                            event_tx,
-                            SignalEvent::SendFailed {
-                                token: token.clone(),
-                            },
-                        );
-                    }
-                    SendCommand::GroupMessage { token, .. } => {
+                    SendCommand::Message { token, .. }
+                    | SendCommand::GroupMessage { token, .. } => {
                         emit(
                             event_tx,
                             SignalEvent::SendFailed {
@@ -196,7 +205,28 @@ async fn send_one(
         ..Default::default()
     };
 
-    let send = manager.send_message(recipient, message, timestamp_ms);
+    drive_send(
+        manager.send_message(recipient, message, timestamp_ms),
+        token,
+        timestamp_ms,
+        event_tx,
+    )
+    .await;
+}
+
+/// KTD-4 driving shared by 1:1 and group sends: `Ok` -> `SendTimestamp`,
+/// `Err` or 30s timeout -> `SendFailed` - and a timed-out future keeps
+/// driving so a late `Ok` still upgrades Failed -> Sent exactly once via
+/// the dedicated status route (#486).
+async fn drive_send<F, E>(
+    send: F,
+    token: SendToken,
+    timestamp_ms: u64,
+    event_tx: mpsc::UnboundedSender<EngineEvent>,
+) where
+    F: std::future::Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
     tokio::pin!(send);
     tokio::select! {
         result = &mut send => match result {
@@ -228,6 +258,61 @@ async fn send_one(
             }
         }
     }
+}
+
+/// Match a canonical base64 group id back to its master key. Pure so it
+/// unit-tests without a store; derivation is deterministic.
+pub(super) fn find_group_master_key(
+    keys: impl IntoIterator<Item = GroupMasterKeyBytes>,
+    group_id: &str,
+) -> Option<GroupMasterKeyBytes> {
+    keys.into_iter()
+        .find(|key| super::receive::derive_group_id(key).as_deref() == Some(group_id))
+}
+
+async fn resolve_group_master_key(
+    manager: &Manager<SqliteStore, Registered>,
+    group_id: &str,
+) -> Option<GroupMasterKeyBytes> {
+    let groups = match manager.store().groups().await {
+        Ok(groups) => groups,
+        Err(e) => {
+            debug_log::logf(format_args!("native group send: groups read failed: {e}"));
+            return None;
+        }
+    };
+    find_group_master_key(groups.flatten().map(|(master_key, _)| master_key), group_id)
+}
+
+/// One group send, one task: resolve the master key, then the same KTD-4
+/// contract as 1:1.
+async fn send_group_one(
+    mut manager: Manager<SqliteStore, Registered>,
+    token: SendToken,
+    group_id: String,
+    body: String,
+    timestamp_ms: u64,
+    event_tx: mpsc::UnboundedSender<EngineEvent>,
+) {
+    let Some(master_key) = resolve_group_master_key(&manager, &group_id).await else {
+        debug_log::logf(format_args!(
+            "native group send: no master key for group {group_id}"
+        ));
+        emit(&event_tx, SignalEvent::SendFailed { token });
+        return;
+    };
+    let message = DataMessage {
+        body: Some(body),
+        timestamp: Some(timestamp_ms),
+        ..Default::default()
+    };
+    drive_send(
+        manager.send_message_to_group(&master_key, message, timestamp_ms),
+        token,
+        timestamp_ms,
+        event_tx,
+    )
+    .await;
 }
 
 /// Conversation key → wire ServiceId (reverse KTD-6): uuid keys convert
@@ -358,5 +443,22 @@ mod tests {
             classify_recipient("Z3JvdXBpZGdyb3VwaWRncm91cGlkZ3JvdXBpZA=="),
             RecipientKind::Number(_)
         ));
+    }
+
+    /// The base64 group id -> master key mapping is a search, not an
+    /// inverse: derivation is one-way, so the engine walks the store's
+    /// groups and matches on the derived id (#643 U13).
+    #[test]
+    fn group_master_key_found_by_derived_id() {
+        let target: GroupMasterKeyBytes = [7u8; 32];
+        let decoy: GroupMasterKeyBytes = [9u8; 32];
+        let id = super::super::receive::derive_group_id(&target).unwrap();
+        assert_eq!(find_group_master_key([decoy, target], &id), Some(target));
+    }
+
+    #[test]
+    fn unknown_group_id_resolves_no_master_key() {
+        let known: GroupMasterKeyBytes = [7u8; 32];
+        assert_eq!(find_group_master_key([known], "bm90LWEta25vd24taWQ="), None);
     }
 }
