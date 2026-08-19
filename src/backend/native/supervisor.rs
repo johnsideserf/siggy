@@ -316,10 +316,10 @@ impl IdentityResolver for StoreResolver {
     }
 }
 
-/// The account's own ACI never appears in the synced contact list (Tier-3
-/// finding, #642), so without this seed self-conversations key by uuid on
-/// receive while the send path keys them by number - splitting Note to
-/// Self across two sidebar entries.
+/// Tier-3 finding (#642): the primary syncs the own account as a contact
+/// entry WITHOUT a phone number (or not at all), so without this the
+/// resolver keys self-conversations by uuid on receive while the send path
+/// keys them by number - splitting Note to Self across two sidebar entries.
 fn seed_own_identity(
     by_aci: &mut HashMap<String, (Option<String>, Option<String>)>,
     own_aci: &str,
@@ -368,6 +368,26 @@ fn non_empty(s: &str) -> Option<String> {
 /// Emit ContactList + GroupList from the store so `App` names
 /// conversations and populates mention maps. Not journaled: re-emitted at
 /// every session start and on every Contacts sync.
+/// Directory self entry (Tier-3 finding, #642): the app-level ContactList
+/// handler needs the (own aci, own number) pair to fold a uuid-keyed Note
+/// to Self conversation into the canonical E.164 key. The primary syncs
+/// the own account as a contact WITHOUT a phone number, so fill the number
+/// on the existing entry rather than skipping it; append when absent.
+fn ensure_self_entry(contacts_out: &mut Vec<Contact>, own_aci: &str, own_e164: &str) {
+    match contacts_out
+        .iter_mut()
+        .find(|c| c.uuid.as_deref() == Some(own_aci))
+    {
+        Some(own) => own.number = Some(own_e164.to_string()),
+        None => contacts_out.push(Contact {
+            number: Some(own_e164.to_string()),
+            name: None,
+            uuid: Some(own_aci.to_string()),
+            username: None,
+        }),
+    }
+}
+
 async fn emit_directory(
     store: &SqliteStore,
     resolver: &StoreResolver,
@@ -389,18 +409,7 @@ async fn emit_directory(
             });
         }
     }
-    // Self entry (Tier-3 finding, #642): signal-cli's listContacts includes
-    // the own account, and the app-level ContactList handler needs the
-    // (own aci, own number) pair to fold a uuid-keyed Note to Self
-    // conversation into the canonical E.164 key.
-    if !contacts_out.iter().any(|c| c.uuid.as_deref() == Some(own_aci)) {
-        contacts_out.push(Contact {
-            number: Some(own_e164.to_string()),
-            name: None,
-            uuid: Some(own_aci.to_string()),
-            username: None,
-        });
-    }
+    ensure_self_entry(&mut contacts_out, own_aci, own_e164);
     if !contacts_out.is_empty() {
         let _ = event_tx.send(EngineEvent {
             journal_id: None,
@@ -458,6 +467,34 @@ mod tests {
         assert_eq!(backoff(5), Duration::from_secs(30));
         // No attempt cap: hour-1000 still retries at the 30s ceiling.
         assert_eq!(backoff(100_000), Duration::from_secs(30));
+    }
+
+    /// Tier-3 live finding: the primary syncs the own account as a contact
+    /// entry WITH NO phone number. The directory self entry must fill the
+    /// number on that existing entry - a skip-if-present guard leaves
+    /// number=None and the app-level re-key never fires (the second half
+    /// of the Note to Self split, #642).
+    #[test]
+    fn self_entry_fills_the_number_on_an_existing_numberless_contact() {
+        let mut contacts = vec![Contact {
+            number: None,
+            name: Some("John".to_string()),
+            uuid: Some("self-aci".to_string()),
+            username: None,
+        }];
+        ensure_self_entry(&mut contacts, "self-aci", "+15551234567");
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].number.as_deref(), Some("+15551234567"));
+        assert_eq!(contacts[0].name.as_deref(), Some("John"));
+    }
+
+    #[test]
+    fn self_entry_is_appended_when_contacts_lack_the_own_account() {
+        let mut contacts = Vec::new();
+        ensure_self_entry(&mut contacts, "self-aci", "+15551234567");
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].uuid.as_deref(), Some("self-aci"));
+        assert_eq!(contacts[0].number.as_deref(), Some("+15551234567"));
     }
 
     /// Note to Self splits (Tier-3 finding, #642): the account's own ACI is
