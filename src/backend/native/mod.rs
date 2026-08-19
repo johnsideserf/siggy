@@ -11,12 +11,14 @@ pub mod journal;
 pub mod linking;
 pub mod receive;
 pub mod runtime;
+pub mod send;
 pub mod store;
 pub mod supervisor;
 
 use crate::app::{App, SendRequest};
 use crate::config::Config;
 use crate::debug_log;
+use crate::handlers;
 use crate::signal::types::LinkState;
 
 use super::Backend;
@@ -26,15 +28,33 @@ use supervisor::{EngineStatus, ReceiveEngine};
 pub const ENGINE_NAME: &str = "native";
 
 /// The native engine adapter: owns the receive supervisor's engine thread
-/// once [`Backend::startup`] spawns it. Send routing (U12) will reuse the
-/// same thread.
+/// once [`Backend::startup`] spawns it; sends route over the same thread's
+/// command channel (U12).
 pub struct NativeBackend {
     engine: Option<ReceiveEngine>,
+    /// Last wire timestamp handed out (KTD-4): tokens must be strictly
+    /// increasing and unique even for two sends inside one millisecond,
+    /// both for `pending.sends` correlation and for Signal's own
+    /// (sender, timestamp) message identity.
+    last_wire_ts: i64,
 }
 
 impl NativeBackend {
     pub fn new() -> Self {
-        Self { engine: None }
+        Self {
+            engine: None,
+            last_wire_ts: 0,
+        }
+    }
+
+    /// KTD-4 wire timestamp: now, bumped past the previous send when two
+    /// land in the same millisecond. The caller-chosen value IS the wire
+    /// timestamp natively, so the #480 local→server rewrite no-ops.
+    fn next_wire_ts(&mut self) -> i64 {
+        let now = chrono::Utc::now().timestamp_millis();
+        let ts = now.max(self.last_wire_ts + 1);
+        self.last_wire_ts = ts;
+        ts
     }
 
     /// Instance-free link-state probe, same signature as
@@ -121,10 +141,89 @@ impl Backend for NativeBackend {
         false
     }
 
-    /// U12 routes the send vocabulary through the engine thread. Until
-    /// then, surface the truth instead of silently dropping the request.
-    async fn dispatch(&mut self, app: &mut App, _req: SendRequest) {
-        app.status_message = "native engine: sending not implemented yet (#642 U12)".to_string();
+    /// U12: 1:1 messages and username resolution route over the engine
+    /// thread's command channel. Everything else states its unit honestly
+    /// instead of silently dropping the request (KTD-10 spirit): groups
+    /// are U13, attachments U14, reactions/edits/deletes U15, the
+    /// receipt/typing/profile tail U16+.
+    async fn dispatch(&mut self, app: &mut App, req: SendRequest) {
+        match req {
+            SendRequest::Message {
+                recipient,
+                body,
+                is_group,
+                local_ts_ms,
+                attachment,
+                ..
+                // mentions/text_styles/quote/preview deferred to U15: the
+                // body still carries the display text, so the message
+                // sends as plain text until rich bodies land.
+            } => {
+                if is_group {
+                    app.status_message =
+                        "native engine: group sends not implemented yet (#642 U13)".to_string();
+                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
+                    return;
+                }
+                if attachment.is_some() {
+                    app.status_message =
+                        "native engine: attachments not implemented yet (#642 U14)".to_string();
+                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
+                    return;
+                }
+                if self.engine.is_none() {
+                    app.status_message = "native engine: not connected".to_string();
+                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
+                    return;
+                }
+                let wire_ts = self.next_wire_ts();
+                let engine = self.engine.as_ref().expect("checked above");
+                let token = crate::signal::types::SendToken::new(wire_ts.to_string());
+                debug_log::logf(format_args!(
+                    "native send: to={} wire_ts={wire_ts} local_ts={local_ts_ms}",
+                    debug_log::mask_phone(&recipient)
+                ));
+                app.pending
+                    .sends
+                    .insert(token.clone(), (recipient.clone(), local_ts_ms));
+                let command = send::SendCommand::Message {
+                    token: token.clone(),
+                    recipient: recipient.clone(),
+                    body,
+                    timestamp_ms: wire_ts as u64,
+                };
+                if engine.commands.send(command).is_err() {
+                    // Engine thread gone: no SendFailed event will ever
+                    // arrive, mark it here (#486 lesson).
+                    app.pending.sends.remove(&token);
+                    app.status_message = "native engine: send failed (engine stopped)".to_string();
+                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
+                }
+            }
+            SendRequest::ResolveUsername { username } => match &self.engine {
+                Some(engine) => {
+                    if engine
+                        .commands
+                        .send(send::SendCommand::ResolveUsername { username })
+                        .is_err()
+                    {
+                        app.pending.username_resolve = None;
+                        app.status_message =
+                            "Username lookup failed: native engine stopped".to_string();
+                    }
+                }
+                None => {
+                    app.pending.username_resolve = None;
+                    app.status_message = "Username lookup failed: not connected".to_string();
+                }
+            },
+            other => {
+                app.status_message = format!(
+                    "native engine: {} not implemented yet (#642)",
+                    other.kind_name()
+                );
+            }
+        }
     }
 
     async fn startup(&mut self, app: &mut App) {
@@ -263,6 +362,38 @@ mod tests {
         }
     }
 
+    /// Hand-fed channel triple around a test ReceiveEngine: (event sender,
+    /// status sender, command receiver, backend).
+    fn engine_backend() -> (
+        mpsc::UnboundedSender<EngineEvent>,
+        watch::Sender<EngineStatus>,
+        mpsc::UnboundedReceiver<send::SendCommand>,
+        NativeBackend,
+    ) {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (status_tx, status_rx) = watch::channel(EngineStatus::Connecting);
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let mut backend = NativeBackend::new();
+        backend.engine = Some(ReceiveEngine::for_test(event_rx, status_rx, command_tx));
+        (event_tx, status_tx, command_rx, backend)
+    }
+
+    fn message_req(recipient: &str, body: &str, local_ts_ms: i64) -> SendRequest {
+        SendRequest::Message {
+            recipient: recipient.into(),
+            body: body.into(),
+            is_group: false,
+            local_ts_ms,
+            mentions: vec![],
+            text_styles: vec![],
+            attachment: None,
+            preview: None,
+            quote_timestamp: None,
+            quote_author: None,
+            quote_body: None,
+        }
+    }
+
     fn message_count(app: &App, conv_id: &str) -> usize {
         app.store
             .conversations
@@ -356,8 +487,9 @@ mod tests {
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (_status_tx, status_rx) = watch::channel(EngineStatus::Connecting);
+        let (_command_tx, _command_rx) = mpsc::unbounded_channel();
         let mut backend = NativeBackend::new();
-        backend.engine = Some(ReceiveEngine::for_test(event_rx, status_rx));
+        backend.engine = Some(ReceiveEngine::for_test(event_rx, status_rx, _command_tx));
 
         event_tx
             .send(EngineEvent {
@@ -381,8 +513,9 @@ mod tests {
 
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = watch::channel(EngineStatus::Connecting);
+        let (_command_tx, _command_rx) = mpsc::unbounded_channel();
         let mut backend = NativeBackend::new();
-        backend.engine = Some(ReceiveEngine::for_test(event_rx, status_rx));
+        backend.engine = Some(ReceiveEngine::for_test(event_rx, status_rx, _command_tx));
 
         status_tx.send(EngineStatus::Connected).unwrap();
         assert!(backend.drain_events(&mut app));
@@ -412,8 +545,9 @@ mod tests {
 
         let (event_tx, event_rx) = mpsc::unbounded_channel::<EngineEvent>();
         let (_status_tx, status_rx) = watch::channel(EngineStatus::Connected);
+        let (_command_tx, _command_rx) = mpsc::unbounded_channel();
         let mut backend = NativeBackend::new();
-        backend.engine = Some(ReceiveEngine::for_test(event_rx, status_rx));
+        backend.engine = Some(ReceiveEngine::for_test(event_rx, status_rx, _command_tx));
         drop(event_tx); // supervisor panicked: channel closes with no Terminal
 
         backend.drain_events(&mut app);
@@ -430,5 +564,149 @@ mod tests {
         let mut app = file_backed_app(dir.path());
         let mut backend = NativeBackend::new();
         assert!(!backend.drain_events(&mut app));
+    }
+
+    // --- U12 dispatch: send routing (KTD-4) ---
+
+    #[tokio::test]
+    async fn dispatch_routes_sends_with_strictly_increasing_wire_timestamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_backed_app(dir.path());
+        let (_event_tx, _status_tx, mut command_rx, mut backend) = engine_backend();
+
+        // Two sends in (almost certainly) the same millisecond: KTD-4
+        // demands distinct, strictly increasing wire timestamps anyway.
+        backend
+            .dispatch(&mut app, message_req("+15550001111", "one", 111))
+            .await;
+        backend
+            .dispatch(&mut app, message_req("+15550001111", "two", 222))
+            .await;
+
+        let first = match command_rx.try_recv().unwrap() {
+            send::SendCommand::Message {
+                token,
+                body,
+                timestamp_ms,
+                ..
+            } => {
+                assert_eq!(body, "one");
+                assert_eq!(token.to_string(), timestamp_ms.to_string());
+                timestamp_ms
+            }
+            _ => panic!("expected Message command"),
+        };
+        let second = match command_rx.try_recv().unwrap() {
+            send::SendCommand::Message { timestamp_ms, .. } => timestamp_ms,
+            _ => panic!("expected Message command"),
+        };
+        assert!(
+            second > first,
+            "wire timestamps must be strictly increasing: {first} then {second}"
+        );
+        assert_eq!(
+            app.pending.sends.len(),
+            2,
+            "both sends registered for confirmation correlation"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_gates_groups_and_attachments_honestly() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_backed_app(dir.path());
+        let (_event_tx, _status_tx, mut command_rx, mut backend) = engine_backend();
+
+        let mut group = message_req("Z3JvdXBpZA==", "hi", 1);
+        if let SendRequest::Message { is_group, .. } = &mut group {
+            *is_group = true;
+        }
+        backend.dispatch(&mut app, group).await;
+        assert!(app.status_message.contains("U13"));
+
+        let mut with_attachment = message_req("+15550001111", "hi", 2);
+        if let SendRequest::Message { attachment, .. } = &mut with_attachment {
+            *attachment = Some(std::path::PathBuf::from("x.png"));
+        }
+        backend.dispatch(&mut app, with_attachment).await;
+        assert!(app.status_message.contains("U14"));
+
+        assert!(
+            command_rx.try_recv().is_err(),
+            "gated requests never reach the engine"
+        );
+        assert!(app.pending.sends.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_with_dead_engine_thread_fails_the_send_immediately() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_backed_app(dir.path());
+        let (_event_tx, _status_tx, command_rx, mut backend) = engine_backend();
+        drop(command_rx); // engine thread died
+
+        backend
+            .dispatch(&mut app, message_req("+15550001111", "hi", 1))
+            .await;
+        assert!(
+            app.pending.sends.is_empty(),
+            "no confirmation will ever arrive; the pending entry must not leak"
+        );
+        assert!(app.status_message.contains("engine stopped"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_without_engine_reports_not_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_backed_app(dir.path());
+        let mut backend = NativeBackend::new();
+        backend
+            .dispatch(&mut app, message_req("+15550001111", "hi", 1))
+            .await;
+        assert_eq!(app.status_message, "native engine: not connected");
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_username_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_backed_app(dir.path());
+        let (_event_tx, _status_tx, mut command_rx, mut backend) = engine_backend();
+        backend
+            .dispatch(
+                &mut app,
+                SendRequest::ResolveUsername {
+                    username: "ada.42".into(),
+                },
+            )
+            .await;
+        assert!(matches!(
+            command_rx.try_recv().unwrap(),
+            send::SendCommand::ResolveUsername { username } if username == "ada.42"
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_names_unrouted_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_backed_app(dir.path());
+        let (_event_tx, _status_tx, _command_rx, mut backend) = engine_backend();
+        backend
+            .dispatch(
+                &mut app,
+                SendRequest::Reaction {
+                    conv_id: "+15550001111".into(),
+                    emoji: "x".into(),
+                    is_group: false,
+                    target_author: "+15550001111".into(),
+                    target_timestamp: 1,
+                    remove: false,
+                },
+            )
+            .await;
+        assert!(
+            app.status_message.contains("reactions"),
+            "capability copy names the operation: {}",
+            app.status_message
+        );
     }
 }

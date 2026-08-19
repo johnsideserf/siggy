@@ -60,11 +60,14 @@ pub struct EngineEvent {
     pub event: SignalEvent,
 }
 
-/// Handle the adapter holds: the event queue, the status watch, and the
-/// engine thread keeping both alive.
+/// Handle the adapter holds: the event queue, the status watch, the send
+/// command channel (U12), and the engine thread keeping them all alive.
 pub struct ReceiveEngine {
     pub events: mpsc::UnboundedReceiver<EngineEvent>,
     pub status: watch::Receiver<EngineStatus>,
+    /// Adapter → engine send path (#642 U12). A closed receiver means the
+    /// engine thread is gone; `dispatch` fails the send honestly.
+    pub commands: mpsc::UnboundedSender<super::send::SendCommand>,
     /// `None` only in tests that fake the channels; production always
     /// carries the thread handle so the supervisor outlives frames.
     #[allow(dead_code)]
@@ -77,10 +80,12 @@ impl ReceiveEngine {
     pub fn for_test(
         events: mpsc::UnboundedReceiver<EngineEvent>,
         status: watch::Receiver<EngineStatus>,
+        commands: mpsc::UnboundedSender<super::send::SendCommand>,
     ) -> Self {
         Self {
             events,
             status,
+            commands,
             thread: None,
         }
     }
@@ -92,12 +97,22 @@ impl ReceiveEngine {
 pub fn spawn(store_file: PathBuf, journal_db: Option<PathBuf>) -> Result<ReceiveEngine> {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (status_tx, status_rx) = watch::channel(EngineStatus::Connecting);
+    let (command_tx, command_rx) = mpsc::unbounded_channel();
     let thread = EngineThread::spawn("siggy-native-receive", move || async move {
+        // The send loop shares the LocalSet with the receive supervisor
+        // (one engine thread, one Manager model each - plan KTD-8); it
+        // exits on its own when the command sender drops with the adapter.
+        tokio::task::spawn_local(super::send::run_send_loop(
+            store_file.clone(),
+            command_rx,
+            event_tx.clone(),
+        ));
         run_supervisor(store_file, journal_db, event_tx, status_tx).await;
     })?;
     Ok(ReceiveEngine {
         events: event_rx,
         status: status_rx,
+        commands: command_tx,
         thread: Some(thread),
     })
 }
@@ -199,11 +214,20 @@ async fn run_session(
         Err(e) => return classify_manager_error(e),
     };
     let own_aci = manager.registration_data().service_ids.aci.to_string();
+    let own_e164 = {
+        use presage::libsignal_service::prelude::phonenumber::Mode;
+        manager
+            .registration_data()
+            .phone_number
+            .format()
+            .mode(Mode::E164)
+            .to_string()
+    };
 
     // A cloned store handle for directory reads after `receive_messages`
     // mutably borrows the manager.
     let store_handle = manager.store().clone();
-    let mut resolver = load_resolver(&store_handle).await;
+    let mut resolver = load_resolver(&store_handle, &own_aci, &own_e164).await;
 
     // Spike finding: contact sync is NOT automatic on a linked device. On
     // a fresh store, ask the primary for it (best-effort; the payload
@@ -216,7 +240,7 @@ async fn run_session(
 
     // Directory snapshot so conversations render with names immediately
     // (native twin of the startup listContacts/listGroups round-trip).
-    emit_directory(&store_handle, &resolver, event_tx).await;
+    emit_directory(&store_handle, &resolver, &own_aci, &own_e164, event_tx).await;
 
     let stream = match manager.receive_messages().await {
         Ok(stream) => stream,
@@ -231,8 +255,8 @@ async fn run_session(
             // Payload landed in the store; refresh the resolver and
             // re-emit the directory so late contact sync names existing
             // conversations (KTD-6; the uuid→E164 re-key is stage 3).
-            resolver = load_resolver(&store_handle).await;
-            emit_directory(&store_handle, &resolver, event_tx).await;
+            resolver = load_resolver(&store_handle, &own_aci, &own_e164).await;
+            emit_directory(&store_handle, &resolver, &own_aci, &own_e164, event_tx).await;
             continue;
         }
         for event in receive::map_received(&item, &own_aci, &resolver) {
@@ -292,7 +316,20 @@ impl IdentityResolver for StoreResolver {
     }
 }
 
-async fn load_resolver(store: &SqliteStore) -> StoreResolver {
+/// Tier-3 finding (#642): the primary syncs the own account as a contact
+/// entry WITHOUT a phone number (or not at all), so without this the
+/// resolver keys self-conversations by uuid on receive while the send path
+/// keys them by number - splitting Note to Self across two sidebar entries.
+fn seed_own_identity(
+    by_aci: &mut HashMap<String, (Option<String>, Option<String>)>,
+    own_aci: &str,
+    own_e164: &str,
+) {
+    let entry = by_aci.entry(own_aci.to_string()).or_insert((None, None));
+    entry.0 = Some(own_e164.to_string());
+}
+
+async fn load_resolver(store: &SqliteStore, own_aci: &str, own_e164: &str) -> StoreResolver {
     let mut by_aci = HashMap::new();
     match store.contacts().await {
         Ok(contacts) => {
@@ -300,18 +337,19 @@ async fn load_resolver(store: &SqliteStore) -> StoreResolver {
                 let Ok(contact) = contact else { continue };
                 by_aci.insert(
                     contact.uuid.to_string(),
-                    (e164(&contact), non_empty(&contact.name)),
+                    (contact_e164(&contact), non_empty(&contact.name)),
                 );
             }
         }
         Err(e) => debug_log::logf(format_args!("store contacts read failed: {e}")),
     }
+    seed_own_identity(&mut by_aci, own_aci, own_e164);
     StoreResolver { by_aci }
 }
 
 /// KTD-6 format lock: numbers cross the boundary in E.164 exactly as
 /// signal-cli renders them, never phonenumber's display formats.
-fn e164(contact: &presage::model::contacts::Contact) -> Option<String> {
+pub(super) fn contact_e164(contact: &presage::model::contacts::Contact) -> Option<String> {
     use presage::libsignal_service::prelude::phonenumber::Mode;
     contact
         .phone_number
@@ -330,16 +368,38 @@ fn non_empty(s: &str) -> Option<String> {
 /// Emit ContactList + GroupList from the store so `App` names
 /// conversations and populates mention maps. Not journaled: re-emitted at
 /// every session start and on every Contacts sync.
+/// Directory self entry (Tier-3 finding, #642): the app-level ContactList
+/// handler needs the (own aci, own number) pair to fold a uuid-keyed Note
+/// to Self conversation into the canonical E.164 key. The primary syncs
+/// the own account as a contact WITHOUT a phone number, so fill the number
+/// on the existing entry rather than skipping it; append when absent.
+fn ensure_self_entry(contacts_out: &mut Vec<Contact>, own_aci: &str, own_e164: &str) {
+    match contacts_out
+        .iter_mut()
+        .find(|c| c.uuid.as_deref() == Some(own_aci))
+    {
+        Some(own) => own.number = Some(own_e164.to_string()),
+        None => contacts_out.push(Contact {
+            number: Some(own_e164.to_string()),
+            name: None,
+            uuid: Some(own_aci.to_string()),
+            username: None,
+        }),
+    }
+}
+
 async fn emit_directory(
     store: &SqliteStore,
     resolver: &StoreResolver,
+    own_aci: &str,
+    own_e164: &str,
     event_tx: &mpsc::UnboundedSender<EngineEvent>,
 ) {
     let mut contacts_out = Vec::new();
     if let Ok(contacts) = store.contacts().await {
         for contact in contacts.flatten() {
             contacts_out.push(Contact {
-                number: e164(&contact),
+                number: contact_e164(&contact),
                 name: non_empty(&contact.name),
                 uuid: Some(contact.uuid.to_string()),
                 // presage's contact model has no username field at the
@@ -349,6 +409,7 @@ async fn emit_directory(
             });
         }
     }
+    ensure_self_entry(&mut contacts_out, own_aci, own_e164);
     if !contacts_out.is_empty() {
         let _ = event_tx.send(EngineEvent {
             journal_id: None,
@@ -406,6 +467,62 @@ mod tests {
         assert_eq!(backoff(5), Duration::from_secs(30));
         // No attempt cap: hour-1000 still retries at the 30s ceiling.
         assert_eq!(backoff(100_000), Duration::from_secs(30));
+    }
+
+    /// Tier-3 live finding: the primary syncs the own account as a contact
+    /// entry WITH NO phone number. The directory self entry must fill the
+    /// number on that existing entry - a skip-if-present guard leaves
+    /// number=None and the app-level re-key never fires (the second half
+    /// of the Note to Self split, #642).
+    #[test]
+    fn self_entry_fills_the_number_on_an_existing_numberless_contact() {
+        let mut contacts = vec![Contact {
+            number: None,
+            name: Some("John".to_string()),
+            uuid: Some("self-aci".to_string()),
+            username: None,
+        }];
+        ensure_self_entry(&mut contacts, "self-aci", "+15551234567");
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].number.as_deref(), Some("+15551234567"));
+        assert_eq!(contacts[0].name.as_deref(), Some("John"));
+    }
+
+    #[test]
+    fn self_entry_is_appended_when_contacts_lack_the_own_account() {
+        let mut contacts = Vec::new();
+        ensure_self_entry(&mut contacts, "self-aci", "+15551234567");
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].uuid.as_deref(), Some("self-aci"));
+        assert_eq!(contacts[0].number.as_deref(), Some("+15551234567"));
+    }
+
+    /// Note to Self splits (Tier-3 finding, #642): the account's own ACI is
+    /// never in the synced contact list, so an unseeded resolver keys
+    /// self-conversations by uuid while the send path keys them by number.
+    #[test]
+    fn own_identity_seeds_the_resolver_even_with_no_contacts() {
+        let mut by_aci = HashMap::new();
+        seed_own_identity(&mut by_aci, "self-aci", "+15551234567");
+        let resolver = StoreResolver { by_aci };
+        assert_eq!(
+            resolver.number_for_aci("self-aci").as_deref(),
+            Some("+15551234567")
+        );
+        assert_eq!(resolver.name_for_aci("self-aci"), None);
+    }
+
+    #[test]
+    fn own_identity_seed_keeps_an_existing_contact_name() {
+        let mut by_aci = HashMap::new();
+        by_aci.insert("self-aci".to_string(), (None, Some("Me".to_string())));
+        seed_own_identity(&mut by_aci, "self-aci", "+15551234567");
+        let resolver = StoreResolver { by_aci };
+        assert_eq!(
+            resolver.number_for_aci("self-aci").as_deref(),
+            Some("+15551234567")
+        );
+        assert_eq!(resolver.name_for_aci("self-aci").as_deref(), Some("Me"));
     }
 
     #[test]
