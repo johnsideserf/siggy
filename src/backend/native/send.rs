@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use presage::libsignal_service::content::DataMessage;
-use presage::libsignal_service::prelude::{phonenumber, Uuid};
+use presage::libsignal_service::prelude::{Uuid, phonenumber};
 use presage::libsignal_service::protocol::{Aci, ServiceId};
 use presage::manager::{Manager, Registered};
 use presage::model::identity::OnNewIdentity;
