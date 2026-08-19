@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use presage::libsignal_service::content::DataMessage;
-use presage::libsignal_service::prelude::Uuid;
+use presage::libsignal_service::prelude::{phonenumber, Uuid};
 use presage::libsignal_service::protocol::{Aci, ServiceId};
 use presage::manager::{Manager, Registered};
 use presage::model::identity::OnNewIdentity;
@@ -213,6 +213,13 @@ async fn send_one(
 /// directly; E.164 keys resolve through the store's contact sync. An
 /// unresolvable number means contact sync has not supplied it yet - the
 /// send fails rather than guessing.
+/// Note to Self (Tier-3 finding, #642): the account's own number never
+/// appears in the synced contact list, so it must resolve from the
+/// registration data before the contacts walk gets a chance to fail it.
+fn own_aci_for_number(number: &str, own_e164: &str, own_aci: Uuid) -> Option<ServiceId> {
+    (number == own_e164).then(|| Aci::from(own_aci).into())
+}
+
 async fn resolve_recipient(
     manager: &Manager<SqliteStore, Registered>,
     key: &str,
@@ -220,6 +227,15 @@ async fn resolve_recipient(
     match classify_recipient(key) {
         RecipientKind::Aci(uuid) => Some(Aci::from(uuid).into()),
         RecipientKind::Number(number) => {
+            let data = manager.registration_data();
+            let own_e164 = data
+                .phone_number
+                .format()
+                .mode(phonenumber::Mode::E164)
+                .to_string();
+            if let Some(own) = own_aci_for_number(&number, &own_e164, data.service_ids.aci) {
+                return Some(own);
+            }
             let contacts = match manager.store().contacts().await {
                 Ok(contacts) => contacts,
                 Err(e) => {
@@ -274,6 +290,27 @@ fn emit(event_tx: &mpsc::UnboundedSender<EngineEvent>, event: SignalEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Note to Self (Tier-3 finding, #642): the account's own number never
+    /// appears in the synced contact list, so the contacts walk alone fails
+    /// every send-to-self. The own-number check must answer first.
+    #[test]
+    fn own_number_resolves_to_own_aci_without_contacts() {
+        let own_aci: Uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".parse().unwrap();
+        assert_eq!(
+            own_aci_for_number("+15551234567", "+15551234567", own_aci),
+            Some(Aci::from(own_aci).into())
+        );
+    }
+
+    #[test]
+    fn other_numbers_fall_through_to_the_contacts_walk() {
+        let own_aci: Uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".parse().unwrap();
+        assert_eq!(
+            own_aci_for_number("+15559999999", "+15551234567", own_aci),
+            None
+        );
+    }
 
     #[test]
     fn uuid_keys_classify_as_aci() {
