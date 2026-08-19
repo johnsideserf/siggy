@@ -3726,6 +3726,35 @@ fn group_rename_produces_send_request(mut app: App) {
     assert_eq!(app.group_menu.state, None);
 }
 
+#[rstest]
+fn gated_group_admin_answers_with_capability_copy(mut app: App) {
+    // Match neighboring group-menu tests' setup for an active group
+    // conversation, then:
+    app.store
+        .get_or_create_conversation("g1", "Family", true, &app.db);
+    app.active_conversation = Some("g1".to_string());
+    app.group_menu.admin_gated = true;
+
+    app.transition_group_menu(GroupMenuHint::Rename);
+    assert!(
+        app.status_message
+            .contains("not supported by the native engine yet"),
+        "mutating op must answer with capability copy, got: {}",
+        app.status_message
+    );
+    assert!(
+        !matches!(app.group_menu.state, Some(GroupMenuState::Rename)),
+        "gated op must not transition"
+    );
+
+    // The read-only member list is not a wire mutation and stays available.
+    app.transition_group_menu(GroupMenuHint::Members);
+    assert!(matches!(
+        app.group_menu.state,
+        Some(GroupMenuState::Members)
+    ));
+}
+
 // --- Message request tests ---
 
 fn msg_from(source: &str) -> SignalMessage {

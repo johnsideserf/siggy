@@ -1496,6 +1496,10 @@ async fn run_app<B: backend::Backend>(
         .flat_map(|c| &c.messages)
         .filter(|m| m.expires_in_seconds > 0)
         .count();
+    // KTD-10 (#643 U13): the group menu gates mutating admin ops when the
+    // active backend cannot perform them. Runtime, not compile-time: --demo
+    // picks DemoBackend inside the same binary.
+    app.group_menu.admin_gated = !backend.supports_group_admin();
     // Per-backend startup: mark connected and kick off the initial sync
     // (signal-cli), or populate the demo fixtures (see src/backend/).
     backend.startup(&mut app).await;

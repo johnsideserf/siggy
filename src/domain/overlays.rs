@@ -185,6 +185,11 @@ pub struct GroupMenuOverlayState {
     pub filtered: Vec<(String, String)>,
     /// Separate text input buffer for rename/create
     pub input: String,
+    /// KTD-10 capability gate (#643 U13): true when the active backend
+    /// cannot perform group admin operations (the native engine, until
+    /// presage grows admin APIs). Mutating menu entries answer with
+    /// capability copy instead of transitioning.
+    pub admin_gated: bool,
 }
 
 /// State for the keybindings configuration overlay.

@@ -372,6 +372,12 @@ impl GroupMenuHint {
             _ => return None,
         })
     }
+
+    /// Menu entries that mutate the group on the wire - everything except
+    /// the read-only member list (#643 U13 capability gate).
+    pub fn mutates_group(&self) -> bool {
+        !matches!(self, GroupMenuHint::Members)
+    }
 }
 
 /// An item in the per-message action-menu overlay (Reply / Edit / React / ...).
@@ -1531,6 +1537,11 @@ impl App {
 
     /// Transition from the top-level group menu to a sub-state.
     pub(crate) fn transition_group_menu(&mut self, hint: GroupMenuHint) {
+        if self.group_menu.admin_gated && hint.mutates_group() {
+            self.status_message =
+                "group admin: not supported by the native engine yet (#643)".to_string();
+            return;
+        }
         self.group_menu.index = 0;
         self.group_menu.filter.clear();
         self.group_menu.input.clear();
