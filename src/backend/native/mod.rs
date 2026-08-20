@@ -7,6 +7,7 @@
 //! journal ([`journal`], KTD-2), and the stream supervisor
 //! ([`supervisor`]). Sending remains an honest stub until U12.
 
+pub mod attachments;
 pub mod journal;
 pub mod linking;
 pub mod receive;
@@ -260,7 +261,11 @@ impl Backend for NativeBackend {
                 "native startup: in-memory DB, journaling disabled"
             ));
         }
-        match supervisor::spawn(store::store_file(&app.account), journal_db) {
+        match supervisor::spawn(
+            store::store_file(&app.account),
+            journal_db,
+            app.media.download_dir.clone(),
+        ) {
             Ok(engine) => {
                 self.engine = Some(engine);
                 app.startup_status = "Connecting to Signal...".to_string();

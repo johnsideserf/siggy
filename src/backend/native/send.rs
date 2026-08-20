@@ -175,7 +175,9 @@ async fn ensure_manager<'a>(
     slot.as_mut()
 }
 
-async fn load_manager(store_file: &Path) -> anyhow::Result<Manager<SqliteStore, Registered>> {
+pub(super) async fn load_manager(
+    store_file: &Path,
+) -> anyhow::Result<Manager<SqliteStore, Registered>> {
     let path = store_file
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("native store path is not valid UTF-8"))?;
