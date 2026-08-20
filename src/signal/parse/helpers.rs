@@ -62,7 +62,7 @@ pub(super) fn parse_attachment(
     // Sanitize the effective name (may be generated if filename is missing)
     let effective_name = sanitize_attachment_name(filename, &id, &content_type);
 
-    // Verify destination is contained and get canonicalized path
+    // Verify destination is contained (containment check uses canonicalization internally)
     let dest = contained_dest(download_dir, &effective_name)?;
 
     // Try to find the source file: explicit "file" field, or signal-cli's attachment dir
@@ -185,7 +185,7 @@ fn find_signal_cli_attachment(id: &str, content_type: &str) -> Option<std::path:
 }
 
 /// Map common MIME types to file extensions
-pub(crate) fn mime_to_ext(mime: &str) -> &str {
+pub(crate) fn mime_to_ext(mime: &str) -> &'static str {
     match mime {
         "image/jpeg" => "jpg",
         "image/png" => "png",
@@ -283,8 +283,10 @@ pub(crate) fn sanitize_attachment_name(
 }
 
 /// Verify that a destination path within download_dir stays contained.
-/// Returns Some(path) if the canonicalized destination is within download_dir,
-/// None if it would escape (path traversal defense).
+/// Validates containment using canonicalization internally but returns the plain
+/// (non-canonical) path `download_dir.join(name)` so parse_attachment's behavior
+/// is byte-identical to pre-refactor (preserving symlink/relative path handling).
+/// Returns Some(path) if contained, None if it would escape (path traversal defense).
 pub(crate) fn contained_dest(
     download_dir: &std::path::Path,
     name: &str,
@@ -298,7 +300,8 @@ pub(crate) fn contained_dest(
     let canon_dest = dest.canonicalize().unwrap_or_else(|_| canon_dir.join(name));
 
     if canon_dest.starts_with(&canon_dir) {
-        Some(canon_dest)
+        // Return the plain (non-canonical) path for byte-identical parse_attachment behavior
+        Some(dest)
     } else {
         None
     }
@@ -425,7 +428,14 @@ mod tests {
             );
             let dest =
                 contained_dest(dir.path(), &name).expect("sanitized name must be containable");
-            assert!(dest.starts_with(&canon_dir));
+            // Verify contained_dest returns a path that stays within the download dir
+            let canon_dest = dest
+                .canonicalize()
+                .unwrap_or_else(|_| canon_dir.join(&name));
+            assert!(
+                canon_dest.starts_with(&canon_dir),
+                "canonicalized path must be within download dir"
+            );
         }
     }
 
@@ -455,5 +465,41 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(ext_to_mime(Path::new("noext")), "application/octet-stream");
+    }
+
+    #[test]
+    fn contained_dest_preserves_symlink_paths() {
+        // Regression test: contained_dest must return the non-canonical path
+        // (symlink path as passed) not the canonical target, so parse_attachment
+        // preserves symlink/relative-path handling for byte-identical behavior.
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path();
+
+        // Try to create a symlink; skip test on systems that don't support it
+        let link_path = dir_path.parent().unwrap().join("download_link");
+        if std::os::unix::fs::symlink(dir_path, &link_path).is_ok() {
+            // Test 1: valid name through symlink returns symlink path, not canonical
+            let dest =
+                contained_dest(&link_path, "file.txt").expect("valid name must be contained");
+            assert!(
+                dest.starts_with(&link_path),
+                "returned path should start with symlink path, not canonical: {dest:?}"
+            );
+
+            // Test 2: traversal name is still rejected despite symlink
+            let traversal_name =
+                sanitize_attachment_name(Some("../../etc/passwd"), "id123", "text/plain");
+            assert!(
+                !traversal_name.contains('/')
+                    && !traversal_name.contains('\\')
+                    && !traversal_name.contains(".."),
+                "traversal should be sanitized: {traversal_name}"
+            );
+            let result = contained_dest(&link_path, &traversal_name);
+            assert!(result.is_some(), "sanitized name must be containable");
+
+            // Clean up symlink
+            let _ = std::fs::remove_file(&link_path);
+        }
     }
 }
