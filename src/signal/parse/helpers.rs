@@ -57,56 +57,13 @@ pub(super) fn parse_attachment(
         .and_then(|v| v.as_str())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let filename = value
-        .get("filename")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let filename = value.get("filename").and_then(|v| v.as_str());
 
-    // Generate a filename if signal-cli didn't provide one
-    let mut effective_name = filename.clone().unwrap_or_else(|| {
-        let ext = mime_to_ext(&content_type);
-        // Use last 8 chars of attachment ID for uniqueness
-        let short_id = if id.len() > 8 {
-            &id[id.len() - 8..]
-        } else {
-            &id
-        };
-        format!("{short_id}.{ext}")
-    });
+    // Sanitize the effective name (may be generated if filename is missing)
+    let effective_name = sanitize_attachment_name(filename, &id, &content_type);
 
-    // Strip doubled extension (e.g. "photo.jpg.jpg" → "photo.jpg")
-    if let Some(dot_pos) = effective_name.rfind('.') {
-        let ext = &effective_name[dot_pos..]; // e.g. ".jpg"
-        let base = &effective_name[..dot_pos];
-        if base.ends_with(ext) {
-            effective_name = base.to_string();
-        }
-    }
-
-    // Sanitize filename: strip path separators and traversal sequences
-    // to prevent writes outside the download directory.
-    effective_name = effective_name.replace(['/', '\\'], "_").replace("..", "_");
-    if effective_name.is_empty() {
-        let short_id = if id.len() > 8 {
-            &id[id.len() - 8..]
-        } else {
-            &id
-        };
-        effective_name = format!("{short_id}.bin");
-    }
-
-    let dest = download_dir.join(&effective_name);
-
-    // Defense-in-depth: verify resolved path stays within download directory.
-    let canon_dir = download_dir
-        .canonicalize()
-        .unwrap_or_else(|_| download_dir.to_path_buf());
-    let canon_dest = dest
-        .canonicalize()
-        .unwrap_or_else(|_| canon_dir.join(&effective_name));
-    if !canon_dest.starts_with(&canon_dir) {
-        return None;
-    }
+    // Verify destination is contained and get canonicalized path
+    let dest = contained_dest(download_dir, &effective_name)?;
 
     // Try to find the source file: explicit "file" field, or signal-cli's attachment dir
     let local_path = if dest.exists() {
@@ -228,20 +185,122 @@ fn find_signal_cli_attachment(id: &str, content_type: &str) -> Option<std::path:
 }
 
 /// Map common MIME types to file extensions
-fn mime_to_ext(mime: &str) -> &str {
+pub(crate) fn mime_to_ext(mime: &str) -> &str {
     match mime {
         "image/jpeg" => "jpg",
         "image/png" => "png",
         "image/gif" => "gif",
         "image/webp" => "webp",
+        "image/heic" => "heic",
         "video/mp4" => "mp4",
         "video/quicktime" => "mov",
         "audio/mpeg" => "mp3",
         "audio/ogg" => "ogg",
         "audio/aac" => "aac",
+        "audio/mp4" => "m4a",
+        "audio/wav" => "wav",
         "application/pdf" => "pdf",
         "text/plain" => "txt",
         _ => "bin",
+    }
+}
+
+/// Map file extensions to MIME types. Case-insensitive. Covers outgoing uploads.
+/// Used by the native backend for encoding attachment metadata.
+#[allow(dead_code)]
+pub(crate) fn ext_to_mime(path: &std::path::Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "heic" => "image/heic",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "aac" => "audio/aac",
+        "m4a" => "audio/mp4",
+        "wav" => "audio/wav",
+        "pdf" => "application/pdf",
+        "txt" => "text/plain",
+        _ => "application/octet-stream",
+    };
+
+    mime.to_string()
+}
+
+/// Sanitize an attachment filename to prevent path traversal attacks.
+/// Generates a name from attachment ID + MIME type if filename is None.
+/// Strips doubled extensions, path separators, and traversal sequences.
+pub(crate) fn sanitize_attachment_name(
+    filename: Option<&str>,
+    id: &str,
+    content_type: &str,
+) -> String {
+    // Generate a filename if signal-cli didn't provide one
+    let mut effective_name = if let Some(f) = filename {
+        f.to_string()
+    } else {
+        let ext = mime_to_ext(content_type);
+        // Use last 8 chars of attachment ID for uniqueness
+        let short_id = if id.len() > 8 {
+            &id[id.len() - 8..]
+        } else {
+            id
+        };
+        format!("{short_id}.{ext}")
+    };
+
+    // Strip doubled extension (e.g. "photo.jpg.jpg" → "photo.jpg")
+    if let Some(dot_pos) = effective_name.rfind('.') {
+        let ext = &effective_name[dot_pos..]; // e.g. ".jpg"
+        let base = &effective_name[..dot_pos];
+        if base.ends_with(ext) {
+            effective_name = base.to_string();
+        }
+    }
+
+    // Sanitize filename: strip path separators and traversal sequences
+    // to prevent writes outside the download directory.
+    effective_name = effective_name.replace(['/', '\\'], "_").replace("..", "_");
+    if effective_name.is_empty() {
+        let short_id = if id.len() > 8 {
+            &id[id.len() - 8..]
+        } else {
+            id
+        };
+        effective_name = format!("{short_id}.bin");
+    }
+
+    effective_name
+}
+
+/// Verify that a destination path within download_dir stays contained.
+/// Returns Some(path) if the canonicalized destination is within download_dir,
+/// None if it would escape (path traversal defense).
+pub(crate) fn contained_dest(
+    download_dir: &std::path::Path,
+    name: &str,
+) -> Option<std::path::PathBuf> {
+    let dest = download_dir.join(name);
+
+    // Defense-in-depth: verify resolved path stays within download directory.
+    let canon_dir = download_dir
+        .canonicalize()
+        .unwrap_or_else(|_| download_dir.to_path_buf());
+    let canon_dest = dest.canonicalize().unwrap_or_else(|_| canon_dir.join(name));
+
+    if canon_dest.starts_with(&canon_dir) {
+        Some(canon_dest)
+    } else {
+        None
     }
 }
 
@@ -349,5 +408,52 @@ mod tests {
         assert_eq!(sticker_relative_path("ABCDEF", 0), None); // uppercase
         assert_eq!(sticker_relative_path("", 0), None);
         assert_eq!(sticker_relative_path("abcdef", -1), None);
+    }
+
+    #[test]
+    fn traversal_names_are_sanitized_and_contained() {
+        let dir = tempfile::tempdir().unwrap();
+        let canon_dir = dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf());
+        for hostile in ["../../.bashrc", "/etc/passwd", "..\\..\\evil.exe"] {
+            let name = sanitize_attachment_name(Some(hostile), "attid1234", "text/plain");
+            assert!(
+                !name.contains('/') && !name.contains('\\') && !name.contains(".."),
+                "sanitized name must not carry separators or traversal: {name}"
+            );
+            let dest =
+                contained_dest(dir.path(), &name).expect("sanitized name must be containable");
+            assert!(dest.starts_with(&canon_dir));
+        }
+    }
+
+    #[test]
+    fn missing_filename_generates_id_derived_name() {
+        // Last 8 chars of the id + mime-derived extension - the exact
+        // generation parse_attachment performs today ("someattachmentid"
+        // is 16 chars; its last 8 are "chmentid"). If mime_to_ext maps
+        // image/jpeg to something other than "jpg", fix THIS literal to
+        // match the existing helper, never the helper to match the test.
+        let name = sanitize_attachment_name(None, "someattachmentid", "image/jpeg");
+        assert_eq!(name, "chmentid.jpg");
+    }
+
+    #[test]
+    fn ext_to_mime_maps_common_types() {
+        use std::path::Path;
+        assert_eq!(ext_to_mime(Path::new("a.jpg")), "image/jpeg");
+        assert_eq!(ext_to_mime(Path::new("a.PNG")), "image/png");
+        assert_eq!(ext_to_mime(Path::new("a.gif")), "image/gif");
+        assert_eq!(ext_to_mime(Path::new("a.webp")), "image/webp");
+        assert_eq!(ext_to_mime(Path::new("a.mp4")), "video/mp4");
+        assert_eq!(ext_to_mime(Path::new("a.aac")), "audio/aac");
+        assert_eq!(ext_to_mime(Path::new("a.pdf")), "application/pdf");
+        assert_eq!(
+            ext_to_mime(Path::new("a.unknownext")),
+            "application/octet-stream"
+        );
+        assert_eq!(ext_to_mime(Path::new("noext")), "application/octet-stream");
     }
 }
