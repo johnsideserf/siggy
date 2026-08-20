@@ -116,6 +116,26 @@ pub(super) fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, sidebar_
         ));
     }
 
+    // Transient notice (#643 Tier-3 finding): status_message stopped
+    // rendering when this bar became composed segments (b1a120a), making
+    // every capability/error copy write-only. Ambient lines (the
+    // AMBIENT_STATUS_PREFIX family update_status writes) stay hidden -
+    // the bar already renders that content via its own segments; anything
+    // else is a notice.
+    if !app.status_message.is_empty()
+        && !app
+            .status_message
+            .starts_with(crate::app::AMBIENT_STATUS_PREFIX)
+    {
+        segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
+        segments.push(Span::styled(
+            app.status_message.clone(),
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // Pipe separator
     segments.push(Span::styled(" │ ", Style::default().fg(theme.fg_muted)));
 

@@ -510,6 +510,36 @@ mod snapshot_tests {
         output
     }
 
+    /// Tier-3 finding (#643): status_message stopped rendering when the
+    /// status bar became composed segments (b1a120a) - every honest
+    /// capability copy since then was written but never shown. A notice
+    /// (anything other than the ambient "connected | <chat>" line) must
+    /// reach the pixels.
+    #[test]
+    fn status_bar_shows_transient_notice() {
+        let mut app = demo_app();
+        app.status_message =
+            "group admin: not supported by the native engine yet (#643)".to_string();
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(
+            output.contains("not supported by the native engine yet"),
+            "notice must render in the status bar"
+        );
+    }
+
+    /// The ambient line update_status writes must NOT duplicate into the
+    /// notice slot - the bar already shows the conversation segment.
+    #[test]
+    fn status_bar_hides_ambient_status() {
+        let mut app = demo_app();
+        app.update_status();
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(
+            !output.contains("connected | "),
+            "ambient status must not render as a notice"
+        );
+    }
+
     #[test]
     fn test_sidebar_layout() {
         let mut app = demo_app();

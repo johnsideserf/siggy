@@ -50,6 +50,11 @@ pub const PASTE_CLEANUP_SENTINEL_SECS: u64 = 3600;
 /// How long after send confirmation to wait before deleting a paste temp file.
 pub(crate) const PASTE_CLEANUP_DELAY_SECS: u64 = 10;
 
+/// Every ambient status line starts with this; the status bar suppresses
+/// them (it renders the same content via its own segments) and shows any
+/// other `status_message` as a highlighted transient notice (#643).
+pub(crate) const AMBIENT_STATUS_PREFIX: &str = "connected | ";
+
 /// Snap a byte position to the nearest valid char boundary at or before `pos`.
 pub(crate) fn floor_char_boundary(buf: &str, pos: usize) -> usize {
     let pos = pos.min(buf.len());
@@ -372,6 +377,12 @@ impl GroupMenuHint {
             _ => return None,
         })
     }
+
+    /// Menu entries that mutate the group on the wire - everything except
+    /// the read-only member list (#643 U13 capability gate).
+    pub fn mutates_group(&self) -> bool {
+        !matches!(self, GroupMenuHint::Members)
+    }
 }
 
 /// An item in the per-message action-menu overlay (Reply / Edit / React / ...).
@@ -510,7 +521,10 @@ pub struct App {
     /// Messages-pane scroll viewport, focus cursor, jump stack, and per-conversation
     /// saved positions.
     pub scroll: ScrollState,
-    /// Status bar message
+    /// Status bar message. Two kinds share this channel: ambient lines
+    /// (always starting with [`AMBIENT_STATUS_PREFIX`], hidden by the
+    /// status bar which renders the same content as segments) and
+    /// transient notices (everything else, rendered highlighted).
     pub status_message: String,
     /// Whether the app should quit
     pub should_quit: bool,
@@ -1531,6 +1545,11 @@ impl App {
 
     /// Transition from the top-level group menu to a sub-state.
     pub(crate) fn transition_group_menu(&mut self, hint: GroupMenuHint) {
+        if self.group_menu.admin_gated && hint.mutates_group() {
+            self.status_message =
+                "group admin: not supported by the native engine yet (#643)".to_string();
+            return;
+        }
         self.group_menu.index = 0;
         self.group_menu.filter.clear();
         self.group_menu.input.clear();
@@ -3883,11 +3902,27 @@ impl App {
         self.update_status();
     }
 
-    pub(crate) fn update_status(&mut self) {
-        if let Some(ref id) = self.active_conversation {
-            if let Some(conv) = self.store.conversations.get(id) {
+    /// The ambient status line for the active conversation - what
+    /// `update_status` writes when no transient notice is pending. Every
+    /// ambient form starts with [`AMBIENT_STATUS_PREFIX`]; the status bar
+    /// hides those (it renders the same content via its own segments) and
+    /// shows anything else as a notice (#643 Tier-3 finding: notices were
+    /// write-only since the segment-bar rewrite in b1a120a).
+    pub(crate) fn ambient_status(&self) -> Option<String> {
+        match self.active_conversation.as_ref() {
+            Some(id) => {
+                let conv = self.store.conversations.get(id)?;
                 let prefix = if conv.is_group { "#" } else { "" };
-                self.status_message = format!("connected | {}{}", prefix, conv.name);
+                Some(format!("{AMBIENT_STATUS_PREFIX}{}{}", prefix, conv.name))
+            }
+            None => Some(format!("{AMBIENT_STATUS_PREFIX}no conversation selected")),
+        }
+    }
+
+    pub(crate) fn update_status(&mut self) {
+        if self.active_conversation.is_some() {
+            if let Some(ambient) = self.ambient_status() {
+                self.status_message = ambient;
             }
             // Show message request overlay for unaccepted conversations.
             //
@@ -3909,7 +3944,9 @@ impl App {
                 self.close_overlay();
             }
         } else {
-            self.status_message = "connected | no conversation selected".to_string();
+            if let Some(ambient) = self.ambient_status() {
+                self.status_message = ambient;
+            }
             if self.is_overlay(OverlayKind::MessageRequest) {
                 self.close_overlay();
             }
@@ -3918,7 +3955,7 @@ impl App {
 
     pub fn set_connected(&mut self) {
         self.connected = true;
-        self.status_message = "connected | no conversation selected".to_string();
+        self.status_message = format!("{AMBIENT_STATUS_PREFIX}no conversation selected");
     }
 
     /// Get the message at the current scroll position.

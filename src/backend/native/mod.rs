@@ -142,9 +142,9 @@ impl Backend for NativeBackend {
     }
 
     /// U12: 1:1 messages and username resolution route over the engine
-    /// thread's command channel. Everything else states its unit honestly
-    /// instead of silently dropping the request (KTD-10 spirit): groups
-    /// are U13, attachments U14, reactions/edits/deletes U15, the
+    /// thread's command channel; U13: groups now route as well. Everything else
+    /// states its unit honestly instead of silently dropping the request (KTD-10 spirit):
+    /// attachments U14, rich bodies U15, reactions/edits/deletes U15,
     /// receipt/typing/profile tail U16+.
     async fn dispatch(&mut self, app: &mut App, req: SendRequest) {
         match req {
@@ -159,12 +159,6 @@ impl Backend for NativeBackend {
                 // body still carries the display text, so the message
                 // sends as plain text until rich bodies land.
             } => {
-                if is_group {
-                    app.status_message =
-                        "native engine: group sends not implemented yet (#642 U13)".to_string();
-                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
-                    return;
-                }
                 if attachment.is_some() {
                     app.status_message =
                         "native engine: attachments not implemented yet (#642 U14)".to_string();
@@ -180,17 +174,26 @@ impl Backend for NativeBackend {
                 let engine = self.engine.as_ref().expect("checked above");
                 let token = crate::signal::types::SendToken::new(wire_ts.to_string());
                 debug_log::logf(format_args!(
-                    "native send: to={} wire_ts={wire_ts} local_ts={local_ts_ms}",
+                    "native send: to={} group={is_group} wire_ts={wire_ts} local_ts={local_ts_ms}",
                     debug_log::mask_phone(&recipient)
                 ));
                 app.pending
                     .sends
                     .insert(token.clone(), (recipient.clone(), local_ts_ms));
-                let command = send::SendCommand::Message {
-                    token: token.clone(),
-                    recipient: recipient.clone(),
-                    body,
-                    timestamp_ms: wire_ts as u64,
+                let command = if is_group {
+                    send::SendCommand::GroupMessage {
+                        token: token.clone(),
+                        group_id: recipient.clone(),
+                        body,
+                        timestamp_ms: wire_ts as u64,
+                    }
+                } else {
+                    send::SendCommand::Message {
+                        token: token.clone(),
+                        recipient: recipient.clone(),
+                        body,
+                        timestamp_ms: wire_ts as u64,
+                    }
                 };
                 if engine.commands.send(command).is_err() {
                     // Engine thread gone: no SendFailed event will ever
@@ -612,23 +615,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_gates_groups_and_attachments_honestly() {
+    async fn dispatch_routes_group_messages_to_the_engine() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = file_backed_app(dir.path());
         let (_event_tx, _status_tx, mut command_rx, mut backend) = engine_backend();
 
-        let mut group = message_req("Z3JvdXBpZA==", "hi", 1);
+        let mut group = message_req("Z3JvdXBpZA==", "hi group", 1);
         if let SendRequest::Message { is_group, .. } = &mut group {
             *is_group = true;
         }
         backend.dispatch(&mut app, group).await;
-        assert!(app.status_message.contains("U13"));
 
-        let mut with_attachment = message_req("+15550001111", "hi", 2);
+        let command = command_rx
+            .try_recv()
+            .expect("group send reaches the engine");
+        let send::SendCommand::GroupMessage { group_id, body, .. } = command else {
+            panic!("expected GroupMessage command");
+        };
+        assert_eq!(group_id, "Z3JvdXBpZA==");
+        assert_eq!(body, "hi group");
+        assert_eq!(
+            app.pending.sends.len(),
+            1,
+            "group send registered for confirmation correlation"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_gates_attachments_honestly() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = file_backed_app(dir.path());
+        let (_event_tx, _status_tx, mut command_rx, mut backend) = engine_backend();
+
+        // 1:1 attachment: still U14.
+        let mut with_attachment = message_req("+15550001111", "hi", 1);
         if let SendRequest::Message { attachment, .. } = &mut with_attachment {
             *attachment = Some(std::path::PathBuf::from("x.png"));
         }
         backend.dispatch(&mut app, with_attachment).await;
+        assert!(app.status_message.contains("U14"));
+
+        // Group attachment: the attachment gate wins over group routing.
+        let mut group_attachment = message_req("Z3JvdXBpZA==", "hi", 2);
+        if let SendRequest::Message {
+            is_group,
+            attachment,
+            ..
+        } = &mut group_attachment
+        {
+            *is_group = true;
+            *attachment = Some(std::path::PathBuf::from("x.png"));
+        }
+        backend.dispatch(&mut app, group_attachment).await;
         assert!(app.status_message.contains("U14"));
 
         assert!(

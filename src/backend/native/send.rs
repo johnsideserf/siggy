@@ -19,7 +19,9 @@ use std::time::Duration;
 
 use presage::libsignal_service::content::DataMessage;
 use presage::libsignal_service::prelude::{Uuid, phonenumber};
+use presage::libsignal_service::proto;
 use presage::libsignal_service::protocol::{Aci, ServiceId};
+use presage::libsignal_service::zkgroup::GroupMasterKeyBytes;
 use presage::manager::{Manager, Registered};
 use presage::model::identity::OnNewIdentity;
 use presage::store::ContentsStore;
@@ -36,12 +38,21 @@ use super::supervisor::EngineEvent;
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The adapter → engine send vocabulary (U12: 1:1 messages and username
-/// resolution; groups are U13, attachments U14, rich bodies U15).
+/// resolution; U13 adds group sends; attachments U14, rich bodies U15).
 pub enum SendCommand {
     Message {
         token: SendToken,
         /// Conversation key: E.164 or ACI uuid (KTD-6 formats).
         recipient: String,
+        body: String,
+        /// Wire timestamp, already uniqueness-adjusted by the adapter.
+        timestamp_ms: u64,
+    },
+    GroupMessage {
+        token: SendToken,
+        /// Base64 group id (KTD-6 format lock) - resolved back to the
+        /// 32-byte master key against the store on the engine thread.
+        group_id: String,
         body: String,
         /// Wire timestamp, already uniqueness-adjusted by the adapter.
         timestamp_ms: u64,
@@ -100,6 +111,25 @@ pub(super) async fn run_send_loop(
                     event_tx,
                 ));
             }
+            SendCommand::GroupMessage {
+                token,
+                group_id,
+                body,
+                timestamp_ms,
+            } => {
+                // Per-send Manager clone: same isolation as 1:1 - one
+                // stuck 30s timeout must not serialize the rest.
+                let manager = manager.clone();
+                let event_tx = event_tx.clone();
+                tokio::task::spawn_local(send_group_one(
+                    manager,
+                    token,
+                    group_id,
+                    body,
+                    timestamp_ms,
+                    event_tx,
+                ));
+            }
             SendCommand::ResolveUsername { username } => {
                 resolve_username(manager, &username, &event_tx).await;
             }
@@ -122,7 +152,8 @@ async fn ensure_manager<'a>(
             Err(e) => {
                 debug_log::logf(format_args!("native send: manager load failed: {e}"));
                 match command {
-                    SendCommand::Message { token, .. } => {
+                    SendCommand::Message { token, .. }
+                    | SendCommand::GroupMessage { token, .. } => {
                         emit(
                             event_tx,
                             SignalEvent::SendFailed {
@@ -175,7 +206,28 @@ async fn send_one(
         ..Default::default()
     };
 
-    let send = manager.send_message(recipient, message, timestamp_ms);
+    drive_send(
+        manager.send_message(recipient, message, timestamp_ms),
+        token,
+        timestamp_ms,
+        event_tx,
+    )
+    .await;
+}
+
+/// KTD-4 driving shared by 1:1 and group sends: `Ok` -> `SendTimestamp`,
+/// `Err` or 30s timeout -> `SendFailed` - and a timed-out future keeps
+/// driving so a late `Ok` still upgrades Failed -> Sent exactly once via
+/// the dedicated status route (#486).
+async fn drive_send<F, E>(
+    send: F,
+    token: SendToken,
+    timestamp_ms: u64,
+    event_tx: mpsc::UnboundedSender<EngineEvent>,
+) where
+    F: std::future::Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
     tokio::pin!(send);
     tokio::select! {
         result = &mut send => match result {
@@ -207,6 +259,86 @@ async fn send_one(
             }
         }
     }
+}
+
+/// Match a canonical base64 group id back to its master key, paired with
+/// the stored revision the caller needs for `group_v2`. Pure so it
+/// unit-tests without a store; derivation is deterministic.
+pub(super) fn find_group(
+    groups: impl IntoIterator<Item = (GroupMasterKeyBytes, u32)>,
+    group_id: &str,
+) -> Option<(GroupMasterKeyBytes, u32)> {
+    groups.into_iter().find(|(master_key, _)| {
+        super::receive::derive_group_id(master_key).as_deref() == Some(group_id)
+    })
+}
+
+async fn resolve_group(
+    manager: &Manager<SqliteStore, Registered>,
+    group_id: &str,
+) -> Option<(GroupMasterKeyBytes, u32)> {
+    let groups = match manager.store().groups().await {
+        Ok(groups) => groups,
+        Err(e) => {
+            debug_log::logf(format_args!("native group send: groups read failed: {e}"));
+            return None;
+        }
+    };
+    find_group(
+        groups
+            .flatten()
+            .map(|(master_key, group)| (master_key, group.revision)),
+        group_id,
+    )
+}
+
+/// Outgoing group DataMessage. presage's send_message_to_group fans the
+/// content body out to members as-is, so the group_v2 context must be set
+/// here or recipients render the message as a 1:1 (final-review finding,
+/// #643).
+fn group_data_message(
+    body: String,
+    timestamp_ms: u64,
+    master_key: &GroupMasterKeyBytes,
+    revision: u32,
+) -> DataMessage {
+    DataMessage {
+        body: Some(body),
+        timestamp: Some(timestamp_ms),
+        group_v2: Some(proto::GroupContextV2 {
+            master_key: Some(master_key.to_vec()),
+            revision: Some(revision),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// One group send, one task: resolve the master key and revision, then
+/// the same KTD-4 contract as 1:1.
+async fn send_group_one(
+    mut manager: Manager<SqliteStore, Registered>,
+    token: SendToken,
+    group_id: String,
+    body: String,
+    timestamp_ms: u64,
+    event_tx: mpsc::UnboundedSender<EngineEvent>,
+) {
+    let Some((master_key, revision)) = resolve_group(&manager, &group_id).await else {
+        debug_log::logf(format_args!(
+            "native group send: no master key for group {group_id}"
+        ));
+        emit(&event_tx, SignalEvent::SendFailed { token });
+        return;
+    };
+    let message = group_data_message(body, timestamp_ms, &master_key, revision);
+    drive_send(
+        manager.send_message_to_group(&master_key, message, timestamp_ms),
+        token,
+        timestamp_ms,
+        event_tx,
+    )
+    .await;
 }
 
 /// Conversation key → wire ServiceId (reverse KTD-6): uuid keys convert
@@ -337,5 +469,40 @@ mod tests {
             classify_recipient("Z3JvdXBpZGdyb3VwaWRncm91cGlkZ3JvdXBpZA=="),
             RecipientKind::Number(_)
         ));
+    }
+
+    /// The base64 group id -> master key mapping is a search, not an
+    /// inverse: derivation is one-way, so the engine walks the store's
+    /// groups and matches on the derived id (#643 U13). The matched
+    /// revision comes back alongside the key.
+    #[test]
+    fn group_master_key_found_by_derived_id() {
+        let target: GroupMasterKeyBytes = [7u8; 32];
+        let decoy: GroupMasterKeyBytes = [9u8; 32];
+        let id = super::super::receive::derive_group_id(&target).unwrap();
+        assert_eq!(
+            find_group([(decoy, 1), (target, 42)], &id),
+            Some((target, 42))
+        );
+    }
+
+    #[test]
+    fn unknown_group_id_resolves_no_master_key() {
+        let known: GroupMasterKeyBytes = [7u8; 32];
+        assert_eq!(find_group([(known, 1)], "bm90LWEta25vd24taWQ="), None);
+    }
+
+    /// Final-review finding (#643): presage fans the content body out
+    /// as-is, so an outgoing group message without group_v2 renders as a
+    /// 1:1 on members' devices.
+    #[test]
+    fn group_data_message_carries_group_context() {
+        let mk: GroupMasterKeyBytes = [7u8; 32];
+        let dm = group_data_message("hi".to_string(), 1_700_000_000_000, &mk, 42);
+        let ctx = dm.group_v2.expect("group_v2 must be set");
+        assert_eq!(ctx.master_key.as_deref(), Some(&mk[..]));
+        assert_eq!(ctx.revision, Some(42));
+        assert_eq!(dm.body.as_deref(), Some("hi"));
+        assert_eq!(dm.timestamp, Some(1_700_000_000_000));
     }
 }

@@ -906,6 +906,37 @@ mod tests {
     }
 
     #[test]
+    fn sync_sent_group_message_keys_by_group_id() {
+        // The sync echo of an own group send (replayed on reconnect) must
+        // land in the group conversation, not a 1:1 keyed by destination.
+        let mk = [4u8; 32];
+        let mut dm = text_data_message("me, from my phone, to the group", 1_700_000_006_000);
+        dm.group_v2 = Some(proto::GroupContextV2 {
+            master_key: Some(mk.to_vec()),
+            ..Default::default()
+        });
+        let sm = proto::SyncMessage {
+            sent: Some(proto::sync_message::Sent {
+                timestamp: Some(1_700_000_006_000),
+                message: Some(dm),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let c = content(OWN_ACI, sm);
+        let events = map_received(
+            &Received::Content(Box::new(c)),
+            OWN_ACI,
+            &FakeResolver::with_alice(),
+        );
+        let [SignalEvent::MessageReceived(m)] = &events[..] else {
+            panic!("expected MessageReceived for group sync echo");
+        };
+        assert!(m.is_outgoing);
+        assert_eq!(m.group_id.as_deref(), derive_group_id(&mk).as_deref());
+    }
+
+    #[test]
     fn read_sync_collects_sender_timestamp_pairs() {
         let sm = proto::SyncMessage {
             read: vec![
