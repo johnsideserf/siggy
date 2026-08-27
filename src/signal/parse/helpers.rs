@@ -467,6 +467,9 @@ mod tests {
         assert_eq!(ext_to_mime(Path::new("noext")), "application/octet-stream");
     }
 
+    // std::os::unix::fs::symlink does not exist on Windows, so the gate
+    // must be compile-time, not the runtime is_ok() skip below.
+    #[cfg(unix)]
     #[test]
     fn contained_dest_preserves_symlink_paths() {
         // Regression test: contained_dest must return the non-canonical path
