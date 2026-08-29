@@ -69,7 +69,7 @@ argon2 = "0.5"
 rand_core = { version = "0.6", features = ["getrandom"] }
 
 emojis = "0.9"
-icy_sixel = "0.5"
+icy_sixel = "0.6"
 ureq = "3.3.0"
 
 # BEGIN CRATES-IO-STRIP
