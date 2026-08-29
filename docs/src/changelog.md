@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.14.3
+
+Patch release for the emoji picker swallowing motion characters
+([#691](https://github.com/johnsideserf/siggy/issues/691)).
+
+### Fixed
+
+- **Motion characters (`h`/`j`/`k`/`l`) now work in the emoji search
+  filter.** The picker matched them as grid navigation before the
+  type-to-filter fallthrough, so emoji names containing them ("joy",
+  "shark", "heart") were untypeable - typing "shark" filtered on "sar".
+  Grid navigation is arrows-only now (Tab/Shift-Tab still cycle
+  categories); every printable character goes to the filter. Reported by
+  [@juhamust](https://github.com/juhamust).
+
 ## v1.14.2
 
 Patch release for `cargo install siggy` failing on Rust toolchains older
