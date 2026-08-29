@@ -182,26 +182,28 @@ impl EmojiPickerState {
             // Close
             KeyCode::Esc => EmojiPickerAction::Close,
 
-            // Grid navigation (h/j/k/l are consumed here and cannot appear in filter text;
-            // arrow keys also work for navigation while typing filter text)
-            KeyCode::Char('h') | KeyCode::Left => {
+            // Grid navigation is arrows-only: every printable char belongs
+            // to the filter, because emoji names contain h/j/k/l ("joy",
+            // "shark", "heart" were untypeable when those keys navigated -
+            // #691).
+            KeyCode::Left => {
                 self.selected_index = self.selected_index.saturating_sub(1);
                 EmojiPickerAction::None
             }
-            KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Right => {
                 if !self.filtered.is_empty() && self.selected_index < self.filtered.len() - 1 {
                     self.selected_index += 1;
                 }
                 EmojiPickerAction::None
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Down => {
                 let new_idx = self.selected_index + self.cols;
                 if new_idx < self.filtered.len() {
                     self.selected_index = new_idx;
                 }
                 EmojiPickerAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 self.selected_index = self.selected_index.saturating_sub(self.cols);
                 EmojiPickerAction::None
             }
@@ -428,13 +430,51 @@ mod tests {
         let mut state = EmojiPickerState::default();
         state.open(EmojiPickerSource::Input, None);
 
-        // 'r', 'o', 'c' are not h/l/j/k so they go to filter
-        // but wait — these are mapped to navigation via Char match arms
-        // Actually 'r', 'o', 'c' are NOT h/l/j/k so they hit the Char(c) fallthrough
         state.handle_key(KeyCode::Char('r'));
         assert_eq!(state.filter, "r");
 
         state.handle_key(KeyCode::Char('o'));
         assert_eq!(state.filter, "ro");
+    }
+
+    /// #691: motion characters must be typeable in the search filter -
+    /// emoji names like "joy", "shark", and "heart" contain them.
+    /// Grid navigation is arrows-only.
+    #[test]
+    fn motion_chars_append_to_filter_instead_of_navigating() {
+        let mut state = EmojiPickerState::default();
+        state.open(EmojiPickerSource::Input, None);
+
+        for c in "shark".chars() {
+            state.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(state.filter, "shark");
+        assert_eq!(
+            state.selected_index, 0,
+            "typing must never move the selection"
+        );
+
+        state.close();
+        state.open(EmojiPickerSource::Input, None);
+        for c in "joy".chars() {
+            state.handle_key(KeyCode::Char(c));
+        }
+        assert_eq!(state.filter, "joy");
+        assert!(state.filtered.iter().any(|e| e.name.contains("joy")));
+    }
+
+    /// Arrow keys still navigate while a filter is active (#691 keeps
+    /// arrows as the only grid navigation).
+    #[test]
+    fn arrows_navigate_while_filter_active() {
+        let mut state = EmojiPickerState::default();
+        state.open(EmojiPickerSource::Input, None);
+        state.handle_key(KeyCode::Char('c'));
+        assert!(state.filtered.len() > 1, "broad filter keeps a grid");
+
+        state.handle_key(KeyCode::Right);
+        assert_eq!(state.selected_index, 1);
+        state.handle_key(KeyCode::Left);
+        assert_eq!(state.selected_index, 0);
     }
 }

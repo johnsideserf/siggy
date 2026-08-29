@@ -129,7 +129,7 @@ pub(in crate::ui) fn draw_emoji_picker(frame: &mut Frame, app: &App, area: Rect)
     let footer = if app.emoji_picker.filtered.is_empty() {
         " no matches | Tab: category | Esc: close"
     } else {
-        " Tab: category | arrows/hjkl: nav | type to filter | Esc"
+        " Tab: category | arrows: nav | type to filter | Esc"
     };
     lines.push(Line::from(Span::styled(
         footer.to_string(),
