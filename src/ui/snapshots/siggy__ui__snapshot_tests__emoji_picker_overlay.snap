@@ -1,5 +1,5 @@
 ---
-source: src/ui.rs
+source: src/ui/mod.rs
 expression: output
 ---
  Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
@@ -24,7 +24,7 @@ expression: output
                      ││✓│ 🦷  🦴  👀  👁️  👅  👄  🫦  🧞  🧞‍♂️  🧞‍♀️  🧟  🧟‍♂️  🧟‍♀️  🧌  🫈 🤺    │wded.                  │
                      ││○│ ⛷️  👨‍👩‍👦  👨‍👩‍👧  👨‍👩‍👧‍👦  👨‍👩‍👦‍👦  👨‍👩‍👧‍👧  👨‍👨‍👦  👨‍👨‍👧  👨‍👨‍👧‍👦  👨‍👨‍👦‍👦  👨‍👨‍👧‍👧  👩‍👩‍👦  👩‍👩‍👧  👩‍👩‍👧‍👦  👩‍👩‍👦‍👦  👩‍👩‍👧‍👧   │                       │
                      ││○│😀  :grinning: - grinning face                     │                       │
-                     ││○│ Tab: category | arrows/hjkl: nav | type to filter│t to browse early      │
+                     ││○│ Tab: category | arrows: nav | type to filter | Es│t to browse early      │
                      ││[│                                                  │                       │
                      ││ ╰──────────────────────────────────────────────────╯                       │
                      │╰────────────────────────────────────────────────────────────────────────────╯
