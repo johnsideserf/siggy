@@ -46,7 +46,7 @@ mod ui;
 
 use std::collections::HashMap;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::{
@@ -400,6 +400,34 @@ fn startup_sync_timed_out(loading: bool, elapsed: Duration) -> bool {
     loading && elapsed >= STARTUP_SYNC_TIMEOUT
 }
 
+/// Decide whether an Omarchy theme reload is warranted, and what mtime stamp
+/// should be remembered afterward.
+///
+/// `current_stamp` must already reflect the post-change state on disk --
+/// callers only invoke this once they have something worth checking (a fired
+/// signal, or a due periodic poll), and by the time a signal is observed the
+/// write it announces has already landed. Verified, not assumed (#697 review
+/// Finding 6): in `/usr/share/omarchy/bin/omarchy-theme-set` (Omarchy
+/// 4.0.0.alpha), the directory swap (`mv "$NEXT_THEME_PATH"
+/// "$CURRENT_THEME_PATH"`, line 293) and the `theme.name` write (`echo
+/// "$THEME_NAME" >.../theme.name`, line 296) both happen before the script
+/// fires `omarchy-hook theme-set "$THEME_NAME"` (line 339), which is what
+/// runs the installed `pkill -USR1 siggy` hook. The returned stamp is always
+/// `current_stamp`, whether or not `changed` is true: a `signal_fired`
+/// reload still stores the fresh value, so the very next scheduled mtime
+/// check compares against reality instead of a stale, pre-signal stamp and
+/// firing a redundant reload for the same change (#697 review finding).
+///
+/// Pure and I/O-free so the decision is unit-testable without a filesystem.
+fn theme_poll_decision(
+    signal_fired: bool,
+    previous_stamp: Option<SystemTime>,
+    current_stamp: Option<SystemTime>,
+) -> (bool, Option<SystemTime>) {
+    let changed = signal_fired || current_stamp != previous_stamp;
+    (changed, current_stamp)
+}
+
 /// Set restrictive permissions (0600) on a sensitive file (Unix only).
 #[cfg(unix)]
 fn set_file_permissions(path: &std::path::Path) {
@@ -427,6 +455,17 @@ fn set_dir_permissions(path: &std::path::Path) {
 // No-op on Windows for the same reason as `set_file_permissions` above.
 #[cfg(not(unix))]
 fn set_dir_permissions(_path: &std::path::Path) {}
+
+/// Handle type for the Omarchy theme-change signal (SIGUSR1). SIGUSR1 itself
+/// is unix-only, but this alias lets `Option<ThemeSignal>` flow unconditionally
+/// through `run_main_flow` -> `run_with_engine` -> `run_app` without `#[cfg]`
+/// on every parameter and call site along the way. On non-unix targets
+/// `Infallible` has no values, so the `Option` is always `None` and nothing
+/// signal-related is ever constructed or reachable there.
+#[cfg(unix)]
+type ThemeSignal = tokio::signal::unix::Signal;
+#[cfg(not(unix))]
+type ThemeSignal = std::convert::Infallible;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -719,6 +758,28 @@ async fn main() -> Result<()> {
         SetConsoleCtrlHandler(0, 1);
     }
 
+    // Register the SIGUSR1 handler as early as possible in the process --
+    // before raw mode, the alternate screen, the first-run setup wizard, QR
+    // device linking (which can wait on the user for minutes), the
+    // signal-cli JVM spawn, and `App::load_from_db` all run. POSIX's default
+    // disposition for SIGUSR1 is Term, so every one of those steps is a
+    // window in which an Omarchy `pkill -USR1 siggy` theme-set hook (see
+    // README.md) would kill the process outright, bypassing the terminal
+    // restore below and leaving the user's shell in raw mode inside the
+    // alternate screen (#697 review Finding 1: CRITICAL). `signal()`
+    // installs the handler synchronously, so calling it here replaces the
+    // process-wide disposition before any of those windows opens; a failure
+    // to register (any non-unix target, or a unix host that rejects it)
+    // degrades gracefully -- theme following over SIGUSR1 just never fires,
+    // exactly as before this fix.
+    #[cfg(unix)]
+    let theme_signal: Option<ThemeSignal> = {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::user_defined1()).ok()
+    };
+    #[cfg(not(unix))]
+    let theme_signal: Option<ThemeSignal> = None;
+
     // Set up terminal BEFORE anything else so all errors render in the TUI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -743,6 +804,7 @@ async fn main() -> Result<()> {
         demo_mode,
         incognito,
         &resolved_config_path,
+        theme_signal,
     )
     .await;
 
@@ -771,6 +833,7 @@ async fn run_main_flow(
     demo_mode: bool,
     incognito: bool,
     config_path: &std::path::Path,
+    theme_signal: Option<ThemeSignal>,
 ) -> Result<()> {
     if demo_mode {
         let database = db::Database::open_in_memory()?;
@@ -785,6 +848,7 @@ async fn run_main_flow(
             database,
             false,
             config_path,
+            theme_signal,
         )
         .await;
     }
@@ -863,6 +927,7 @@ async fn run_main_flow(
         incognito,
         config_path,
         setup_handled_linking,
+        theme_signal,
     )
     .await;
 
@@ -885,6 +950,7 @@ async fn run_with_engine(
     incognito: bool,
     config_path: &std::path::Path,
     setup_handled_linking: bool,
+    theme_signal: Option<ThemeSignal>,
 ) -> Result<()> {
     // Spawn signal-cli backend directly (skip the old pre-flight check that spawned
     // a throwaway JVM process). If the account isn't registered, signal-cli will exit
@@ -953,6 +1019,7 @@ async fn run_with_engine(
         database,
         incognito,
         config_path,
+        theme_signal,
     )
     .await;
 
@@ -975,6 +1042,7 @@ async fn run_with_engine(
     incognito: bool,
     config_path: &std::path::Path,
     setup_handled_linking: bool,
+    theme_signal: Option<ThemeSignal>,
 ) -> Result<()> {
     // Same gate order as the signal-cli arm: anything short of Linked falls
     // back to the linking flow. Corrupt also lands here - the flow's
@@ -1004,6 +1072,7 @@ async fn run_with_engine(
         database,
         incognito,
         config_path,
+        theme_signal,
     )
     .await
 }
@@ -1449,6 +1518,9 @@ async fn run_app<B: backend::Backend>(
     db: db::Database,
     incognito: bool,
     config_path: &std::path::Path,
+    #[cfg_attr(not(unix), allow(unused_mut, unused_variables))] mut theme_signal: Option<
+        ThemeSignal,
+    >,
 ) -> Result<()> {
     let mut app = App::new(config.account.clone(), db, config_path);
     // Table-driven boolean toggles (notifications, display, messages,
@@ -1503,6 +1575,22 @@ async fn run_app<B: backend::Backend>(
     // Per-backend startup: mark connected and kick off the initial sync
     // (signal-cli), or populate the demo fixtures (see src/backend/).
     backend.startup(&mut app).await;
+
+    // Omarchy signals a theme change the same way it does for helix and btop
+    // (`pkill -USR1`). tokio's "full" feature already provides this; no new
+    // dependency. Non-unix targets simply never fire. Registration itself
+    // happens in `main()`, before raw mode / setup / linking / spawn -- see
+    // `ThemeSignal` and the comment there (#697 review Finding 1) -- so by
+    // the time we get here `theme_signal` is just the handle we were handed.
+
+    // Fallback for users who have not installed the theme-set hook: notice a
+    // theme change by the mtime of Omarchy's theme.name.
+    let omarchy_name_path = theme::omarchy::theme_name_path();
+    let mut omarchy_stamp = omarchy_name_path
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok());
+    let mut last_theme_check = Instant::now();
 
     let mut last_expiry_sweep = Instant::now();
     let mut last_sync_redraw = Instant::now();
@@ -1822,6 +1910,40 @@ async fn run_app<B: backend::Backend>(
             needs_redraw = true;
         }
 
+        // Follow Omarchy desktop theme changes (every 10s, alongside the
+        // sweep above). A SIGUSR1 from the theme-set hook short-circuits the
+        // wait, but both paths funnel through `theme_poll_decision` so the
+        // remembered mtime stamp is refreshed either way (#697 review
+        // finding: a signal-triggered reload that left the stamp stale used
+        // to cause one redundant reload at the next periodic check).
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut signal_fired = false;
+        #[cfg(unix)]
+        if let Some(sig) = theme_signal.as_mut() {
+            signal_fired =
+                std::future::poll_fn(|cx| std::task::Poll::Ready(sig.poll_recv(cx).is_ready()))
+                    .await;
+        }
+        let mtime_check_due = last_theme_check.elapsed() >= Duration::from_secs(10);
+        let mut theme_changed = false;
+        if signal_fired || mtime_check_due {
+            if mtime_check_due {
+                last_theme_check = Instant::now();
+            }
+            let current_stamp = omarchy_name_path
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok());
+            let (changed, stamp) = theme_poll_decision(signal_fired, omarchy_stamp, current_stamp);
+            omarchy_stamp = stamp;
+            theme_changed = changed;
+        }
+        if theme_changed && let Some(t) = theme::maybe_reload_omarchy(&app.theme) {
+            app.theme = t;
+            app.theme_picker.available_themes = theme::all_themes();
+            needs_redraw = true;
+        }
+
         // Terminal bell on new messages in background conversations. Suppress
         // entirely while the session is locked -- the bell would advertise
         // activity even though the screen is supposed to be opaque.
@@ -1916,6 +2038,31 @@ mod tests {
         assert_eq!(oneshot_target("u:Alice.42"), ("u:alice.42".into(), false));
         // Anything else: group id
         assert_eq!(oneshot_target("grpid=="), ("grpid==".into(), true));
+    }
+
+    #[test]
+    fn theme_poll_signal_refreshes_stamp_so_the_next_check_does_not_reload_again() {
+        // Reproduces the #697 review finding: a SIGUSR1-triggered reload must
+        // update the remembered stamp to the file's current mtime (the write
+        // already happened on disk by the time the signal is observed), or
+        // the very next scheduled mtime check sees a "changed" file and
+        // reloads a second time for the same underlying change.
+        let previous = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let on_disk_after_signal = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+
+        let (changed, stamp_after_signal) =
+            theme_poll_decision(true, Some(previous), Some(on_disk_after_signal));
+        assert!(changed, "a fired signal must always report a change");
+
+        // The next periodic mtime check: no signal this time, and the file
+        // has not moved since the signal-triggered reload.
+        let (changed_again, _) =
+            theme_poll_decision(false, stamp_after_signal, Some(on_disk_after_signal));
+        assert!(
+            !changed_again,
+            "a stamp refreshed by the signal path must not cause a redundant reload \
+             at the next mtime check"
+        );
     }
 
     #[test]

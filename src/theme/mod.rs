@@ -7,6 +7,8 @@
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
+pub mod omarchy;
+
 /// A complete color theme for the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Theme {
@@ -483,9 +485,11 @@ pub fn load_custom_themes() -> Vec<Theme> {
     themes
 }
 
-/// All available themes: built-ins followed by custom themes.
+/// All available themes: built-ins, the Omarchy theme when the desktop is
+/// present, then custom themes.
 pub fn all_themes() -> Vec<Theme> {
     let mut themes = builtin_themes();
+    themes.extend(omarchy::current_theme());
     themes.extend(load_custom_themes());
     themes
 }
@@ -496,6 +500,16 @@ pub fn find_theme(name: &str) -> Theme {
         .into_iter()
         .find(|t| t.name == name)
         .unwrap_or_else(default_theme)
+}
+
+/// Return a freshly-read Omarchy theme, but only if `current` is the Omarchy
+/// theme. A user who pinned a specific theme keeps it across desktop theme
+/// changes.
+pub fn maybe_reload_omarchy(current: &Theme) -> Option<Theme> {
+    if current.name != omarchy::THEME_NAME {
+        return None;
+    }
+    omarchy::current_theme()
 }
 
 // ---------------------------------------------------------------------------
@@ -720,5 +734,28 @@ bg = "#€abc"
         let theme: Theme = toml::from_str(&contents).expect("template parses as a Theme");
         assert_eq!(theme.name, "My Theme");
         assert_eq!(theme.sender_palette.len(), 8);
+    }
+
+    #[test]
+    fn omarchy_theme_appears_in_all_themes_only_when_present() {
+        let listed = all_themes().iter().any(|t| t.name == omarchy::THEME_NAME);
+        assert_eq!(listed, omarchy::theme_dir().is_some());
+    }
+
+    #[test]
+    fn find_theme_resolves_omarchy_when_present_and_falls_back_otherwise() {
+        let t = find_theme(omarchy::THEME_NAME);
+        if omarchy::theme_dir().is_some() {
+            assert_eq!(t.name, omarchy::THEME_NAME);
+        } else {
+            assert_eq!(t.name, "Default");
+        }
+    }
+
+    #[test]
+    fn reload_only_replaces_the_theme_when_omarchy_is_active() {
+        // Pinned themes must never be clobbered by a desktop theme change.
+        let nord = find_theme("Nord");
+        assert_eq!(maybe_reload_omarchy(&nord).map(|t| t.name), None);
     }
 }

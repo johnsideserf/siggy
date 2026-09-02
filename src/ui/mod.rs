@@ -794,6 +794,14 @@ mod snapshot_tests {
     fn test_theme_picker_overlay() {
         let mut app = demo_app();
         app.open_overlay(OverlayKind::ThemePicker);
+        // available_themes is populated from the real theme::all_themes() at
+        // App::new() time, which includes the "Omarchy" entry whenever this
+        // machine actually has Omarchy installed (#697). Strip it so the
+        // snapshot stays deterministic whether or not the machine running the
+        // test has Omarchy -- CI never does, this dev box sometimes does.
+        app.theme_picker
+            .available_themes
+            .retain(|t| t.name != crate::theme::omarchy::THEME_NAME);
         app.theme_picker.index = 1;
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);

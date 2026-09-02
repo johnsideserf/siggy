@@ -248,7 +248,23 @@ fn default_true() -> bool {
 }
 
 fn default_theme() -> String {
-    "Default".to_string()
+    // Fresh installs follow the desktop theme when one is detectable.
+    // find_theme() falls back to the built-in Default when it is not, so this
+    // is safe on every platform.
+    //
+    // The precise backward-compatibility guarantee (#697 review Finding 3):
+    // `theme` has carried an explicit key in every config written since
+    // #103/b0b0cda (2026-03-03), because `Config::save()` serialises the
+    // whole struct and `theme` has no `skip_serializing_if`. Any such config
+    // is unaffected here -- serde only calls this default when the key is
+    // *absent* from the file, never to override a present value. The one
+    // config that DOES see this default fire is one written before that
+    // commit landed: it has no `theme` key at all, so a user upgrading from
+    // that vintage will see their theme silently switch to "Omarchy" (which
+    // itself falls back to the built-in Default when Omarchy is not
+    // installed) on their next start, rather than keeping whatever theme
+    // they had picked before `theme` existed as a field.
+    crate::theme::omarchy::THEME_NAME.to_string()
 }
 
 fn default_keybinding_profile() -> String {
@@ -550,5 +566,20 @@ mod tests {
     fn set_proxy_still_deserializes_so_the_guard_can_fire() {
         let c: Config = toml::from_str("proxy = \"https://p.example.com\"").unwrap();
         assert_eq!(c.proxy, "https://p.example.com");
+    }
+
+    #[test]
+    fn a_config_with_an_explicit_theme_is_not_overridden_by_the_new_default() {
+        // Guards the promise that switching default_theme() to "Omarchy"
+        // cannot change any existing user's theme: serde's default only fires
+        // when the key is absent, and save() always writes the key.
+        let cfg: Config = toml::from_str("theme = \"Nord\"\n").unwrap();
+        assert_eq!(cfg.theme, "Nord");
+    }
+
+    #[test]
+    fn a_config_without_a_theme_key_defaults_to_omarchy() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.theme, "Omarchy");
     }
 }

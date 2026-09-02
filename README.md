@@ -126,7 +126,7 @@ desktop_notifications = false
 inline_images = true
 mouse_enabled = true
 send_read_receipts = true
-theme = "Default"
+theme = "Omarchy"
 ```
 
 All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via PATH), and `download_dir` defaults to `~/signal-downloads/`. On Windows, use the full path to `signal-cli.bat` if it isn't in your PATH.
@@ -160,6 +160,42 @@ image_max_height = 45
 sixel_max_colors = 256
 sixel_diffusion = 0.875
 ```
+
+## Theming
+
+Open the theme picker with `/theme` (alias `/t`) or from `/settings` > Theme.
+Drop a custom `*.toml` theme file into your themes directory
+(`~/.config/siggy/themes/` on Linux/macOS, `%APPDATA%\siggy\themes\` on
+Windows) and it appears in the picker; see
+[`themes/custom-theme-template.toml`](themes/custom-theme-template.toml) for a
+fully-commented starting point.
+
+### Omarchy
+
+On [Omarchy](https://omarchy.org), siggy follows your desktop theme out of the
+box -- a fresh install picks up whatever theme you are running, and switching
+themes with `omarchy theme set` retints siggy within about 10 seconds without
+a restart. Pick any other theme from `/theme` to pin it instead.
+
+This is why a fresh `config.toml` carries `theme = "Omarchy"`: it does not
+name a fixed color scheme, it means "follow the desktop theme." On a machine
+without Omarchy installed, the same setting just falls back to siggy's
+built-in Default theme, so the value is harmless (if not very interesting)
+there too.
+
+For instant retinting rather than within-10-seconds, optionally install the
+theme-set hook:
+
+```sh
+printf '#!/bin/bash\npkill -USR1 siggy\n' > ~/.config/omarchy/hooks/theme-set.d/siggy
+chmod +x ~/.config/omarchy/hooks/theme-set.d/siggy
+```
+
+This is entirely optional -- siggy never writes into `~/.config/omarchy/`
+itself, and the 10-second background poll keeps things in sync without it.
+
+Theme authors can override siggy's derived colors by shipping a `siggy.toml`
+(in siggy's own theme format) alongside `colors.toml` in the theme directory.
 
 ## Features
 
