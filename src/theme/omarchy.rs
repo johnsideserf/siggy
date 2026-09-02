@@ -261,11 +261,23 @@ fn color(map: &HashMap<String, String>, key: &str, alts: &[&str]) -> Option<Colo
         .and_then(|v| super::string_to_color(v).ok())
 }
 
-/// Relative luminance of a hex colour, 0.0-1.0. Used only to choose a
-/// readable foreground; not a colour-science-grade figure.
+/// WCAG relative luminance of a hex colour, 0.0-1.0: each sRGB channel is
+/// linearized before weighting, per the WCAG 2.x definition. Falls back to a
+/// neutral mid-point for non-RGB colours (e.g. `Color::Reset`), which keeps
+/// `contrast()` well-defined everywhere it is called.
 fn luminance(c: Color) -> f64 {
     match c {
-        Color::Rgb(r, g, b) => (0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0,
+        Color::Rgb(r, g, b) => {
+            let f = |c: u8| {
+                let c = c as f64 / 255.0;
+                if c <= 0.03928 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+        }
         _ => 0.5,
     }
 }
@@ -740,7 +752,12 @@ color8 = "#585b70"
 
             let t = theme_from_colors(&map, THEME_NAME);
             assert_eq!(t.bg, Color::Reset);
-            assert_ne!(t.statusbar_bg, t.statusbar_fg, "{}", colors.display());
+            let statusbar_contrast = contrast(t.statusbar_bg, t.statusbar_fg);
+            assert!(
+                statusbar_contrast >= 4.5,
+                "{}: statusbar contrast {statusbar_contrast:.2} is below WCAG AA (4.5)",
+                colors.display()
+            );
             assert_ne!(t.fg, t.bg_selected, "{}", colors.display());
             assert!(t.sender_palette.iter().all(|c| *c != Color::Reset));
             checked += 1;
