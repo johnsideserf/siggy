@@ -250,8 +250,20 @@ fn default_true() -> bool {
 fn default_theme() -> String {
     // Fresh installs follow the desktop theme when one is detectable.
     // find_theme() falls back to the built-in Default when it is not, so this
-    // is safe on every platform. Existing configs already carry an explicit
-    // theme key and are unaffected -- serde defaults only fire on absence.
+    // is safe on every platform.
+    //
+    // The precise backward-compatibility guarantee (#697 review Finding 3):
+    // `theme` has carried an explicit key in every config written since
+    // #103/b0b0cda (2026-03-03), because `Config::save()` serialises the
+    // whole struct and `theme` has no `skip_serializing_if`. Any such config
+    // is unaffected here -- serde only calls this default when the key is
+    // *absent* from the file, never to override a present value. The one
+    // config that DOES see this default fire is one written before that
+    // commit landed: it has no `theme` key at all, so a user upgrading from
+    // that vintage will see their theme silently switch to "Omarchy" (which
+    // itself falls back to the built-in Default when Omarchy is not
+    // installed) on their next start, rather than keeping whatever theme
+    // they had picked before `theme` existed as a field.
     crate::theme::omarchy::THEME_NAME.to_string()
 }
 

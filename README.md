@@ -126,7 +126,7 @@ desktop_notifications = false
 inline_images = true
 mouse_enabled = true
 send_read_receipts = true
-theme = "Default"
+theme = "Omarchy"
 ```
 
 All fields are optional. `signal_cli_path` defaults to `"signal-cli"` (found via PATH), and `download_dir` defaults to `~/signal-downloads/`. On Windows, use the full path to `signal-cli.bat` if it isn't in your PATH.
@@ -176,6 +176,12 @@ On [Omarchy](https://omarchy.org), siggy follows your desktop theme out of the
 box -- a fresh install picks up whatever theme you are running, and switching
 themes with `omarchy theme set` retints siggy within about 10 seconds without
 a restart. Pick any other theme from `/theme` to pin it instead.
+
+This is why a fresh `config.toml` carries `theme = "Omarchy"`: it does not
+name a fixed color scheme, it means "follow the desktop theme." On a machine
+without Omarchy installed, the same setting just falls back to siggy's
+built-in Default theme, so the value is harmless (if not very interesting)
+there too.
 
 For instant retinting rather than within-10-seconds, optionally install the
 theme-set hook:
