@@ -46,7 +46,7 @@ mod ui;
 
 use std::collections::HashMap;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::{
@@ -398,6 +398,28 @@ fn should_auto_lock(timeout_mins: u64, idle: Duration, already_locked: bool) -> 
 /// watchdog decision can be unit-tested without driving the event loop.
 fn startup_sync_timed_out(loading: bool, elapsed: Duration) -> bool {
     loading && elapsed >= STARTUP_SYNC_TIMEOUT
+}
+
+/// Decide whether an Omarchy theme reload is warranted, and what mtime stamp
+/// should be remembered afterward.
+///
+/// `current_stamp` must already reflect the post-change state on disk --
+/// callers only invoke this once they have something worth checking (a fired
+/// signal, or a due periodic poll), and by the time a signal is observed the
+/// write it announces has already landed. The returned stamp is always
+/// `current_stamp`, whether or not `changed` is true: a `signal_fired`
+/// reload still stores the fresh value, so the very next scheduled mtime
+/// check compares against reality instead of a stale, pre-signal stamp and
+/// firing a redundant reload for the same change (#697 review finding).
+///
+/// Pure and I/O-free so the decision is unit-testable without a filesystem.
+fn theme_poll_decision(
+    signal_fired: bool,
+    previous_stamp: Option<SystemTime>,
+    current_stamp: Option<SystemTime>,
+) -> (bool, Option<SystemTime>) {
+    let changed = signal_fired || current_stamp != previous_stamp;
+    (changed, current_stamp)
 }
 
 /// Set restrictive permissions (0600) on a sensitive file (Unix only).
@@ -1841,27 +1863,31 @@ async fn run_app<B: backend::Backend>(
         }
 
         // Follow Omarchy desktop theme changes (every 10s, alongside the
-        // sweep above). A SIGUSR1 from the theme-set hook short-circuits this.
-        let mut theme_changed = false;
+        // sweep above). A SIGUSR1 from the theme-set hook short-circuits the
+        // wait, but both paths funnel through `theme_poll_decision` so the
+        // remembered mtime stamp is refreshed either way (#697 review
+        // finding: a signal-triggered reload that left the stamp stale used
+        // to cause one redundant reload at the next periodic check).
+        let mut signal_fired = false;
         #[cfg(unix)]
         if let Some(sig) = theme_signal.as_mut() {
-            let fired =
+            signal_fired =
                 std::future::poll_fn(|cx| std::task::Poll::Ready(sig.poll_recv(cx).is_ready()))
                     .await;
-            if fired {
-                theme_changed = true;
-            }
         }
-        if !theme_changed && last_theme_check.elapsed() >= Duration::from_secs(10) {
-            last_theme_check = Instant::now();
-            let stamp = omarchy_name_path
+        let mtime_check_due = last_theme_check.elapsed() >= Duration::from_secs(10);
+        let mut theme_changed = false;
+        if signal_fired || mtime_check_due {
+            if mtime_check_due {
+                last_theme_check = Instant::now();
+            }
+            let current_stamp = omarchy_name_path
                 .as_ref()
                 .and_then(|p| std::fs::metadata(p).ok())
                 .and_then(|m| m.modified().ok());
-            if stamp != omarchy_stamp {
-                omarchy_stamp = stamp;
-                theme_changed = true;
-            }
+            let (changed, stamp) = theme_poll_decision(signal_fired, omarchy_stamp, current_stamp);
+            omarchy_stamp = stamp;
+            theme_changed = changed;
         }
         if theme_changed && let Some(t) = theme::maybe_reload_omarchy(&app.theme) {
             app.theme = t;
@@ -1963,6 +1989,31 @@ mod tests {
         assert_eq!(oneshot_target("u:Alice.42"), ("u:alice.42".into(), false));
         // Anything else: group id
         assert_eq!(oneshot_target("grpid=="), ("grpid==".into(), true));
+    }
+
+    #[test]
+    fn theme_poll_signal_refreshes_stamp_so_the_next_check_does_not_reload_again() {
+        // Reproduces the #697 review finding: a SIGUSR1-triggered reload must
+        // update the remembered stamp to the file's current mtime (the write
+        // already happened on disk by the time the signal is observed), or
+        // the very next scheduled mtime check sees a "changed" file and
+        // reloads a second time for the same underlying change.
+        let previous = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let on_disk_after_signal = SystemTime::UNIX_EPOCH + Duration::from_secs(200);
+
+        let (changed, stamp_after_signal) =
+            theme_poll_decision(true, Some(previous), Some(on_disk_after_signal));
+        assert!(changed, "a fired signal must always report a change");
+
+        // The next periodic mtime check: no signal this time, and the file
+        // has not moved since the signal-triggered reload.
+        let (changed_again, _) =
+            theme_poll_decision(false, stamp_after_signal, Some(on_disk_after_signal));
+        assert!(
+            !changed_again,
+            "a stamp refreshed by the signal path must not cause a redundant reload \
+             at the next mtime check"
+        );
     }
 
     #[test]
