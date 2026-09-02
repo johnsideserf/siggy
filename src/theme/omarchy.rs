@@ -7,6 +7,7 @@
 //! [`crate::theme::Theme`].
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use super::Theme;
 use ratatui::style::Color;
@@ -17,7 +18,6 @@ use ratatui::style::Color;
 /// a colour: `mode` is a keyword, and some themes carry gradient specs like
 /// `-45deg`. A document that does not parse yields an empty map -- the caller
 /// then falls back to siggy's own default theme.
-#[allow(dead_code)]
 pub(crate) fn parse_colors(contents: &str) -> HashMap<String, String> {
     let table: toml::Table = match contents.parse() {
         Ok(t) => t,
@@ -41,7 +41,6 @@ pub(crate) fn parse_colors(contents: &str) -> HashMap<String, String> {
 /// Parse `#rrggbb` into its three channels. Returns `None` for anything else,
 /// which is how non-colour values (keywords, gradient specs) stay out of the
 /// arithmetic.
-#[allow(dead_code)]
 fn channels(hex: &str) -> Option<(f64, f64, f64)> {
     let h = hex.strip_prefix('#')?;
     if h.len() != 6 || !h.is_ascii() {
@@ -56,7 +55,6 @@ fn channels(hex: &str) -> Option<(f64, f64, f64)> {
 /// Linear per-channel blend, reproducing the awk in `omarchy-theme-color`:
 /// `int(start * (1 - amount) + end * amount + 0.5)`. Returns `start`
 /// unchanged if either operand is not a hex colour.
-#[allow(dead_code)]
 pub(crate) fn mix(start: &str, end: &str, amount: f64) -> String {
     let (Some(s), Some(e)) = (channels(start), channels(end)) else {
         return start.to_string();
@@ -73,7 +71,6 @@ pub(crate) fn mix(start: &str, end: &str, amount: f64) -> String {
 
 /// Set `key` from `from` only when `key` is absent. Mirrors
 /// `alias_theme_color` in omarchy-theme-color: canonical names always win.
-#[allow(dead_code)]
 fn alias(map: &mut HashMap<String, String>, key: &str, from: &str) {
     if map.contains_key(key) {
         return;
@@ -84,7 +81,6 @@ fn alias(map: &mut HashMap<String, String>, key: &str, from: &str) {
 }
 
 /// Set `key` to the first present candidate, if `key` is absent.
-#[allow(dead_code)]
 fn alias_any(map: &mut HashMap<String, String>, key: &str, from: &[&str]) {
     if map.contains_key(key) {
         return;
@@ -99,13 +95,11 @@ fn alias_any(map: &mut HashMap<String, String>, key: &str, from: &[&str]) {
 
 /// Set `key` to `value`, unconditionally overwriting any existing value.
 /// Used for assignments that must always apply (mirrors upstream's direct variable assignment).
-#[allow(dead_code)]
 fn assign(map: &mut HashMap<String, String>, key: &str, value: &str) {
     map.insert(key.to_string(), value.to_string());
 }
 
 /// Set `key` to `mix(base, toward, amount)` if `key` is absent and `base` resolves.
-#[allow(dead_code)]
 fn derive(map: &mut HashMap<String, String>, key: &str, base: &str, toward: &str, amount: f64) {
     if map.contains_key(key) {
         return;
@@ -116,7 +110,6 @@ fn derive(map: &mut HashMap<String, String>, key: &str, base: &str, toward: &str
 }
 
 /// Resolve `mode`, mirroring `resolve_theme_mode` in omarchy-theme-color.
-#[allow(dead_code)]
 fn resolve_mode(map: &mut HashMap<String, String>, light_mode_file: bool) {
     alias(map, "mode", "theme_type");
     if map.contains_key("mode") {
@@ -143,7 +136,6 @@ fn resolve_mode(map: &mut HashMap<String, String>, light_mode_file: bool) {
 /// ordering matters: short-name aliases first, then ANSI fallbacks, then
 /// derived shades, then the ANSI back-fill, then the short-name write-back,
 /// then mode resolution.
-#[allow(dead_code)]
 pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) {
     // 1. Legacy short-name palette (bg/fg/...). Canonical names take precedence.
     const SHORT: [(&str, &str); 8] = [
@@ -262,7 +254,6 @@ pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) 
 
 /// Look up `key`, falling back through `alts`, and parse as a colour.
 /// Anything unparseable yields `None` so the caller's default applies.
-#[allow(dead_code)]
 fn color(map: &HashMap<String, String>, key: &str, alts: &[&str]) -> Option<Color> {
     std::iter::once(key)
         .chain(alts.iter().copied())
@@ -272,19 +263,15 @@ fn color(map: &HashMap<String, String>, key: &str, alts: &[&str]) -> Option<Colo
 
 /// Relative luminance of a hex colour, 0.0-1.0. Used only to choose a
 /// readable foreground; not a colour-science-grade figure.
-#[allow(dead_code)]
 fn luminance(c: Color) -> f64 {
     match c {
-        Color::Rgb(r, g, b) => {
-            (0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0
-        }
+        Color::Rgb(r, g, b) => (0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0,
         _ => 0.5,
     }
 }
 
 /// WCAG contrast ratio between two colors. Higher values indicate greater
 /// contrast and better readability. Ratio = (L_light + 0.05) / (L_dark + 0.05).
-#[allow(dead_code)]
 fn contrast(c1: Color, c2: Color) -> f64 {
     let l1 = luminance(c1);
     let l2 = luminance(c2);
@@ -293,7 +280,6 @@ fn contrast(c1: Color, c2: Color) -> f64 {
 
 /// Pick whichever of `a` / `b` has greater contrast ratio against `bg`,
 /// ensuring readability works in both dark and light themes.
-#[allow(dead_code)]
 fn readable_on(bg: Color, a: Color, b: Color) -> Color {
     let ca = contrast(bg, a);
     let cb = contrast(bg, b);
@@ -305,7 +291,6 @@ fn readable_on(bg: Color, a: Color, b: Color) -> Color {
 /// Every field falls back to the corresponding value in
 /// [`super::default_theme`] when the palette cannot supply it, so a sparse or
 /// broken `colors.toml` degrades instead of failing.
-#[allow(dead_code)]
 pub(crate) fn theme_from_colors(map: &HashMap<String, String>, name: &str) -> Theme {
     let d = super::default_theme();
     let get = |k: &str, alts: &[&str], fallback: Color| color(map, k, alts).unwrap_or(fallback);
@@ -365,6 +350,81 @@ pub(crate) fn theme_from_colors(map: &HashMap<String, String>, name: &str) -> Th
         receipt_read: accent,
         receipt_viewed: get("magenta", &["accent"], d.receipt_viewed),
     }
+}
+
+/// The name the derived theme carries in the picker and in `config.toml`.
+pub const THEME_NAME: &str = "Omarchy";
+
+/// Locate the current-theme directory, given explicit roots. Split out from
+/// [`theme_dir`] so tests can drive it without touching the real HOME.
+///
+/// `state_root` is `$XDG_STATE_HOME` (or `~/.local/state`); `config_root` is
+/// `~/.config`, checked second for Omarchy installs predating v4, which kept
+/// the current theme under `~/.config/omarchy/current/`.
+fn theme_dir_in(state_root: Option<PathBuf>, config_root: Option<PathBuf>) -> Option<PathBuf> {
+    [state_root, config_root]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("omarchy").join("current").join("theme"))
+        .find(|dir| dir.join("colors.toml").is_file())
+}
+
+/// The current Omarchy theme directory, or `None` when Omarchy is not present.
+///
+/// Detection is by file, not by `$OMARCHY_PATH`: the env var is exported into
+/// the desktop session but is absent over ssh and in a bare tty, where the
+/// files are still perfectly readable.
+pub fn theme_dir() -> Option<PathBuf> {
+    theme_dir_in(dirs::state_dir(), dirs::config_dir())
+}
+
+/// Path to Omarchy's `theme.name`, whose mtime is the change signal (Task 5).
+// Not yet called: Task 5 wires this into main.rs's reload poll.
+#[allow(dead_code)]
+pub fn theme_name_path() -> Option<PathBuf> {
+    let dir = theme_dir()?;
+    Some(dir.parent()?.join("theme.name"))
+}
+
+/// Build the theme from a known theme directory.
+fn theme_from_dir(dir: &Path) -> Option<Theme> {
+    // A theme may ship a hand-tuned siggy.toml; it wins over our mapping.
+    // Rename it to THEME_NAME so the picker entry and the persisted config
+    // key stay stable whatever the file calls itself.
+    let override_path = dir.join("siggy.toml");
+    if let Ok(contents) = std::fs::read_to_string(&override_path) {
+        match toml::from_str::<Theme>(&contents) {
+            Ok(mut t) => {
+                t.name = THEME_NAME.to_string();
+                return Some(t);
+            }
+            Err(e) => {
+                crate::debug_log::logf(format_args!(
+                    "omarchy siggy.toml parse error {}: {e}",
+                    override_path.display()
+                ));
+            }
+        }
+    }
+
+    let contents = std::fs::read_to_string(dir.join("colors.toml")).ok()?;
+    let mut map = parse_colors(&contents);
+    resolve(&mut map, dir.join("light.mode").is_file());
+    Some(theme_from_colors(&map, THEME_NAME))
+}
+
+// Only test code drives an explicit root through this path; production
+// always goes through `current_theme()`, which reads the real environment.
+#[cfg(test)]
+fn current_theme_in(state_root: Option<PathBuf>, config_root: Option<PathBuf>) -> Option<Theme> {
+    theme_from_dir(&theme_dir_in(state_root, config_root)?)
+}
+
+/// The active Omarchy theme mapped onto a siggy [`Theme`], or `None` when
+/// Omarchy is not installed. Re-reads from disk on every call, which is what
+/// makes the reload path in `main.rs` a one-liner.
+pub fn current_theme() -> Option<Theme> {
+    theme_from_dir(&theme_dir()?)
 }
 
 #[cfg(test)]
@@ -609,6 +669,51 @@ color8 = "#585b70"
         let t = theme_from_colors(&map, "Omarchy");
         assert_eq!(t.name, "Omarchy");
         assert_eq!(t.bg, Color::Reset);
+    }
+
+    #[test]
+    fn theme_dir_prefers_the_xdg_state_path() {
+        let tmp = std::env::temp_dir().join(format!("siggy-omarchy-{}", std::process::id()));
+        let theme = tmp.join("omarchy/current/theme");
+        std::fs::create_dir_all(&theme).unwrap();
+        std::fs::write(theme.join("colors.toml"), "background = \"#000000\"\n").unwrap();
+
+        let found = theme_dir_in(Some(tmp.clone()), None);
+        assert_eq!(found.as_deref(), Some(theme.as_path()));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn theme_dir_is_none_without_a_colors_file() {
+        let tmp = std::env::temp_dir().join(format!("siggy-omarchy-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert_eq!(theme_dir_in(Some(tmp.clone()), None), None);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn a_theme_supplied_siggy_toml_overrides_the_derived_mapping() {
+        let tmp = std::env::temp_dir().join(format!("siggy-omarchy-ovr-{}", std::process::id()));
+        let theme = tmp.join("omarchy/current/theme");
+        std::fs::create_dir_all(&theme).unwrap();
+        std::fs::write(theme.join("colors.toml"), AETHER).unwrap();
+
+        let template = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/themes/custom-theme-template.toml"
+        ))
+        .unwrap();
+        std::fs::write(theme.join("siggy.toml"), template).unwrap();
+
+        let t = current_theme_in(Some(tmp.clone()), None).unwrap();
+        // The template names itself "My Theme"; we rename it so the picker and
+        // the saved config key stay stable.
+        assert_eq!(t.name, THEME_NAME);
+        // ...but its colours, not the derived ones, are what we got.
+        assert_ne!(t.accent, Color::Rgb(0xac, 0x63, 0x80));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

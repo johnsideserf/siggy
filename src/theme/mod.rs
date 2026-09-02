@@ -485,9 +485,11 @@ pub fn load_custom_themes() -> Vec<Theme> {
     themes
 }
 
-/// All available themes: built-ins followed by custom themes.
+/// All available themes: built-ins, the Omarchy theme when the desktop is
+/// present, then custom themes.
 pub fn all_themes() -> Vec<Theme> {
     let mut themes = builtin_themes();
+    themes.extend(omarchy::current_theme());
     themes.extend(load_custom_themes());
     themes
 }
@@ -722,5 +724,21 @@ bg = "#€abc"
         let theme: Theme = toml::from_str(&contents).expect("template parses as a Theme");
         assert_eq!(theme.name, "My Theme");
         assert_eq!(theme.sender_palette.len(), 8);
+    }
+
+    #[test]
+    fn omarchy_theme_appears_in_all_themes_only_when_present() {
+        let listed = all_themes().iter().any(|t| t.name == omarchy::THEME_NAME);
+        assert_eq!(listed, omarchy::theme_dir().is_some());
+    }
+
+    #[test]
+    fn find_theme_resolves_omarchy_when_present_and_falls_back_otherwise() {
+        let t = find_theme(omarchy::THEME_NAME);
+        if omarchy::theme_dir().is_some() {
+            assert_eq!(t.name, omarchy::THEME_NAME);
+        } else {
+            assert_eq!(t.name, "Default");
+        }
     }
 }
