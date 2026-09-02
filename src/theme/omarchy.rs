@@ -253,12 +253,19 @@ pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) 
 }
 
 /// Look up `key`, falling back through `alts`, and parse as a colour.
-/// Anything unparseable yields `None` so the caller's default applies.
+///
+/// Tries each candidate key *in order* and returns the first whose value
+/// actually parses as a colour -- not the first key that merely happens to
+/// be present. `colors.toml` can hold non-colour values under a key this
+/// cascade also uses for fallback (a keyword like `mode`, or a gradient spec
+/// such as `-45deg`); stopping at the first present-but-unparseable key would
+/// skip every remaining fallback and fall straight to the caller's hard
+/// default, even though a later alt might have resolved fine (#697 review
+/// Finding 5).
 fn color(map: &HashMap<String, String>, key: &str, alts: &[&str]) -> Option<Color> {
     std::iter::once(key)
         .chain(alts.iter().copied())
-        .find_map(|k| map.get(k))
-        .and_then(|v| super::string_to_color(v).ok())
+        .find_map(|k| map.get(k).and_then(|v| super::string_to_color(v).ok()))
 }
 
 /// WCAG relative luminance of a hex colour, 0.0-1.0: each sRGB channel is
@@ -296,6 +303,44 @@ fn readable_on(bg: Color, a: Color, b: Color) -> Color {
     let ca = contrast(bg, a);
     let cb = contrast(bg, b);
     if ca >= cb { a } else { b }
+}
+
+/// If `candidate` resolved equal to `background`, derive a distinguishable
+/// shade instead of returning an invisible highlight.
+///
+/// `last-horizon` and `solitude` are the two stock themes that explicitly set
+/// `lighter_background` equal to `background` (rather than leaving it absent,
+/// which would fall through the alt chain to `selection` instead). Since
+/// `chat_pane` paints `msg_selected_bg` as the ONLY cue for which message is
+/// focused, an equal value makes the highlight undetectable (#697 review
+/// Finding 2).
+///
+/// Blends 12% of the foreground into the background. That factor was chosen
+/// by measuring `contrast(msg_selected_bg, background)` across the 20 stock
+/// themes where this mapping already works without this fallback: their
+/// natural contrast ranges from ~1.05 (`lupine`, a near-white theme with a
+/// deliberately subtle highlight) to ~1.8 (`white`), clustered around 1.1-1.4.
+/// 12% lands `last-horizon` at 1.34 and `solitude` at 1.27 -- squarely inside
+/// that range, so the derived highlight reads the same way the rest of the
+/// corpus already does: a subtle row tint, not a selection block.
+///
+/// Falls back to `candidate` unchanged if either raw value is not a hex
+/// colour, matching how every other field in [`theme_from_colors`] degrades
+/// when the palette can't supply what it needs.
+fn distinguishable_from_background(
+    candidate: Color,
+    background: Color,
+    map: &HashMap<String, String>,
+) -> Color {
+    if candidate != background {
+        return candidate;
+    }
+    match (map.get("background"), map.get("foreground")) {
+        (Some(bg_hex), Some(fg_hex)) => {
+            super::string_to_color(&mix(bg_hex, fg_hex, 0.12)).unwrap_or(candidate)
+        }
+        _ => candidate,
+    }
 }
 
 /// Build a siggy [`Theme`] from a resolved Omarchy palette.
@@ -347,7 +392,11 @@ pub(crate) fn theme_from_colors(map: &HashMap<String, String>, name: &str) -> Th
         mention: accent,
         quote: muted,
         system_msg: muted,
-        msg_selected_bg: get("lighter_background", &["selection"], d.msg_selected_bg),
+        msg_selected_bg: distinguishable_from_background(
+            get("lighter_background", &["selection"], d.msg_selected_bg),
+            background,
+            map,
+        ),
 
         input_insert: accent,
         input_normal: get("yellow", &["orange"], d.input_normal),
@@ -390,7 +439,7 @@ pub fn theme_dir() -> Option<PathBuf> {
     theme_dir_in(dirs::state_dir(), dirs::config_dir())
 }
 
-/// Path to Omarchy's `theme.name`, whose mtime is the change signal (Task 5).
+/// Path to Omarchy's `theme.name`, whose mtime is the change signal (#697).
 pub fn theme_name_path() -> Option<PathBuf> {
     let dir = theme_dir()?;
     Some(dir.parent()?.join("theme.name"))
@@ -758,7 +807,38 @@ color8 = "#585b70"
                 "{}: statusbar contrast {statusbar_contrast:.2} is below WCAG AA (4.5)",
                 colors.display()
             );
-            assert_ne!(t.fg, t.bg_selected, "{}", colors.display());
+            // WCAG AA text-contrast threshold (same standard as the statusbar
+            // check above), not a bare `assert_ne!`: an inequality alone
+            // passes for colours one bit apart, which is not "readable".
+            // Measured across all 22 stock themes, the true minimum is
+            // gruvbox at 4.881 -- comfortably above 4.5 (~8.5% margin) -- and
+            // the maximum is vantablack at 17.404, so 4.5 passes every real
+            // theme with room while still failing a degenerate mapping (e.g.
+            // fg == bg_selected, contrast 1.0).
+            let selected_text_contrast = contrast(t.fg, t.bg_selected);
+            assert!(
+                selected_text_contrast >= 4.5,
+                "{}: fg-on-bg_selected contrast {selected_text_contrast:.2} is below WCAG AA (4.5)",
+                colors.display()
+            );
+            // msg_selected_bg is chat_pane's ONLY cue for the focused message
+            // (#697 review Finding 2) -- an equal-to-background value (as
+            // `last-horizon` and `solitude` explicitly set for
+            // `lighter_background`) makes it invisible. 1.02 was chosen by
+            // measuring `contrast(msg_selected_bg, background)` across the 20
+            // themes where this already worked before the Finding 2 fix: the
+            // tightest legitimate case is lupine (a near-white theme with a
+            // deliberately subtle highlight) at 1.0445, so 1.02 sits below
+            // every real theme's own value with ~2.3% margin while still
+            // failing the exact-equality bug (contrast == 1.0 precisely).
+            let background = color(&map, "background", &[]).unwrap_or(Color::Black);
+            let selected_bg_contrast = contrast(t.msg_selected_bg, background);
+            assert!(
+                selected_bg_contrast >= 1.02,
+                "{}: msg_selected_bg contrast {selected_bg_contrast:.4} against background is \
+                 not distinguishable (indistinguishable focused-message highlight)",
+                colors.display()
+            );
             assert!(t.sender_palette.iter().all(|c| *c != Color::Reset));
             checked += 1;
         }
