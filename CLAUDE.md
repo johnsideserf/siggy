@@ -116,6 +116,12 @@ This triggers `.github/workflows/release.yml` which:
 1. Runs clippy + tests
 2. Builds binaries for 4 targets: Linux x86_64, macOS x86_64, macOS arm64, Windows x86_64
 3. Creates a GitHub Release with auto-generated changelog and attached archives
+4. Publishes to crates.io via `scripts/publish-crate.sh` (needs the `CARGO_REGISTRY_TOKEN` secret)
+
+The crates.io step refuses to run if the tag and `Cargo.toml` version disagree, and
+skips silently if that version is already published, so re-running a release is safe.
+The published crate is signal-cli-backend only: the script strips the `CRATES-IO-STRIP`
+blocks because crates.io rejects git dependencies and presage is not published there.
 
 ### Version Tags
 
