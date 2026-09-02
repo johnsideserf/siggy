@@ -379,8 +379,6 @@ pub fn theme_dir() -> Option<PathBuf> {
 }
 
 /// Path to Omarchy's `theme.name`, whose mtime is the change signal (Task 5).
-// Not yet called: Task 5 wires this into main.rs's reload poll.
-#[allow(dead_code)]
 pub fn theme_name_path() -> Option<PathBuf> {
     let dir = theme_dir()?;
     Some(dir.parent()?.join("theme.name"))

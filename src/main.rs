@@ -1504,6 +1504,24 @@ async fn run_app<B: backend::Backend>(
     // (signal-cli), or populate the demo fixtures (see src/backend/).
     backend.startup(&mut app).await;
 
+    // Omarchy signals a theme change the same way it does for helix and btop
+    // (`pkill -USR1`). tokio's "full" feature already provides this; no new
+    // dependency. Non-unix targets simply never fire.
+    #[cfg(unix)]
+    let mut theme_signal = {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::user_defined1()).ok()
+    };
+
+    // Fallback for users who have not installed the theme-set hook: notice a
+    // theme change by the mtime of Omarchy's theme.name.
+    let omarchy_name_path = theme::omarchy::theme_name_path();
+    let mut omarchy_stamp = omarchy_name_path
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok());
+    let mut last_theme_check = Instant::now();
+
     let mut last_expiry_sweep = Instant::now();
     let mut last_sync_redraw = Instant::now();
     // Initialise far enough in the past that the spinner ticks on the very
@@ -1819,6 +1837,35 @@ async fn run_app<B: backend::Backend>(
             app.sweep_expired_messages();
             app.sweep_expired_mutes();
             last_expiry_sweep = Instant::now();
+            needs_redraw = true;
+        }
+
+        // Follow Omarchy desktop theme changes (every 10s, alongside the
+        // sweep above). A SIGUSR1 from the theme-set hook short-circuits this.
+        let mut theme_changed = false;
+        #[cfg(unix)]
+        if let Some(sig) = theme_signal.as_mut() {
+            let fired =
+                std::future::poll_fn(|cx| std::task::Poll::Ready(sig.poll_recv(cx).is_ready()))
+                    .await;
+            if fired {
+                theme_changed = true;
+            }
+        }
+        if !theme_changed && last_theme_check.elapsed() >= Duration::from_secs(10) {
+            last_theme_check = Instant::now();
+            let stamp = omarchy_name_path
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok());
+            if stamp != omarchy_stamp {
+                omarchy_stamp = stamp;
+                theme_changed = true;
+            }
+        }
+        if theme_changed && let Some(t) = theme::maybe_reload_omarchy(&app.theme) {
+            app.theme = t;
+            app.theme_picker.available_themes = theme::all_themes();
             needs_redraw = true;
         }
 

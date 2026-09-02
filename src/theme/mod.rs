@@ -502,6 +502,16 @@ pub fn find_theme(name: &str) -> Theme {
         .unwrap_or_else(default_theme)
 }
 
+/// Return a freshly-read Omarchy theme, but only if `current` is the Omarchy
+/// theme. A user who pinned a specific theme keeps it across desktop theme
+/// changes.
+pub fn maybe_reload_omarchy(current: &Theme) -> Option<Theme> {
+    if current.name != omarchy::THEME_NAME {
+        return None;
+    }
+    omarchy::current_theme()
+}
+
 // ---------------------------------------------------------------------------
 // Color serde helpers
 // ---------------------------------------------------------------------------
@@ -740,5 +750,12 @@ bg = "#€abc"
         } else {
             assert_eq!(t.name, "Default");
         }
+    }
+
+    #[test]
+    fn reload_only_replaces_the_theme_when_omarchy_is_active() {
+        // Pinned themes must never be clobbered by a desktop theme change.
+        let nord = find_theme("Nord");
+        assert_eq!(maybe_reload_omarchy(&nord).map(|t| t.name), None);
     }
 }
