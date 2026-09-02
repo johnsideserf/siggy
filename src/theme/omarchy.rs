@@ -35,6 +35,199 @@ pub(crate) fn parse_colors(contents: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Parse `#rrggbb` into its three channels. Returns `None` for anything else,
+/// which is how non-colour values (keywords, gradient specs) stay out of the
+/// arithmetic.
+#[allow(dead_code)]
+fn channels(hex: &str) -> Option<(f64, f64, f64)> {
+    let h = hex.strip_prefix('#')?;
+    if h.len() != 6 || !h.is_ascii() {
+        return None;
+    }
+    let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+    Some((r as f64, g as f64, b as f64))
+}
+
+/// Linear per-channel blend, reproducing the awk in `omarchy-theme-color`:
+/// `int(start * (1 - amount) + end * amount + 0.5)`. Returns `start`
+/// unchanged if either operand is not a hex colour.
+#[allow(dead_code)]
+pub(crate) fn mix(start: &str, end: &str, amount: f64) -> String {
+    let (Some(s), Some(e)) = (channels(start), channels(end)) else {
+        return start.to_string();
+    };
+    let t = amount.clamp(0.0, 1.0);
+    let blend = |a: f64, b: f64| (a * (1.0 - t) + b * t + 0.5) as u8;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        blend(s.0, e.0),
+        blend(s.1, e.1),
+        blend(s.2, e.2)
+    )
+}
+
+/// Set `key` from `from` only when `key` is absent. Mirrors
+/// `alias_theme_color` in omarchy-theme-color: canonical names always win.
+#[allow(dead_code)]
+fn alias(map: &mut HashMap<String, String>, key: &str, from: &str) {
+    if map.contains_key(key) {
+        return;
+    }
+    if let Some(v) = map.get(from).cloned() {
+        map.insert(key.to_string(), v);
+    }
+}
+
+/// Set `key` to the first present candidate, if `key` is absent.
+#[allow(dead_code)]
+fn alias_any(map: &mut HashMap<String, String>, key: &str, from: &[&str]) {
+    if map.contains_key(key) {
+        return;
+    }
+    for candidate in from {
+        if let Some(v) = map.get(*candidate).cloned() {
+            map.insert(key.to_string(), v);
+            return;
+        }
+    }
+}
+
+/// Set `key` to `mix(base, toward, amount)` if `key` is absent and `base` resolves.
+#[allow(dead_code)]
+fn derive(map: &mut HashMap<String, String>, key: &str, base: &str, toward: &str, amount: f64) {
+    if map.contains_key(key) {
+        return;
+    }
+    if let Some(b) = map.get(base).cloned() {
+        map.insert(key.to_string(), mix(&b, toward, amount));
+    }
+}
+
+/// Resolve `mode`, mirroring `resolve_theme_mode` in omarchy-theme-color.
+#[allow(dead_code)]
+fn resolve_mode(map: &mut HashMap<String, String>, light_mode_file: bool) {
+    alias(map, "mode", "theme_type");
+    if map.contains_key("mode") {
+        return;
+    }
+    let mode = if light_mode_file {
+        "light"
+    } else if let Some(sum) = map
+        .get("background")
+        .and_then(|bg| channels(bg))
+        .map(|(r, g, b)| r + g + b)
+    {
+        if sum > 382.0 { "light" } else { "dark" }
+    } else {
+        "dark"
+    };
+    map.insert("mode".to_string(), mode.to_string());
+}
+
+/// Apply Omarchy's full key-resolution cascade in place.
+///
+/// Ported from `resolve_theme_colors` in
+/// `/usr/share/omarchy/bin/omarchy-theme-color` (Omarchy 4.0.0.alpha). The
+/// ordering matters: short-name aliases first, then ANSI fallbacks, then
+/// derived shades, then the ANSI back-fill.
+#[allow(dead_code)]
+pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) {
+    // 1. Legacy short-name palette (bg/fg/...). Canonical names take precedence.
+    const SHORT: [(&str, &str); 8] = [
+        ("background", "bg"),
+        ("dark_background", "dark_bg"),
+        ("darker_background", "darker_bg"),
+        ("lighter_background", "lighter_bg"),
+        ("foreground", "fg"),
+        ("dark_foreground", "dark_fg"),
+        ("light_foreground", "light_fg"),
+        ("bright_foreground", "bright_fg"),
+    ];
+    for (canonical, short) in SHORT {
+        alias(map, canonical, short);
+    }
+
+    // 2. Themes predating the semantic palette may define only ANSI names.
+    alias(map, "background", "color0");
+    alias(map, "foreground", "color7");
+    alias(map, "color0", "background");
+    alias(map, "color7", "foreground");
+
+    // 3. ANSI -> semantic.
+    const ANSI: [(&str, &str); 12] = [
+        ("red", "color1"),
+        ("green", "color2"),
+        ("yellow", "color3"),
+        ("blue", "color4"),
+        ("magenta", "color5"),
+        ("cyan", "color6"),
+        ("bright_red", "color9"),
+        ("bright_green", "color10"),
+        ("bright_yellow", "color11"),
+        ("bright_blue", "color12"),
+        ("bright_magenta", "color13"),
+        ("bright_cyan", "color14"),
+    ];
+    for (semantic, ansi) in ANSI {
+        alias(map, semantic, ansi);
+    }
+    alias(map, "magenta", "purple");
+    alias(map, "bright_magenta", "bright_purple");
+
+    // 4. Semantic fallbacks.
+    alias_any(map, "light_foreground", &["color7", "foreground"]);
+    alias_any(map, "bright_foreground", &["color15", "foreground"]);
+    alias(map, "cursor", "bright_foreground");
+    alias_any(map, "lighter_background", &["color0", "background"]);
+    alias_any(map, "dark_foreground", &["color8", "foreground"]);
+    alias_any(map, "muted", &["color8", "dark_foreground"]);
+    alias_any(
+        map,
+        "selection",
+        &["selection_background", "color8", "color0", "background"],
+    );
+    alias(map, "selection_background", "selection");
+    alias(map, "selection_foreground", "bright_foreground");
+    alias(map, "orange", "yellow");
+    derive(map, "brown", "orange", "#000000", 0.5);
+
+    // 5. Derived shades.
+    derive(map, "dark_background", "background", "#000000", 0.25);
+    derive(map, "darker_background", "background", "#000000", 0.5);
+    for base in ["red", "yellow", "green", "cyan", "blue", "magenta"] {
+        derive(map, &format!("bright_{base}"), base, "#ffffff", 0.2);
+    }
+    alias(map, "purple", "magenta");
+    alias(map, "bright_purple", "bright_magenta");
+
+    // 6. Back-fill ANSI names for completeness.
+    const BACKFILL: [(&str, &str); 16] = [
+        ("color0", "background"),
+        ("color1", "red"),
+        ("color2", "green"),
+        ("color3", "yellow"),
+        ("color4", "blue"),
+        ("color5", "magenta"),
+        ("color6", "cyan"),
+        ("color7", "foreground"),
+        ("color8", "muted"),
+        ("color9", "bright_red"),
+        ("color10", "bright_green"),
+        ("color11", "bright_yellow"),
+        ("color12", "bright_blue"),
+        ("color13", "bright_magenta"),
+        ("color14", "bright_cyan"),
+        ("color15", "bright_foreground"),
+    ];
+    for (ansi, semantic) in BACKFILL {
+        alias(map, ansi, semantic);
+    }
+
+    resolve_mode(map, light_mode_file);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,5 +256,97 @@ background = "#000000"
         assert!(!map.contains_key("some_table"));
 
         assert!(parse_colors("this is not = = toml").is_empty());
+    }
+
+    fn resolved(src: &str) -> HashMap<String, String> {
+        let mut map = parse_colors(src);
+        resolve(&mut map, false);
+        map
+    }
+
+    #[test]
+    fn mix_blends_channels_and_rounds_half_up() {
+        // Matches the awk in omarchy-theme-color: int(a*(1-t) + b*t + 0.5)
+        assert_eq!(mix("#ffffff", "#000000", 0.5), "#808080");
+        assert_eq!(mix("#ff0000", "#ffffff", 0.2), "#ff3333");
+        assert_eq!(mix("#000000", "#000000", 0.25), "#000000");
+    }
+
+    #[test]
+    fn legacy_ansi_only_theme_gets_a_full_semantic_palette() {
+        // A pre-semantic theme defining only colorN must still resolve.
+        let map = resolved(
+            r##"
+color0 = "#1e1e2e"
+color1 = "#f38ba8"
+color2 = "#a6e3a1"
+color3 = "#f9e2af"
+color4 = "#89b4fa"
+color5 = "#cba6f7"
+color6 = "#94e2d5"
+color7 = "#cdd6f4"
+color8 = "#585b70"
+"##,
+        );
+        assert_eq!(map["background"], "#1e1e2e");
+        assert_eq!(map["foreground"], "#cdd6f4");
+        assert_eq!(map["red"], "#f38ba8");
+        assert_eq!(map["magenta"], "#cba6f7");
+        assert_eq!(map["muted"], "#585b70");
+        assert_eq!(map["dark_foreground"], "#585b70");
+        // bright_* derived by mixing 20% white when absent
+        assert_eq!(map["bright_red"], mix("#f38ba8", "#ffffff", 0.2));
+        // darker_background derived by mixing 50% black when absent
+        assert_eq!(map["darker_background"], mix("#1e1e2e", "#000000", 0.5));
+    }
+
+    #[test]
+    fn short_palette_aliases_are_accepted() {
+        let map = resolved("bg = \"#101010\"\nfg = \"#f0f0f0\"\n");
+        assert_eq!(map["background"], "#101010");
+        assert_eq!(map["foreground"], "#f0f0f0");
+    }
+
+    #[test]
+    fn purple_aliases_to_magenta() {
+        let map = resolved("purple = \"#cba6f7\"\nbackground = \"#000000\"\n");
+        assert_eq!(map["magenta"], "#cba6f7");
+    }
+
+    #[test]
+    fn mode_precedence_explicit_key_wins() {
+        let map = resolved("mode = \"light\"\nbackground = \"#000000\"\n");
+        assert_eq!(map["mode"], "light");
+    }
+
+    #[test]
+    fn mode_falls_back_to_legacy_theme_type() {
+        let map = resolved("theme_type = \"light\"\nbackground = \"#000000\"\n");
+        assert_eq!(map["mode"], "light");
+    }
+
+    #[test]
+    fn mode_falls_back_to_light_mode_file() {
+        let mut map = parse_colors("background = \"#000000\"\n");
+        resolve(&mut map, true);
+        assert_eq!(map["mode"], "light");
+    }
+
+    #[test]
+    fn mode_falls_back_to_background_luminance() {
+        // r+g+b > 382 is light, per omarchy-theme-color's resolve_theme_mode
+        let dark = resolved("background = \"#000000\"\n");
+        assert_eq!(dark["mode"], "dark");
+        let light = resolved("background = \"#ffffff\"\n");
+        assert_eq!(light["mode"], "light");
+        // Exactly at the boundary (381) stays dark.
+        let boundary = resolved("background = \"#7f7f7f\"\n");
+        assert_eq!(boundary["mode"], "dark");
+    }
+
+    #[test]
+    fn mode_defaults_to_dark_without_a_usable_background() {
+        let map = resolved("accent = \"#ac6380\"\n");
+        assert_eq!(map["mode"], "dark");
     }
 }
