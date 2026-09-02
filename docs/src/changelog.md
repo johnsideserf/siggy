@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.15.0
+
+Minor release adding Omarchy desktop theme integration
+([#697](https://github.com/johnsideserf/siggy/issues/697)).
+
+### Added
+
+- **siggy follows the Omarchy desktop theme by default.** On
+  [Omarchy](https://omarchy.org), a fresh install opens already wearing
+  the active desktop theme, and `omarchy theme set` retints a running
+  siggy without a restart - within about 10 seconds via a filesystem
+  check, or instantly if you install the optional one-line
+  `theme-set.d` hook. Pick any other theme from `/theme` to pin it
+  instead. siggy never writes into `~/.config/omarchy/`; it only reads.
+
+  The palette is derived from Omarchy's own `colors.toml`, reproducing
+  the resolution cascade of `omarchy-theme-color` (short-name aliases,
+  legacy `colorN` fallbacks, derived shades, and the light/dark mode
+  precedence chain), so sparse and third-party themes resolve exactly as
+  Omarchy resolves them. Status-bar and selected-message colours are
+  chosen by WCAG contrast ratio, and every one of Omarchy's stock themes
+  is verified to clear WCAG AA. Theme authors can override siggy's
+  derived colours by shipping a `siggy.toml` beside their `colors.toml`.
+
+  Nothing changes on non-Omarchy systems, and any existing config with an
+  explicit `theme` key keeps the theme it names.
+
 ## v1.14.3
 
 Patch release for the emoji picker swallowing motion characters

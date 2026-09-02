@@ -1,6 +1,6 @@
 [package]
 name = "siggy"
-version = "1.14.3"
+version = "1.15.0"
 edition = "2024"
 # Verified floor of the default (signal-cli-backend) dependency tree, enforced
 # by the CI msrv job. Without this, users on older toolchains get an opaque
