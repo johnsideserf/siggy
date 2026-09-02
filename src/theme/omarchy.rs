@@ -282,19 +282,22 @@ fn luminance(c: Color) -> f64 {
     }
 }
 
-/// Pick whichever of `a` / `b` contrasts more strongly against `bg`.
-///
-/// Deliberately makes no assumption about which argument is the lighter one:
-/// in a dark theme the foreground is light and the background dark, and in a
-/// light theme it is the other way round. Comparing luminance distance works
-/// in both without a mode branch.
+/// WCAG contrast ratio between two colors. Higher values indicate greater
+/// contrast and better readability. Ratio = (L_light + 0.05) / (L_dark + 0.05).
 #[allow(dead_code)]
-fn readable_on(_bg: Color, a: Color, b: Color) -> Color {
-    let la = luminance(a);
-    let lb = luminance(b);
-    let midpoint = (la + lb) / 2.0;
-    let d = |l: f64| (l - midpoint).abs();
-    if d(la) >= d(lb) { a } else { b }
+fn contrast(c1: Color, c2: Color) -> f64 {
+    let l1 = luminance(c1);
+    let l2 = luminance(c2);
+    (l1.max(l2) + 0.05) / (l1.min(l2) + 0.05)
+}
+
+/// Pick whichever of `a` / `b` has greater contrast ratio against `bg`,
+/// ensuring readability works in both dark and light themes.
+#[allow(dead_code)]
+fn readable_on(bg: Color, a: Color, b: Color) -> Color {
+    let ca = contrast(bg, a);
+    let cb = contrast(bg, b);
+    if ca >= cb { a } else { b }
 }
 
 /// Build a siggy [`Theme`] from a resolved Omarchy palette.
@@ -606,5 +609,23 @@ color8 = "#585b70"
         let t = theme_from_colors(&map, "Omarchy");
         assert_eq!(t.name, "Omarchy");
         assert_eq!(t.bg, Color::Reset);
+    }
+
+    #[test]
+    fn readable_on_selects_by_contrast_not_argument_order() {
+        // Argument order test: when the second argument has better contrast,
+        // it must be returned. This test fails if readable_on always returns
+        // the first argument.
+        let bg = Color::Rgb(10, 10, 10); // near-black background
+        let dark = Color::Rgb(30, 30, 30); // dark color (first arg)
+        let light = Color::Rgb(240, 240, 240); // light color (second arg)
+
+        // Against near-black, light text (second arg) has far better contrast
+        // than dark text (first arg). The function must return the light one.
+        let result = readable_on(bg, dark, light);
+        assert_eq!(
+            result, light,
+            "readable_on must select by contrast ratio, not argument order"
+        );
     }
 }
