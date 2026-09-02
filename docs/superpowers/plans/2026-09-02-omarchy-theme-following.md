@@ -515,7 +515,7 @@ git commit -m "feat(theme): port Omarchy's colour resolver cascade (#697)"
 Design notes, so the mapping is not mistaken for arbitrary:
 
 - **`bg` is `Color::Reset`, not `background`.** Omarchy terminals support transparency and blur; a TUI that paints an opaque background becomes a solid rectangle on an otherwise translucent desktop. Inheriting the terminal is both prettier and more correct, and the terminal has already been retinted by Omarchy.
-- **Status bar colours go through `readable_on`.** `darker_background` is the natural status-bar background in a dark theme, but in a light theme Omarchy *derives* it as 50% black, which would put dark text on a dark bar. Picking the foreground by luminance keeps it legible in both modes without a mode branch at every call site.
+- **Status bar colours go through `readable_on`.** `darker_background` is the natural status-bar background in a dark theme, but in a light theme Omarchy *derives* it as 50% black, giving a mid-grey bar. `readable_on` picks whichever of the foreground and background colours sits furthest from the bar in luminance. It must not assume the foreground is the lighter of the two — that holds in a dark theme and is exactly inverted in a light one.
 - **`accent` gets a siggy-side fallback** (`accent` → `blue` → `foreground`), because Omarchy's resolver provides none.
 
 - [ ] **Step 1: Write the failing tests**
@@ -578,10 +578,18 @@ magenta = "#e98897"
         let dark = aether_theme();
         assert_ne!(dark.statusbar_bg, dark.statusbar_fg);
 
+        // A light theme inverts which of fg/background is the lighter colour.
+        // darker_background resolves to a mid-grey here, so the legible choice
+        // is the DARK foreground -- not the white background.
         let mut map = parse_colors("background = \"#ffffff\"\nforeground = \"#1a1a1a\"\n");
         resolve(&mut map, false);
         let light = theme_from_colors(&map, "Omarchy");
         assert_ne!(light.statusbar_bg, light.statusbar_fg);
+        assert_eq!(
+            light.statusbar_fg,
+            Color::Rgb(0x1a, 0x1a, 0x1a),
+            "a light theme must not get its own background as status-bar text"
+        );
     }
 
     #[test]
@@ -633,9 +641,15 @@ fn luminance(c: Color) -> f64 {
     }
 }
 
-/// Pick whichever of `light` / `dark` contrasts better against `bg`.
-fn readable_on(bg: Color, light: Color, dark: Color) -> Color {
-    if luminance(bg) > 0.5 { dark } else { light }
+/// Pick whichever of `a` / `b` contrasts more strongly against `bg`.
+///
+/// Deliberately makes no assumption about which argument is the lighter one:
+/// in a dark theme the foreground is light and the background dark, and in a
+/// light theme it is the other way round. Comparing luminance distance works
+/// in both without a mode branch.
+fn readable_on(bg: Color, a: Color, b: Color) -> Color {
+    let d = |c: Color| (luminance(c) - luminance(bg)).abs();
+    if d(a) >= d(b) { a } else { b }
 }
 
 /// Build a siggy [`Theme`] from a resolved Omarchy palette.
@@ -974,7 +988,6 @@ We deliberately do **not** write into `~/.config/omarchy/hooks/` automatically. 
 
 **Files:**
 - Modify: `src/main.rs`
-- Modify: `README.md`
 
 **Interfaces:**
 - Consumes: `theme::omarchy::{THEME_NAME, current_theme, theme_name_path}`
