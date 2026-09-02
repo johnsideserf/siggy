@@ -406,7 +406,13 @@ fn startup_sync_timed_out(loading: bool, elapsed: Duration) -> bool {
 /// `current_stamp` must already reflect the post-change state on disk --
 /// callers only invoke this once they have something worth checking (a fired
 /// signal, or a due periodic poll), and by the time a signal is observed the
-/// write it announces has already landed. The returned stamp is always
+/// write it announces has already landed. Verified, not assumed (#697 review
+/// Finding 6): in `/usr/share/omarchy/bin/omarchy-theme-set` (Omarchy
+/// 4.0.0.alpha), the directory swap (`mv "$NEXT_THEME_PATH"
+/// "$CURRENT_THEME_PATH"`, line 293) and the `theme.name` write (`echo
+/// "$THEME_NAME" >.../theme.name`, line 296) both happen before the script
+/// fires `omarchy-hook theme-set "$THEME_NAME"` (line 339), which is what
+/// runs the installed `pkill -USR1 siggy` hook. The returned stamp is always
 /// `current_stamp`, whether or not `changed` is true: a `signal_fired`
 /// reload still stores the fresh value, so the very next scheduled mtime
 /// check compares against reality instead of a stale, pre-signal stamp and
@@ -449,6 +455,17 @@ fn set_dir_permissions(path: &std::path::Path) {
 // No-op on Windows for the same reason as `set_file_permissions` above.
 #[cfg(not(unix))]
 fn set_dir_permissions(_path: &std::path::Path) {}
+
+/// Handle type for the Omarchy theme-change signal (SIGUSR1). SIGUSR1 itself
+/// is unix-only, but this alias lets `Option<ThemeSignal>` flow unconditionally
+/// through `run_main_flow` -> `run_with_engine` -> `run_app` without `#[cfg]`
+/// on every parameter and call site along the way. On non-unix targets
+/// `Infallible` has no values, so the `Option` is always `None` and nothing
+/// signal-related is ever constructed or reachable there.
+#[cfg(unix)]
+type ThemeSignal = tokio::signal::unix::Signal;
+#[cfg(not(unix))]
+type ThemeSignal = std::convert::Infallible;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -741,6 +758,28 @@ async fn main() -> Result<()> {
         SetConsoleCtrlHandler(0, 1);
     }
 
+    // Register the SIGUSR1 handler as early as possible in the process --
+    // before raw mode, the alternate screen, the first-run setup wizard, QR
+    // device linking (which can wait on the user for minutes), the
+    // signal-cli JVM spawn, and `App::load_from_db` all run. POSIX's default
+    // disposition for SIGUSR1 is Term, so every one of those steps is a
+    // window in which an Omarchy `pkill -USR1 siggy` theme-set hook (see
+    // README.md) would kill the process outright, bypassing the terminal
+    // restore below and leaving the user's shell in raw mode inside the
+    // alternate screen (#697 review Finding 1: CRITICAL). `signal()`
+    // installs the handler synchronously, so calling it here replaces the
+    // process-wide disposition before any of those windows opens; a failure
+    // to register (any non-unix target, or a unix host that rejects it)
+    // degrades gracefully -- theme following over SIGUSR1 just never fires,
+    // exactly as before this fix.
+    #[cfg(unix)]
+    let theme_signal: Option<ThemeSignal> = {
+        use tokio::signal::unix::{SignalKind, signal};
+        signal(SignalKind::user_defined1()).ok()
+    };
+    #[cfg(not(unix))]
+    let theme_signal: Option<ThemeSignal> = None;
+
     // Set up terminal BEFORE anything else so all errors render in the TUI
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -765,6 +804,7 @@ async fn main() -> Result<()> {
         demo_mode,
         incognito,
         &resolved_config_path,
+        theme_signal,
     )
     .await;
 
@@ -793,6 +833,7 @@ async fn run_main_flow(
     demo_mode: bool,
     incognito: bool,
     config_path: &std::path::Path,
+    theme_signal: Option<ThemeSignal>,
 ) -> Result<()> {
     if demo_mode {
         let database = db::Database::open_in_memory()?;
@@ -807,6 +848,7 @@ async fn run_main_flow(
             database,
             false,
             config_path,
+            theme_signal,
         )
         .await;
     }
@@ -885,6 +927,7 @@ async fn run_main_flow(
         incognito,
         config_path,
         setup_handled_linking,
+        theme_signal,
     )
     .await;
 
@@ -907,6 +950,7 @@ async fn run_with_engine(
     incognito: bool,
     config_path: &std::path::Path,
     setup_handled_linking: bool,
+    theme_signal: Option<ThemeSignal>,
 ) -> Result<()> {
     // Spawn signal-cli backend directly (skip the old pre-flight check that spawned
     // a throwaway JVM process). If the account isn't registered, signal-cli will exit
@@ -975,6 +1019,7 @@ async fn run_with_engine(
         database,
         incognito,
         config_path,
+        theme_signal,
     )
     .await;
 
@@ -997,6 +1042,7 @@ async fn run_with_engine(
     incognito: bool,
     config_path: &std::path::Path,
     setup_handled_linking: bool,
+    theme_signal: Option<ThemeSignal>,
 ) -> Result<()> {
     // Same gate order as the signal-cli arm: anything short of Linked falls
     // back to the linking flow. Corrupt also lands here - the flow's
@@ -1026,6 +1072,7 @@ async fn run_with_engine(
         database,
         incognito,
         config_path,
+        theme_signal,
     )
     .await
 }
@@ -1471,6 +1518,9 @@ async fn run_app<B: backend::Backend>(
     db: db::Database,
     incognito: bool,
     config_path: &std::path::Path,
+    #[cfg_attr(not(unix), allow(unused_mut, unused_variables))] mut theme_signal: Option<
+        ThemeSignal,
+    >,
 ) -> Result<()> {
     let mut app = App::new(config.account.clone(), db, config_path);
     // Table-driven boolean toggles (notifications, display, messages,
@@ -1528,12 +1578,10 @@ async fn run_app<B: backend::Backend>(
 
     // Omarchy signals a theme change the same way it does for helix and btop
     // (`pkill -USR1`). tokio's "full" feature already provides this; no new
-    // dependency. Non-unix targets simply never fire.
-    #[cfg(unix)]
-    let mut theme_signal = {
-        use tokio::signal::unix::{SignalKind, signal};
-        signal(SignalKind::user_defined1()).ok()
-    };
+    // dependency. Non-unix targets simply never fire. Registration itself
+    // happens in `main()`, before raw mode / setup / linking / spawn -- see
+    // `ThemeSignal` and the comment there (#697 review Finding 1) -- so by
+    // the time we get here `theme_signal` is just the handle we were handed.
 
     // Fallback for users who have not installed the theme-set hook: notice a
     // theme change by the mtime of Omarchy's theme.name.
@@ -1868,6 +1916,7 @@ async fn run_app<B: backend::Backend>(
         // remembered mtime stamp is refreshed either way (#697 review
         // finding: a signal-triggered reload that left the stamp stale used
         // to cause one redundant reload at the next periodic check).
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut signal_fired = false;
         #[cfg(unix)]
         if let Some(sig) = theme_signal.as_mut() {
