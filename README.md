@@ -161,6 +161,36 @@ sixel_max_colors = 256
 sixel_diffusion = 0.875
 ```
 
+## Theming
+
+Open the theme picker with `/theme` (alias `/t`) or from `/settings` > Theme.
+Drop a custom `*.toml` theme file into your themes directory
+(`~/.config/siggy/themes/` on Linux/macOS, `%APPDATA%\siggy\themes\` on
+Windows) and it appears in the picker; see
+[`themes/custom-theme-template.toml`](themes/custom-theme-template.toml) for a
+fully-commented starting point.
+
+### Omarchy
+
+On [Omarchy](https://omarchy.org), siggy follows your desktop theme out of the
+box -- a fresh install picks up whatever theme you are running, and switching
+themes with `omarchy theme set` retints siggy within about 10 seconds without
+a restart. Pick any other theme from `/theme` to pin it instead.
+
+For instant retinting rather than within-10-seconds, optionally install the
+theme-set hook:
+
+```sh
+printf '#!/bin/bash\npkill -USR1 siggy\n' > ~/.config/omarchy/hooks/theme-set.d/siggy
+chmod +x ~/.config/omarchy/hooks/theme-set.d/siggy
+```
+
+This is entirely optional -- siggy never writes into `~/.config/omarchy/`
+itself, and the 10-second background poll keeps things in sync without it.
+
+Theme authors can override siggy's derived colors by shipping a `siggy.toml`
+(in siggy's own theme format) alongside `colors.toml` in the theme directory.
+
 ## Features
 
 - **Messaging** -- Send and receive 1:1 and group messages

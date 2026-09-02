@@ -714,6 +714,43 @@ color8 = "#585b70"
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// Every stock Omarchy theme must resolve to a complete, sane siggy theme.
+    /// Skipped on machines without Omarchy installed, which includes CI.
+    #[test]
+    fn every_stock_theme_resolves() {
+        let stock = Path::new("/usr/share/omarchy/themes");
+        if !stock.is_dir() {
+            eprintln!("skipping: Omarchy not installed");
+            return;
+        }
+        let mut checked = 0;
+        for entry in std::fs::read_dir(stock).unwrap().flatten() {
+            let colors = entry.path().join("colors.toml");
+            if !colors.is_file() {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&colors).unwrap();
+            let mut map = parse_colors(&contents);
+            assert!(!map.is_empty(), "{} parsed to nothing", colors.display());
+            resolve(&mut map, entry.path().join("light.mode").is_file());
+
+            for key in ["background", "foreground", "muted", "selection", "mode"] {
+                assert!(map.contains_key(key), "{} missing {key}", colors.display());
+            }
+
+            let t = theme_from_colors(&map, THEME_NAME);
+            assert_eq!(t.bg, Color::Reset);
+            assert_ne!(t.statusbar_bg, t.statusbar_fg, "{}", colors.display());
+            assert_ne!(t.fg, t.bg_selected, "{}", colors.display());
+            assert!(t.sender_palette.iter().all(|c| *c != Color::Reset));
+            checked += 1;
+        }
+        assert!(
+            checked >= 20,
+            "expected the full stock theme set, saw {checked}"
+        );
+    }
+
     #[test]
     fn readable_on_selects_by_contrast_not_argument_order() {
         // Argument order test: when the second argument has better contrast,
