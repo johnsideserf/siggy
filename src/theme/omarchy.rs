@@ -8,6 +8,9 @@
 
 use std::collections::HashMap;
 
+use super::Theme;
+use ratatui::style::Color;
+
 /// Parse a `colors.toml` into a flat map of top-level string values.
 ///
 /// Values are kept as strings rather than colours because not every value is
@@ -257,9 +260,137 @@ pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) 
     }
 }
 
+/// Look up `key`, falling back through `alts`, and parse as a colour.
+/// Anything unparseable yields `None` so the caller's default applies.
+#[allow(dead_code)]
+fn color(map: &HashMap<String, String>, key: &str, alts: &[&str]) -> Option<Color> {
+    std::iter::once(key)
+        .chain(alts.iter().copied())
+        .find_map(|k| map.get(k))
+        .and_then(|v| super::string_to_color(v).ok())
+}
+
+/// Relative luminance of a hex colour, 0.0-1.0. Used only to choose a
+/// readable foreground; not a colour-science-grade figure.
+#[allow(dead_code)]
+fn luminance(c: Color) -> f64 {
+    match c {
+        Color::Rgb(r, g, b) => {
+            (0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0
+        }
+        _ => 0.5,
+    }
+}
+
+/// Pick whichever of `a` / `b` contrasts more strongly against `bg`.
+///
+/// Deliberately makes no assumption about which argument is the lighter one:
+/// in a dark theme the foreground is light and the background dark, and in a
+/// light theme it is the other way round. Comparing luminance distance works
+/// in both without a mode branch.
+#[allow(dead_code)]
+fn readable_on(_bg: Color, a: Color, b: Color) -> Color {
+    let la = luminance(a);
+    let lb = luminance(b);
+    let midpoint = (la + lb) / 2.0;
+    let d = |l: f64| (l - midpoint).abs();
+    if d(la) >= d(lb) { a } else { b }
+}
+
+/// Build a siggy [`Theme`] from a resolved Omarchy palette.
+///
+/// Every field falls back to the corresponding value in
+/// [`super::default_theme`] when the palette cannot supply it, so a sparse or
+/// broken `colors.toml` degrades instead of failing.
+#[allow(dead_code)]
+pub(crate) fn theme_from_colors(map: &HashMap<String, String>, name: &str) -> Theme {
+    let d = super::default_theme();
+    let get = |k: &str, alts: &[&str], fallback: Color| color(map, k, alts).unwrap_or(fallback);
+
+    let fg = get("foreground", &[], d.fg);
+    let accent = get("accent", &["blue", "foreground"], d.accent);
+    let muted = get("muted", &["dark_foreground"], d.fg_muted);
+    let selection = get("selection", &["lighter_background"], d.bg_selected);
+    let statusbar_bg = get("darker_background", &["selection"], d.statusbar_bg);
+    let background = get("background", &[], Color::Black);
+
+    Theme {
+        name: name.to_string(),
+
+        // Reset, not `background`: painting an opaque bg would defeat the
+        // terminal transparency/blur that Omarchy users commonly run.
+        bg: Color::Reset,
+        bg_selected: selection,
+        fg,
+        fg_secondary: get("dark_foreground", &["muted"], d.fg_secondary),
+        fg_muted: muted,
+
+        accent,
+        accent_secondary: get("magenta", &["bright_magenta"], d.accent_secondary),
+
+        success: get("green", &[], d.success),
+        error: get("red", &[], d.error),
+        warning: get("yellow", &["orange"], d.warning),
+
+        sender_self: get("green", &[], d.sender_self),
+        sender_palette: [
+            get("cyan", &[], d.sender_palette[0]),
+            get("magenta", &[], d.sender_palette[1]),
+            get("yellow", &[], d.sender_palette[2]),
+            get("blue", &[], d.sender_palette[3]),
+            get("bright_red", &["red"], d.sender_palette[4]),
+            get("bright_green", &["green"], d.sender_palette[5]),
+            get("bright_cyan", &["cyan"], d.sender_palette[6]),
+            get("bright_magenta", &["magenta"], d.sender_palette[7]),
+        ],
+        link: get("blue", &["accent"], d.link),
+        mention: accent,
+        quote: muted,
+        system_msg: muted,
+        msg_selected_bg: get("lighter_background", &["selection"], d.msg_selected_bg),
+
+        input_insert: accent,
+        input_normal: get("yellow", &["orange"], d.input_normal),
+
+        statusbar_bg,
+        statusbar_fg: readable_on(statusbar_bg, fg, background),
+
+        receipt_failed: get("red", &[], d.receipt_failed),
+        receipt_sending: muted,
+        receipt_sent: get("dark_foreground", &["muted"], d.receipt_sent),
+        receipt_delivered: fg,
+        receipt_read: accent,
+        receipt_viewed: get("magenta", &["accent"], d.receipt_viewed),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
+
+    const AETHER: &str = r##"
+mode = "dark"
+accent = "#ac6380"
+selection = "#1a1a1a"
+muted = "#686163"
+background = "#000000"
+lighter_background = "#1a1a1a"
+foreground = "#E7E6E5"
+dark_foreground = "#adadac"
+red = "#c47d75"
+yellow = "#ffd3a1"
+green = "#f7ac7a"
+cyan = "#ffc569"
+blue = "#ac6380"
+magenta = "#e98897"
+"##;
+
+    fn aether_theme() -> Theme {
+        let mut map = parse_colors(AETHER);
+        resolve(&mut map, false);
+        theme_from_colors(&map, "Omarchy")
+    }
 
     #[test]
     fn parse_colors_reads_string_values() {
@@ -416,5 +547,64 @@ color8 = "#585b70"
         assert_eq!(map["bright_foreground"], "#ffffff");
         // cursor is unconditionally overwritten, not kept as theme-supplied value
         assert_eq!(map["cursor"], "#ffffff");
+    }
+
+    #[test]
+    fn maps_core_fields_from_the_palette() {
+        let t = aether_theme();
+        assert_eq!(t.name, "Omarchy");
+        assert_eq!(t.accent, Color::Rgb(0xac, 0x63, 0x80));
+        assert_eq!(t.fg, Color::Rgb(0xE7, 0xE6, 0xE5));
+        assert_eq!(t.fg_muted, Color::Rgb(0x68, 0x61, 0x63));
+        assert_eq!(t.bg_selected, Color::Rgb(0x1a, 0x1a, 0x1a));
+        assert_eq!(t.error, Color::Rgb(0xc4, 0x7d, 0x75));
+    }
+
+    #[test]
+    fn bg_stays_reset_to_preserve_terminal_transparency() {
+        assert_eq!(aether_theme().bg, Color::Reset);
+    }
+
+    #[test]
+    fn accent_falls_back_when_the_theme_omits_it() {
+        // Omarchy's own resolver has no fallback for `accent`, so ours must.
+        let mut map = parse_colors("background = \"#000000\"\nblue = \"#89b4fa\"\n");
+        resolve(&mut map, false);
+        let t = theme_from_colors(&map, "Omarchy");
+        assert_eq!(t.accent, Color::Rgb(0x89, 0xb4, 0xfa));
+    }
+
+    #[test]
+    fn statusbar_is_legible_in_both_modes() {
+        let dark = aether_theme();
+        assert_ne!(dark.statusbar_bg, dark.statusbar_fg);
+
+        // A light theme inverts which of fg/background is the lighter colour.
+        // darker_background resolves to a mid-grey here, so the legible choice
+        // is the DARK foreground -- not the white background.
+        let mut map = parse_colors("background = \"#ffffff\"\nforeground = \"#1a1a1a\"\n");
+        resolve(&mut map, false);
+        let light = theme_from_colors(&map, "Omarchy");
+        assert_ne!(light.statusbar_bg, light.statusbar_fg);
+        assert_eq!(
+            light.statusbar_fg,
+            Color::Rgb(0x1a, 0x1a, 0x1a),
+            "a light theme must not get its own background as status-bar text"
+        );
+    }
+
+    #[test]
+    fn sender_palette_is_filled_with_eight_distinct_hues() {
+        let t = aether_theme();
+        assert_eq!(t.sender_palette.len(), 8);
+        assert!(t.sender_palette.iter().all(|c| *c != Color::Reset));
+    }
+
+    #[test]
+    fn an_empty_palette_still_produces_a_usable_theme() {
+        let map = HashMap::new();
+        let t = theme_from_colors(&map, "Omarchy");
+        assert_eq!(t.name, "Omarchy");
+        assert_eq!(t.bg, Color::Reset);
     }
 }

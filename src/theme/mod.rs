@@ -583,7 +583,7 @@ fn color_to_string(color: &Color) -> String {
     }
 }
 
-fn string_to_color(s: &str) -> Result<Color, String> {
+pub(crate) fn string_to_color(s: &str) -> Result<Color, String> {
     let s = s.trim();
     // Hex: #rrggbb
     if let Some(hex) = s.strip_prefix('#') {
