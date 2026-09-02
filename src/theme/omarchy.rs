@@ -94,6 +94,13 @@ fn alias_any(map: &mut HashMap<String, String>, key: &str, from: &[&str]) {
     }
 }
 
+/// Set `key` to `value`, unconditionally overwriting any existing value.
+/// Used for assignments that must always apply (mirrors upstream's direct variable assignment).
+#[allow(dead_code)]
+fn assign(map: &mut HashMap<String, String>, key: &str, value: &str) {
+    map.insert(key.to_string(), value.to_string());
+}
+
 /// Set `key` to `mix(base, toward, amount)` if `key` is absent and `base` resolves.
 #[allow(dead_code)]
 fn derive(map: &mut HashMap<String, String>, key: &str, base: &str, toward: &str, amount: f64) {
@@ -131,7 +138,8 @@ fn resolve_mode(map: &mut HashMap<String, String>, light_mode_file: bool) {
 /// Ported from `resolve_theme_colors` in
 /// `/usr/share/omarchy/bin/omarchy-theme-color` (Omarchy 4.0.0.alpha). The
 /// ordering matters: short-name aliases first, then ANSI fallbacks, then
-/// derived shades, then the ANSI back-fill.
+/// derived shades, then the ANSI back-fill, then the short-name write-back,
+/// then mode resolution.
 #[allow(dead_code)]
 pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) {
     // 1. Legacy short-name palette (bg/fg/...). Canonical names take precedence.
@@ -150,10 +158,16 @@ pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) 
     }
 
     // 2. Themes predating the semantic palette may define only ANSI names.
+    // Fill background/foreground from colorN if absent; then unconditionally
+    // overwrite colorN back with the resolved background/foreground.
     alias(map, "background", "color0");
     alias(map, "foreground", "color7");
-    alias(map, "color0", "background");
-    alias(map, "color7", "foreground");
+    if let Some(bg) = map.get("background").cloned() {
+        assign(map, "color0", &bg);
+    }
+    if let Some(fg) = map.get("foreground").cloned() {
+        assign(map, "color7", &fg);
+    }
 
     // 3. ANSI -> semantic.
     const ANSI: [(&str, &str); 12] = [
@@ -179,7 +193,10 @@ pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) 
     // 4. Semantic fallbacks.
     alias_any(map, "light_foreground", &["color7", "foreground"]);
     alias_any(map, "bright_foreground", &["color15", "foreground"]);
-    alias(map, "cursor", "bright_foreground");
+    // Cursor is unconditionally set to bright_foreground (not an only-if-absent alias).
+    if let Some(bf) = map.get("bright_foreground").cloned() {
+        assign(map, "cursor", &bf);
+    }
     alias_any(map, "lighter_background", &["color0", "background"]);
     alias_any(map, "dark_foreground", &["color8", "foreground"]);
     alias_any(map, "muted", &["color8", "dark_foreground"]);
@@ -225,7 +242,19 @@ pub(crate) fn resolve(map: &mut HashMap<String, String>, light_mode_file: bool) 
         alias(map, ansi, semantic);
     }
 
+    // 7. Short-name write-back: unconditionally write canonical values back to
+    // short names so consumers still using legacy names get the resolved colours.
+    for (canonical, short) in SHORT {
+        if let Some(v) = map.get(canonical).cloned() {
+            assign(map, short, &v);
+        }
+    }
+
     resolve_mode(map, light_mode_file);
+    // After mode is resolved, set legacy theme_type key for consumers still using it.
+    if let Some(m) = map.get("mode").cloned() {
+        assign(map, "theme_type", &m);
+    }
 }
 
 #[cfg(test)]
@@ -294,10 +323,18 @@ color8 = "#585b70"
         assert_eq!(map["magenta"], "#cba6f7");
         assert_eq!(map["muted"], "#585b70");
         assert_eq!(map["dark_foreground"], "#585b70");
-        // bright_* derived by mixing 20% white when absent
-        assert_eq!(map["bright_red"], mix("#f38ba8", "#ffffff", 0.2));
-        // darker_background derived by mixing 50% black when absent
-        assert_eq!(map["darker_background"], mix("#1e1e2e", "#000000", 0.5));
+        // bright_* derived by mixing 20% white when absent.
+        // bright_red = mix("#f38ba8", "#ffffff", 0.2):
+        //   R: int(243*0.8 + 255*0.2 + 0.5) = int(245.9) = 245 = f5
+        //   G: int(139*0.8 + 255*0.2 + 0.5) = int(162.7) = 162 = a2
+        //   B: int(168*0.8 + 255*0.2 + 0.5) = int(185.9) = 185 = b9
+        assert_eq!(map["bright_red"], "#f5a2b9");
+        // darker_background derived by mixing 50% black when absent.
+        // darker_background = mix("#1e1e2e", "#000000", 0.5):
+        //   R: int(30*0.5 + 0*0.5 + 0.5) = int(15.5) = 15 = 0f
+        //   G: int(30*0.5 + 0*0.5 + 0.5) = int(15.5) = 15 = 0f
+        //   B: int(46*0.5 + 0*0.5 + 0.5) = int(23.5) = 23 = 17
+        assert_eq!(map["darker_background"], "#0f0f17");
     }
 
     #[test]
@@ -348,5 +385,36 @@ color8 = "#585b70"
     fn mode_defaults_to_dark_without_a_usable_background() {
         let map = resolved("accent = \"#ac6380\"\n");
         assert_eq!(map["mode"], "dark");
+    }
+
+    #[test]
+    fn short_names_and_theme_type_populated_after_resolve() {
+        // After resolve(), short names (bg, fg, etc.) and theme_type must be populated.
+        let map = resolved("background = \"#101010\"\nforeground = \"#f0f0f0\"\n");
+        assert_eq!(map["bg"], "#101010");
+        assert_eq!(map["fg"], "#f0f0f0");
+        assert_eq!(map["theme_type"], map["mode"]);
+    }
+
+    #[test]
+    fn conflicting_color0_forced_to_background() {
+        // If a theme defines both background and a conflicting color0,
+        // resolve() unconditionally overwrites color0 to match background.
+        // This ensures lighter_background (which chains through color0) resolves correctly.
+        let map = resolved("background = \"#101010\"\ncolor0 = \"#ffffff\"\n");
+        // color0 is forced to background, not the theme's #ffffff
+        assert_eq!(map["color0"], "#101010");
+        // lighter_background uses color0, so it must also reflect the forced value
+        assert_eq!(map["lighter_background"], "#101010");
+    }
+
+    #[test]
+    fn cursor_unconditionally_set_to_bright_foreground() {
+        // cursor must always be set to bright_foreground, even if theme defines cursor.
+        let map = resolved("foreground = \"#ffffff\"\ncursor = \"#ff0000\"\n");
+        // bright_foreground defaults to foreground when absent from theme
+        assert_eq!(map["bright_foreground"], "#ffffff");
+        // cursor is unconditionally overwritten, not kept as theme-supplied value
+        assert_eq!(map["cursor"], "#ffffff");
     }
 }
