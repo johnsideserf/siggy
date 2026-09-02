@@ -7,6 +7,8 @@
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
+pub mod omarchy;
+
 /// A complete color theme for the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Theme {
