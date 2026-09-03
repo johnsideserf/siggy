@@ -379,15 +379,21 @@ fn map_body_ranges(ranges: &[proto::BodyRange]) -> (Vec<Mention>, Vec<TextStyle>
     (mentions, styles)
 }
 
-fn map_attachment(ap: &proto::AttachmentPointer) -> Attachment {
+/// Attachment id as signal-cli renders it: the CDN key when present, else
+/// the numeric CDN id (U2 format lock; also the stem for generated
+/// filenames in the shared naming helper).
+pub(super) fn attachment_id(ap: &proto::AttachmentPointer) -> String {
     use proto::attachment_pointer::AttachmentIdentifier;
-    let id = match &ap.attachment_identifier {
+    match &ap.attachment_identifier {
         Some(AttachmentIdentifier::CdnId(id)) => id.to_string(),
         Some(AttachmentIdentifier::CdnKey(key)) => key.clone(),
         None => String::new(),
-    };
+    }
+}
+
+fn map_attachment(ap: &proto::AttachmentPointer) -> Attachment {
     Attachment {
-        id,
+        id: attachment_id(ap),
         content_type: ap
             .content_type
             .clone()
