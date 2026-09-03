@@ -429,7 +429,7 @@ fn mirc_light() -> Theme {
 // Theme discovery
 // ---------------------------------------------------------------------------
 
-fn builtin_themes() -> Vec<Theme> {
+pub(crate) fn builtin_themes() -> Vec<Theme> {
     vec![
         default_theme(),
         catppuccin_mocha(),

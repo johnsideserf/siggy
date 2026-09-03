@@ -754,7 +754,7 @@ const MINIMAL_BINDINGS: &[BindingRow] = {
 // Profile discovery (mirrors theme.rs pattern)
 // ---------------------------------------------------------------------------
 
-fn builtin_profiles() -> Vec<KeyBindings> {
+pub(crate) fn builtin_profiles() -> Vec<KeyBindings> {
     vec![default_profile(), emacs_profile(), minimal_profile()]
 }
 

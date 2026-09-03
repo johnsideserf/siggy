@@ -487,6 +487,23 @@ mod snapshot_tests {
         app.is_demo = true;
         app.date_separators = false;
         app.image.image_protocol = ImageProtocol::Halfblock;
+
+        // Hermeticity (#700): App::new() fills these three overlay lists from
+        // `dirs::config_dir()` and friends, so without pinning them a snapshot
+        // renders whatever themes, keybinding profiles and settings profiles
+        // happen to exist on the machine running the suite -- passing in CI and
+        // failing on a developer's box, or vice versa. Pin them to the built-in
+        // sets so snapshots depend only on the code.
+        //
+        // If you add another overlay list that App::new() populates from disk,
+        // pin it here too.
+        app.theme_picker.available_themes = crate::theme::builtin_themes();
+        app.keybindings_overlay.available_profiles = crate::keybindings::builtin_profiles()
+            .into_iter()
+            .map(|p| p.profile_name)
+            .collect();
+        app.settings_profiles.available = crate::settings_profile::builtin_profiles();
+
         app.populate_demo_data(fixed_date());
         app
     }
@@ -866,18 +883,67 @@ mod snapshot_tests {
         );
     }
 
+    /// #700: snapshots must depend on the code, not on the machine. `App::new()`
+    /// fills these three lists from `dirs::config_dir()` (and, for themes, from
+    /// Omarchy's state dir), so `demo_app` pins them to the built-in sets. If
+    /// that pinning is dropped, this fails on any machine that actually has
+    /// custom themes, custom keybinding profiles, or Omarchy installed.
+    #[test]
+    fn demo_app_overlay_lists_are_pinned_to_builtins() {
+        let app = demo_app();
+
+        let names = |v: &[crate::theme::Theme]| -> Vec<String> {
+            v.iter().map(|t| t.name.clone()).collect()
+        };
+        assert_eq!(
+            names(&app.theme_picker.available_themes),
+            names(&crate::theme::builtin_themes()),
+            "theme picker list leaked machine state"
+        );
+
+        let builtin_kb: Vec<String> = crate::keybindings::builtin_profiles()
+            .into_iter()
+            .map(|p| p.profile_name)
+            .collect();
+        assert_eq!(
+            app.keybindings_overlay.available_profiles, builtin_kb,
+            "keybindings list leaked machine state"
+        );
+
+        let builtin_sp: Vec<String> = crate::settings_profile::builtin_profiles()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        let actual_sp: Vec<String> = app
+            .settings_profiles
+            .available
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        assert_eq!(
+            actual_sp, builtin_sp,
+            "settings profiles list leaked machine state"
+        );
+
+        // On a machine that genuinely has extra themes on disk -- Omarchy
+        // installed, or a custom theme in ~/.config/siggy/themes -- the
+        // disk-backed list really does differ, so this arm makes the test
+        // load-bearing rather than tautological. CI has neither, so it is
+        // skipped there.
+        let on_disk = crate::theme::all_themes();
+        if on_disk.len() != crate::theme::builtin_themes().len() {
+            assert_ne!(
+                app.theme_picker.available_themes.len(),
+                on_disk.len(),
+                "demo_app is still using the disk-backed theme list"
+            );
+        }
+    }
+
     #[test]
     fn test_theme_picker_overlay() {
         let mut app = demo_app();
         app.open_overlay(OverlayKind::ThemePicker);
-        // available_themes is populated from the real theme::all_themes() at
-        // App::new() time, which includes the "Omarchy" entry whenever this
-        // machine actually has Omarchy installed (#697). Strip it so the
-        // snapshot stays deterministic whether or not the machine running the
-        // test has Omarchy -- CI never does, this dev box sometimes does.
-        app.theme_picker
-            .available_themes
-            .retain(|t| t.name != crate::theme::omarchy::THEME_NAME);
         app.theme_picker.index = 1;
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
