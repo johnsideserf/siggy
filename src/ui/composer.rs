@@ -20,6 +20,22 @@ use ratatui::{
 use super::truncate;
 use crate::app::{App, InputMode};
 
+/// Topmost buffer line to render so that `cursor_line` stays visible in a
+/// composer with `visible_lines` interior rows.
+///
+/// Guards the degenerate case behind #699. When the composer has no interior
+/// rows at all -- a terminal reporting 0x0, as a pty opened without a size
+/// does -- `visible_lines` is 0, so the old `cursor_line >= visible_lines`
+/// test was trivially true for `usize` and the scroll came out as
+/// `cursor_line + 1`. The caller's `cursor_line - scroll` then underflowed and
+/// panicked, unwinding past the raw-mode restore and stranding the terminal.
+///
+/// Saturating arithmetic keeps the result `<= cursor_line` for every input
+/// while staying identical to the old formula at every usable size.
+fn vertical_scroll_for(cursor_line: usize, visible_lines: usize) -> usize {
+    cursor_line.saturating_sub(visible_lines.saturating_sub(1))
+}
+
 pub(super) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     let border_color = match app.mode {
@@ -110,11 +126,7 @@ pub(super) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
         let lines: Vec<&str> = app.input.buffer.split('\n').collect();
         let (cursor_line, cursor_col) = app.cursor_line_col();
         let visible_lines = area.height.saturating_sub(2) as usize;
-        let vertical_scroll = if cursor_line >= visible_lines {
-            cursor_line - visible_lines + 1
-        } else {
-            0
-        };
+        let vertical_scroll = vertical_scroll_for(cursor_line, visible_lines);
 
         let mut text_lines: Vec<Line> = Vec::new();
         for (i, line_str) in lines.iter().enumerate() {
@@ -161,14 +173,83 @@ pub(super) fn draw_input(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.mode == InputMode::Insert {
         let (cursor_line, cursor_col) = app.cursor_line_col();
         let visible_lines = area.height.saturating_sub(2) as usize;
-        let vertical_scroll = if cursor_line >= visible_lines {
+        let vertical_scroll = vertical_scroll_for(cursor_line, visible_lines);
+        // A composer with no interior has nowhere to put a cursor, and
+        // placing one outside `area` would be meaningless (#699).
+        if visible_lines > 0 && text_width > 0 {
+            let line_scroll = cursor_col.saturating_sub(text_width);
+            let cursor_x = area.x + 1 + prefix_len as u16 + (cursor_col - line_scroll) as u16;
+            let cursor_y = area.y + 1 + (cursor_line - vertical_scroll) as u16;
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    /// The old formula, kept here as the reference the fix must match at every
+    /// size where it was actually correct.
+    fn legacy(cursor_line: usize, visible_lines: usize) -> usize {
+        if cursor_line >= visible_lines {
             cursor_line - visible_lines + 1
         } else {
             0
-        };
-        let line_scroll = cursor_col.saturating_sub(text_width);
-        let cursor_x = area.x + 1 + prefix_len as u16 + (cursor_col - line_scroll) as u16;
-        let cursor_y = area.y + 1 + (cursor_line - vertical_scroll) as u16;
-        frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+
+    #[rstest]
+    #[case(0, 1)]
+    #[case(5, 1)]
+    #[case(0, 3)]
+    #[case(2, 3)]
+    #[case(3, 3)]
+    #[case(9, 3)]
+    #[case(0, 40)]
+    #[case(39, 40)]
+    #[case(40, 40)]
+    #[case(200, 40)]
+    fn matches_the_legacy_formula_at_every_usable_size(
+        #[case] cursor_line: usize,
+        #[case] visible_lines: usize,
+    ) {
+        assert_eq!(
+            vertical_scroll_for(cursor_line, visible_lines),
+            legacy(cursor_line, visible_lines),
+        );
+    }
+
+    /// #699: the caller computes `cursor_line - scroll`, so the scroll must
+    /// never exceed `cursor_line` -- at any size, including none at all.
+    #[rstest]
+    #[case(0, 0)]
+    #[case(1, 0)]
+    #[case(7, 0)]
+    #[case(usize::MAX, 0)]
+    #[case(usize::MAX, 1)]
+    #[case(usize::MAX, usize::MAX)]
+    fn never_exceeds_cursor_line(#[case] cursor_line: usize, #[case] visible_lines: usize) {
+        let scroll = vertical_scroll_for(cursor_line, visible_lines);
+        assert!(
+            scroll <= cursor_line,
+            "scroll {scroll} > cursor_line {cursor_line}"
+        );
+        // The subtraction the caller performs must not underflow.
+        let _ = cursor_line - scroll;
+    }
+
+    /// Pins *why* the fix was needed: with no interior rows the legacy formula
+    /// overshot to `cursor_line + 1`, which is what made the caller underflow.
+    /// (Kept off `usize::MAX`, where the legacy `+ 1` overflows outright --
+    /// the same defect, one step further along.)
+    #[rstest]
+    #[case(0)]
+    #[case(1)]
+    #[case(7)]
+    fn legacy_overshot_when_there_were_no_visible_rows(#[case] cursor_line: usize) {
+        assert_eq!(legacy(cursor_line, 0), cursor_line + 1);
+        assert!(vertical_scroll_for(cursor_line, 0) <= cursor_line);
     }
 }

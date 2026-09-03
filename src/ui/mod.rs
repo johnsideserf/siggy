@@ -465,6 +465,7 @@ mod snapshot_tests {
     use crate::image_render::ImageProtocol;
     use chrono::NaiveDate;
     use ratatui::{Terminal, backend::TestBackend};
+    use rstest::rstest;
     use tempfile::tempdir;
 
     /// Fixed date for deterministic timestamps in snapshots.
@@ -788,6 +789,81 @@ mod snapshot_tests {
         app.refresh_sidebar_filter();
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
+    }
+
+    /// #699: the whole draw() path must survive degenerate terminal sizes.
+    /// A real emulator always reports a sane size, but a pty opened without one
+    /// (as `script` does) reports 0x0, and anything driving siggy
+    /// programmatically can too. A panic here also strands the terminal,
+    /// because it unwinds past the raw-mode restore.
+    #[rstest]
+    #[case(0, 0)]
+    #[case(1, 1)]
+    #[case(2, 2)]
+    #[case(3, 3)]
+    #[case(1, 40)]
+    #[case(40, 1)]
+    #[case(4, 4)]
+    #[case(10, 5)]
+    fn draw_survives_degenerate_terminal_sizes(#[case] width: u16, #[case] height: u16) {
+        let mut app = demo_app();
+        let _ = render_to_string(&mut app, width, height);
+    }
+
+    /// Every overlay must also survive degenerate sizes -- overlays are most
+    /// of the draw path, and each one lays out its own inner rects from the
+    /// frame area, so they can underflow independently of the base view.
+    ///
+    /// The list is explicit because `OverlayKind` has no iterator; a new
+    /// variant needs adding here to be covered.
+    #[test]
+    fn overlays_survive_degenerate_terminal_sizes() {
+        use crate::app::OverlayKind::*;
+        let kinds = [
+            SidebarFilter,
+            PollVote,
+            PinDuration,
+            ActionMenu,
+            DeleteConfirm,
+            DeleteConversationConfirm,
+            FilePicker,
+            EmojiPicker,
+            ReactionPicker,
+            MessageRequest,
+            GroupMenu,
+            About,
+            Profile,
+            Help,
+            Verify,
+            Forward,
+            Contacts,
+            Search,
+            SettingsProfiles,
+            ThemePicker,
+            Keybindings,
+            Customize,
+            Settings,
+            Autocomplete,
+            Palette,
+        ];
+        let sizes = [(0u16, 0u16), (1, 1), (2, 2), (3, 3), (5, 4), (40, 2)];
+        let mut failures = Vec::new();
+        for kind in kinds {
+            for (w, h) in sizes {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut app = demo_app();
+                    app.open_overlay(kind);
+                    let _ = render_to_string(&mut app, w, h);
+                }));
+                if result.is_err() {
+                    failures.push(format!("{kind:?} at {w}x{h}"));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "overlays panicked at degenerate sizes: {failures:#?}"
+        );
     }
 
     #[test]
