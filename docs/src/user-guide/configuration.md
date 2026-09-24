@@ -29,6 +29,9 @@ desktop_notifications = false
 notification_preview = "full"
 clipboard_clear_seconds = 30
 lock_timeout = 0
+privacy_timeout_seconds = 0
+privacy_start_scrambled = true
+privacy_use_katakana = false
 image_mode = "halfblock"
 image_max_width = 40
 preview_image_max_width = 30
@@ -64,6 +67,9 @@ settings_profile = "Default"
 | `notification_preview` | string | `"full"` | Notification content level: `full`, `sender`, or `minimal` |
 | `clipboard_clear_seconds` | int | `30` | Seconds before clipboard auto-clears after copying (0 = disabled) |
 | `lock_timeout` | int | `0` | Minutes of keyboard inactivity before the session auto-locks (0 = disabled) |
+| `privacy_timeout_seconds` | int | `0` | Seconds of keyboard inactivity before the rendered terminal frame is scrambled (0 = disabled) |
+| `privacy_start_scrambled` | bool | `true` | Start with the rendered terminal frame scrambled; any key reveals it |
+| `privacy_use_katakana` | bool | `false` | Use Matrix-style half-width katakana instead of ASCII privacy symbols; enable only with a compatible terminal font |
 | `db_path` | string | *(unset)* | Override the message database path. Absolute paths are used as-is; relative paths resolve under the data dir. Leave unset for the default `siggy.db`. Used to run multiple accounts side by side (see below) |
 | `image_mode` | string | `"halfblock"` | Image rendering mode: `native` (Kitty / iTerm2 / Sixel), `halfblock` (universal Unicode fallback), or `none` |
 | `image_max_width` | int | `40` | Maximum attachment image width in terminal cells |

@@ -859,6 +859,10 @@ pub fn handle_global_key(app: &mut App, modifiers: KeyModifiers, code: KeyCode) 
             app.lock_now();
             true
         }
+        Some(KeyAction::Privacy) => {
+            app.lock.privacy_scrambled = true;
+            true
+        }
         // Overlay-open / toggle actions, mirroring the matching slash commands
         // so they can be driven from a keybinding (#202).
         Some(KeyAction::OpenContacts) => {

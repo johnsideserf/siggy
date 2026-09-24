@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 640
 expression: output
 ---
  Chats               │╭ Alice ─────────────────────────────────────────────────────────────────────╮
@@ -29,7 +28,7 @@ expression: output
                      │││  PgUp / PgDn         Scroll messages               │                      │
                      │││  Ctrl+Left / Ctrl+RightResize sidebar              │                      │
                      │╰│  Ctrl+l              Lock the session              │──────────────────────╯
-                     │╭│  Ctrl+c              Quit                          │──────────────────────╮
-                     │││                                                    │                      │
+                     │╭│  F12                 Scramble the display          │──────────────────────╮
+                     │││  Ctrl+c              Quit                          │                      │
                      │╰╰────────────────────────────────────────────────────╯──────────────────────╯
  [INSERT] │  ● connected │ Alice │ 7 chats
