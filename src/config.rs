@@ -116,6 +116,18 @@ pub struct Config {
     #[serde(default)]
     pub lock_timeout: u64,
 
+    /// Seconds of keyboard inactivity before the terminal frame is scrambled (0 = disabled)
+    #[serde(default)]
+    pub privacy_timeout_seconds: u64,
+
+    /// Whether the terminal frame starts scrambled on launch
+    #[serde(default = "default_true")]
+    pub privacy_start_scrambled: bool,
+
+    /// Use Matrix-style half-width katakana for privacy scrambling
+    #[serde(default)]
+    pub privacy_use_katakana: bool,
+
     /// Override the message database path (for running multiple accounts side by
     /// side, each with its own config + db). Absolute paths are used as-is;
     /// relative paths resolve under the data dir. `None` keeps the default
@@ -325,6 +337,9 @@ impl Default for Config {
             notification_preview: NotificationPreview::Full,
             clipboard_clear_seconds: default_clipboard_clear_seconds(),
             lock_timeout: 0,
+            privacy_timeout_seconds: 0,
+            privacy_start_scrambled: true,
+            privacy_use_katakana: false,
             db_path: None,
             image_mode: Some(ImageMode::Halfblock),
             cell_pixel_width: 0,
@@ -581,5 +596,26 @@ mod tests {
     fn a_config_without_a_theme_key_defaults_to_omarchy() {
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg.theme, "Omarchy");
+    }
+
+    #[test]
+    fn privacy_starts_scrambled_by_default_but_can_be_disabled() {
+        assert!(Config::default().privacy_start_scrambled);
+        assert!(!Config::default().privacy_use_katakana);
+        assert!(
+            toml::from_str::<Config>("")
+                .unwrap()
+                .privacy_start_scrambled
+        );
+        assert!(
+            !toml::from_str::<Config>("privacy_start_scrambled = false")
+                .unwrap()
+                .privacy_start_scrambled
+        );
+        assert!(
+            toml::from_str::<Config>("privacy_use_katakana = true")
+                .unwrap()
+                .privacy_use_katakana
+        );
     }
 }
