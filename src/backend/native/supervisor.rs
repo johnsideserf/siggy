@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures::StreamExt;
-use presage::manager::Manager;
+use presage::manager::{Manager, Registered};
 use presage::model::identity::OnNewIdentity;
 use presage::model::messages::Received;
 use presage::store::ContentsStore;
@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, watch};
 use crate::debug_log;
 use crate::signal::types::{Contact, Group, SignalEvent};
 
+use super::attachments;
 use super::journal::{JournalEvent, JournalWriter};
 use super::receive::{self, IdentityResolver};
 use super::runtime::EngineThread;
@@ -94,7 +95,11 @@ impl ReceiveEngine {
 /// Spawn the supervisor on its engine thread. `journal_db` is siggy.db's
 /// path (None disables journaling - in-memory test DBs only; production
 /// callers always pass it, this is not a soft-degrade switch).
-pub fn spawn(store_file: PathBuf, journal_db: Option<PathBuf>) -> Result<ReceiveEngine> {
+pub fn spawn(
+    store_file: PathBuf,
+    journal_db: Option<PathBuf>,
+    download_dir: PathBuf,
+) -> Result<ReceiveEngine> {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (status_tx, status_rx) = watch::channel(EngineStatus::Connecting);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -107,7 +112,7 @@ pub fn spawn(store_file: PathBuf, journal_db: Option<PathBuf>) -> Result<Receive
             command_rx,
             event_tx.clone(),
         ));
-        run_supervisor(store_file, journal_db, event_tx, status_tx).await;
+        run_supervisor(store_file, journal_db, download_dir, event_tx, status_tx).await;
     })?;
     Ok(ReceiveEngine {
         events: event_rx,
@@ -134,6 +139,7 @@ enum SessionEnd {
 async fn run_supervisor(
     store_file: PathBuf,
     journal_db: Option<PathBuf>,
+    download_dir: PathBuf,
     event_tx: mpsc::UnboundedSender<EngineEvent>,
     status_tx: watch::Sender<EngineStatus>,
 ) {
@@ -157,6 +163,7 @@ async fn run_supervisor(
         let end = run_session(
             &store_file,
             journal.as_ref(),
+            &download_dir,
             &event_tx,
             &status_tx,
             &mut attempt,
@@ -191,6 +198,7 @@ async fn run_supervisor(
 async fn run_session(
     store_file: &std::path::Path,
     journal: Option<&JournalWriter>,
+    download_dir: &std::path::Path,
     event_tx: &mpsc::UnboundedSender<EngineEvent>,
     status_tx: &watch::Sender<EngineStatus>,
     attempt: &mut u32,
@@ -250,6 +258,12 @@ async fn run_session(
     *attempt = 0;
     let _ = status_tx.send(EngineStatus::Connected);
 
+    // Lazily loaded second Manager for attachment fetches (`get_attachment`
+    // takes &self; the receive stream owns `manager` mutably) - a
+    // receive-only session that never sees an attachment pointer never
+    // pays for it.
+    let mut attachments_manager: Option<Manager<SqliteStore, Registered>> = None;
+
     while let Some(item) = stream.next().await {
         if matches!(item, Received::Contacts) {
             // Payload landed in the store; refresh the resolver and
@@ -259,7 +273,16 @@ async fn run_session(
             emit_directory(&store_handle, &resolver, &own_aci, &own_e164, event_tx).await;
             continue;
         }
-        for event in receive::map_received(&item, &own_aci, &resolver) {
+        let mut events = receive::map_received(&item, &own_aci, &resolver);
+        attachments::hydrate(
+            &mut events,
+            &item,
+            &mut attachments_manager,
+            store_file,
+            download_dir,
+        )
+        .await;
+        for event in events {
             // KTD-2 ordering: the journal append commits before this
             // iteration ends, i.e. before the next stream pull can ack
             // anything further.
