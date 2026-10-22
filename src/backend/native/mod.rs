@@ -7,6 +7,7 @@
 //! journal ([`journal`], KTD-2), and the stream supervisor
 //! ([`supervisor`]). Sending remains an honest stub until U12.
 
+pub mod attachments;
 pub mod journal;
 pub mod linking;
 pub mod receive;
@@ -142,10 +143,11 @@ impl Backend for NativeBackend {
     }
 
     /// U12: 1:1 messages and username resolution route over the engine
-    /// thread's command channel; U13: groups now route as well. Everything else
-    /// states its unit honestly instead of silently dropping the request (KTD-10 spirit):
-    /// attachments U14, rich bodies U15, reactions/edits/deletes U15,
-    /// receipt/typing/profile tail U16+.
+    /// thread's command channel; U13: groups now route as well; U14:
+    /// attachments ride the same commands. Everything else states its unit
+    /// honestly instead of silently dropping the request (KTD-10 spirit):
+    /// rich bodies U15, reactions/edits/deletes U15, receipt/typing/profile
+    /// tail U16+.
     async fn dispatch(&mut self, app: &mut App, req: SendRequest) {
         match req {
             SendRequest::Message {
@@ -159,12 +161,6 @@ impl Backend for NativeBackend {
                 // body still carries the display text, so the message
                 // sends as plain text until rich bodies land.
             } => {
-                if attachment.is_some() {
-                    app.status_message =
-                        "native engine: attachments not implemented yet (#642 U14)".to_string();
-                    handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
-                    return;
-                }
                 if self.engine.is_none() {
                     app.status_message = "native engine: not connected".to_string();
                     handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
@@ -180,12 +176,14 @@ impl Backend for NativeBackend {
                 app.pending
                     .sends
                     .insert(token.clone(), (recipient.clone(), local_ts_ms));
+                let attachment_path = attachment.clone();
                 let command = if is_group {
                     send::SendCommand::GroupMessage {
                         token: token.clone(),
                         group_id: recipient.clone(),
                         body,
                         timestamp_ms: wire_ts as u64,
+                        attachment,
                     }
                 } else {
                     send::SendCommand::Message {
@@ -193,6 +191,7 @@ impl Backend for NativeBackend {
                         recipient: recipient.clone(),
                         body,
                         timestamp_ms: wire_ts as u64,
+                        attachment,
                     }
                 };
                 if engine.commands.send(command).is_err() {
@@ -201,6 +200,18 @@ impl Backend for NativeBackend {
                     app.pending.sends.remove(&token);
                     app.status_message = "native engine: send failed (engine stopped)".to_string();
                     handlers::signal::mark_send_failed(app, &recipient, local_ts_ms);
+                } else if let Some(path) = attachment_path {
+                    // Paste-cleanup parity with the signal-cli adapter: a
+                    // paste temp file is deleted after send confirmation;
+                    // the sentinel keeps it alive until then.
+                    if path.starts_with(&app.paste_temp_path) {
+                        let sentinel = std::time::Instant::now()
+                            + std::time::Duration::from_secs(
+                                crate::app::PASTE_CLEANUP_SENTINEL_SECS,
+                            );
+                        app.pending_paste_cleanups
+                            .insert(token.clone(), (path, sentinel));
+                    }
                 }
             }
             SendRequest::ResolveUsername { username } => match &self.engine {
@@ -260,7 +271,11 @@ impl Backend for NativeBackend {
                 "native startup: in-memory DB, journaling disabled"
             ));
         }
-        match supervisor::spawn(store::store_file(&app.account), journal_db) {
+        match supervisor::spawn(
+            store::store_file(&app.account),
+            journal_db,
+            app.media.download_dir.clone(),
+        ) {
             Ok(engine) => {
                 self.engine = Some(engine);
                 app.startup_status = "Connecting to Signal...".to_string();
@@ -642,38 +657,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_gates_attachments_honestly() {
+    async fn dispatch_routes_attachments_to_the_engine() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = file_backed_app(dir.path());
         let (_event_tx, _status_tx, mut command_rx, mut backend) = engine_backend();
 
-        // 1:1 attachment: still U14.
-        let mut with_attachment = message_req("+15550001111", "hi", 1);
+        let mut with_attachment = message_req("+15550001111", "caption", 1);
         if let SendRequest::Message { attachment, .. } = &mut with_attachment {
-            *attachment = Some(std::path::PathBuf::from("x.png"));
+            *attachment = Some(std::path::PathBuf::from("/tmp/x.png"));
         }
         backend.dispatch(&mut app, with_attachment).await;
-        assert!(app.status_message.contains("U14"));
+        let send::SendCommand::Message {
+            attachment, body, ..
+        } = command_rx
+            .try_recv()
+            .expect("attachment send reaches the engine")
+        else {
+            panic!("expected Message command");
+        };
+        assert_eq!(
+            attachment.as_deref(),
+            Some(std::path::Path::new("/tmp/x.png"))
+        );
+        assert_eq!(body, "caption");
 
-        // Group attachment: the attachment gate wins over group routing.
-        let mut group_attachment = message_req("Z3JvdXBpZA==", "hi", 2);
+        let mut group = message_req("Z3JvdXBpZA==", "hi", 2);
         if let SendRequest::Message {
             is_group,
             attachment,
             ..
-        } = &mut group_attachment
+        } = &mut group
         {
             *is_group = true;
-            *attachment = Some(std::path::PathBuf::from("x.png"));
+            *attachment = Some(std::path::PathBuf::from("/tmp/y.jpg"));
         }
-        backend.dispatch(&mut app, group_attachment).await;
-        assert!(app.status_message.contains("U14"));
-
-        assert!(
-            command_rx.try_recv().is_err(),
-            "gated requests never reach the engine"
+        backend.dispatch(&mut app, group).await;
+        let send::SendCommand::GroupMessage { attachment, .. } = command_rx
+            .try_recv()
+            .expect("group attachment reaches the engine")
+        else {
+            panic!("expected GroupMessage command");
+        };
+        assert_eq!(
+            attachment.as_deref(),
+            Some(std::path::Path::new("/tmp/y.jpg"))
         );
-        assert!(app.pending.sends.is_empty());
+        assert_eq!(app.pending.sends.len(), 2);
     }
 
     #[tokio::test]

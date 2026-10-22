@@ -21,6 +21,7 @@ use presage::libsignal_service::content::DataMessage;
 use presage::libsignal_service::prelude::{Uuid, phonenumber};
 use presage::libsignal_service::proto;
 use presage::libsignal_service::protocol::{Aci, ServiceId};
+use presage::libsignal_service::sender::AttachmentSpec;
 use presage::libsignal_service::zkgroup::GroupMasterKeyBytes;
 use presage::manager::{Manager, Registered};
 use presage::model::identity::OnNewIdentity;
@@ -38,7 +39,7 @@ use super::supervisor::EngineEvent;
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The adapter → engine send vocabulary (U12: 1:1 messages and username
-/// resolution; U13 adds group sends; attachments U14, rich bodies U15).
+/// resolution; U13 adds group sends; U14 attachments; rich bodies U15).
 pub enum SendCommand {
     Message {
         token: SendToken,
@@ -47,6 +48,9 @@ pub enum SendCommand {
         body: String,
         /// Wire timestamp, already uniqueness-adjusted by the adapter.
         timestamp_ms: u64,
+        /// File to upload and link into the DataMessage; the body doubles
+        /// as its caption (U14).
+        attachment: Option<PathBuf>,
     },
     GroupMessage {
         token: SendToken,
@@ -56,6 +60,9 @@ pub enum SendCommand {
         body: String,
         /// Wire timestamp, already uniqueness-adjusted by the adapter.
         timestamp_ms: u64,
+        /// File to upload and link into the DataMessage; the body doubles
+        /// as its caption (U14).
+        attachment: Option<PathBuf>,
     },
     ResolveUsername {
         username: String,
@@ -97,6 +104,7 @@ pub(super) async fn run_send_loop(
                 recipient,
                 body,
                 timestamp_ms,
+                attachment,
             } => {
                 // Per-send Manager clone: sends are independent tasks, and
                 // one stuck 30s timeout must not serialize the rest.
@@ -108,6 +116,7 @@ pub(super) async fn run_send_loop(
                     recipient,
                     body,
                     timestamp_ms,
+                    attachment,
                     event_tx,
                 ));
             }
@@ -116,6 +125,7 @@ pub(super) async fn run_send_loop(
                 group_id,
                 body,
                 timestamp_ms,
+                attachment,
             } => {
                 // Per-send Manager clone: same isolation as 1:1 - one
                 // stuck 30s timeout must not serialize the rest.
@@ -127,6 +137,7 @@ pub(super) async fn run_send_loop(
                     group_id,
                     body,
                     timestamp_ms,
+                    attachment,
                     event_tx,
                 ));
             }
@@ -175,12 +186,63 @@ async fn ensure_manager<'a>(
     slot.as_mut()
 }
 
-async fn load_manager(store_file: &Path) -> anyhow::Result<Manager<SqliteStore, Registered>> {
+pub(super) async fn load_manager(
+    store_file: &Path,
+) -> anyhow::Result<Manager<SqliteStore, Registered>> {
     let path = store_file
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("native store path is not valid UTF-8"))?;
     let store = SqliteStore::open(path, OnNewIdentity::Trust).await?;
     Ok(Manager::load_registered(store).await?)
+}
+
+/// Upload spec for an outgoing file. The basename passes the shared
+/// sanitizer (paste temp files and user paths are trusted less than they
+/// look; parity with the receive side costs nothing).
+pub(super) fn attachment_spec(path: &Path, len: usize) -> AttachmentSpec {
+    let content_type = crate::signal::parse::helpers::ext_to_mime(path);
+    let base = path.file_name().and_then(|n| n.to_str());
+    let file_name = Some(crate::signal::parse::helpers::sanitize_attachment_name(
+        base,
+        "outgoing",
+        &content_type,
+    ));
+    AttachmentSpec {
+        content_type,
+        length: len,
+        file_name,
+        preview: None,
+        voice_note: None,
+        borderless: None,
+        width: None,
+        height: None,
+        caption: None,
+        blur_hash: None,
+    }
+}
+
+/// Read + upload one attachment with the KTD-4 timeout; errors surface
+/// as strings so the caller fails the send honestly.
+async fn prepare_attachment(
+    manager: &Manager<SqliteStore, Registered>,
+    path: &Path,
+) -> Result<proto::AttachmentPointer, String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let spec = attachment_spec(path, bytes.len());
+    let uploads = tokio::time::timeout(
+        SEND_TIMEOUT,
+        manager.upload_attachments(vec![(spec, bytes)]),
+    )
+    .await
+    .map_err(|_| "attachment upload timed out".to_string())?
+    .map_err(|e| e.to_string())?;
+    uploads
+        .into_iter()
+        .next()
+        .ok_or_else(|| "upload returned no pointer".to_string())?
+        .map_err(|e| e.to_string())
 }
 
 /// One send, one task: resolve → send with the KTD-4 timeout contract.
@@ -190,6 +252,7 @@ async fn send_one(
     recipient_key: String,
     body: String,
     timestamp_ms: u64,
+    attachment: Option<PathBuf>,
     event_tx: mpsc::UnboundedSender<EngineEvent>,
 ) {
     let Some(recipient) = resolve_recipient(&manager, &recipient_key).await else {
@@ -200,9 +263,21 @@ async fn send_one(
         emit(&event_tx, SignalEvent::SendFailed { token });
         return;
     };
+    let mut attachments = Vec::new();
+    if let Some(path) = attachment {
+        match prepare_attachment(&manager, &path).await {
+            Ok(pointer) => attachments.push(pointer),
+            Err(e) => {
+                debug_log::logf(format_args!("native send: attachment failed: {e}"));
+                emit(&event_tx, SignalEvent::SendFailed { token });
+                return;
+            }
+        }
+    }
     let message = DataMessage {
         body: Some(body),
         timestamp: Some(timestamp_ms),
+        attachments,
         ..Default::default()
     };
 
@@ -301,10 +376,12 @@ fn group_data_message(
     timestamp_ms: u64,
     master_key: &GroupMasterKeyBytes,
     revision: u32,
+    attachments: Vec<proto::AttachmentPointer>,
 ) -> DataMessage {
     DataMessage {
         body: Some(body),
         timestamp: Some(timestamp_ms),
+        attachments,
         group_v2: Some(proto::GroupContextV2 {
             master_key: Some(master_key.to_vec()),
             revision: Some(revision),
@@ -322,6 +399,7 @@ async fn send_group_one(
     group_id: String,
     body: String,
     timestamp_ms: u64,
+    attachment: Option<PathBuf>,
     event_tx: mpsc::UnboundedSender<EngineEvent>,
 ) {
     let Some((master_key, revision)) = resolve_group(&manager, &group_id).await else {
@@ -331,7 +409,18 @@ async fn send_group_one(
         emit(&event_tx, SignalEvent::SendFailed { token });
         return;
     };
-    let message = group_data_message(body, timestamp_ms, &master_key, revision);
+    let mut attachments = Vec::new();
+    if let Some(path) = attachment {
+        match prepare_attachment(&manager, &path).await {
+            Ok(pointer) => attachments.push(pointer),
+            Err(e) => {
+                debug_log::logf(format_args!("native group send: attachment failed: {e}"));
+                emit(&event_tx, SignalEvent::SendFailed { token });
+                return;
+            }
+        }
+    }
+    let message = group_data_message(body, timestamp_ms, &master_key, revision, attachments);
     drive_send(
         manager.send_message_to_group(&master_key, message, timestamp_ms),
         token,
@@ -492,17 +581,51 @@ mod tests {
         assert_eq!(find_group([(known, 1)], "bm90LWEta25vd24taWQ="), None);
     }
 
+    #[test]
+    fn attachment_spec_derives_type_and_sanitized_name() {
+        let spec = attachment_spec(
+            std::path::Path::new("/tmp/pics/../holiday photo.JPG"),
+            12345,
+        );
+        assert_eq!(spec.content_type, "image/jpeg");
+        assert_eq!(spec.length, 12345);
+        let name = spec.file_name.expect("file name set");
+        assert!(!name.contains('/') && !name.contains(".."));
+        assert!(name.contains("holiday"));
+    }
+
     /// Final-review finding (#643): presage fans the content body out
     /// as-is, so an outgoing group message without group_v2 renders as a
     /// 1:1 on members' devices.
     #[test]
     fn group_data_message_carries_group_context() {
         let mk: GroupMasterKeyBytes = [7u8; 32];
-        let dm = group_data_message("hi".to_string(), 1_700_000_000_000, &mk, 42);
+        let dm = group_data_message("hi".to_string(), 1_700_000_000_000, &mk, 42, Vec::new());
         let ctx = dm.group_v2.expect("group_v2 must be set");
         assert_eq!(ctx.master_key.as_deref(), Some(&mk[..]));
         assert_eq!(ctx.revision, Some(42));
         assert_eq!(dm.body.as_deref(), Some("hi"));
         assert_eq!(dm.timestamp, Some(1_700_000_000_000));
+        assert!(dm.attachments.is_empty());
+    }
+
+    /// U14: an uploaded pointer must ride the group DataMessage itself -
+    /// presage fans the body out as-is, so anything not on the message is
+    /// silently dropped.
+    #[test]
+    fn group_data_message_carries_attachment_pointers() {
+        let mk: GroupMasterKeyBytes = [7u8; 32];
+        let pointer = proto::AttachmentPointer {
+            content_type: Some("image/png".to_string()),
+            ..Default::default()
+        };
+        let dm = group_data_message(
+            "caption".to_string(),
+            1_700_000_000_000,
+            &mk,
+            42,
+            vec![pointer.clone()],
+        );
+        assert_eq!(dm.attachments, vec![pointer]);
     }
 }
