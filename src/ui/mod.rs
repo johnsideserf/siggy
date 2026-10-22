@@ -133,6 +133,41 @@ pub(crate) fn truncate(s: &str, max_width: usize) -> String {
     }
 }
 
+const ASCII_PRIVACY_SYMBOLS: &str = "01{}[]<>/\\|_+=*#$@%&";
+// The film used custom horizontally mirrored katakana. Half-width Unicode
+// katakana is the closest terminal-safe equivalent and stays one cell wide.
+const KATAKANA_PRIVACY_SYMBOLS: &str =
+    "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789Z";
+
+fn privacy_symbol(index: usize, symbol: &str, use_katakana: bool) -> Option<char> {
+    if symbol.trim().is_empty() {
+        return None;
+    }
+    let seed = symbol.bytes().fold(index as u64, |seed, byte| {
+        seed.wrapping_mul(31).wrapping_add(u64::from(byte))
+    });
+    let symbols = if use_katakana {
+        KATAKANA_PRIVACY_SYMBOLS
+    } else {
+        ASCII_PRIVACY_SYMBOLS
+    };
+    let symbol_index = ((seed ^ (seed >> 16)) as usize) % symbols.chars().count();
+    Some(
+        symbols
+            .chars()
+            .nth(symbol_index)
+            .expect("privacy symbol palette is non-empty"),
+    )
+}
+
+fn scramble_frame(frame: &mut Frame, use_katakana: bool) {
+    for (index, cell) in frame.buffer_mut().content.iter_mut().enumerate() {
+        if let Some(symbol) = privacy_symbol(index, cell.symbol(), use_katakana) {
+            cell.set_char(symbol);
+        }
+    }
+}
+
 /// Build a centered separator line: `───── label ─────`
 pub(crate) fn build_separator(label: &str, width: usize, style: Style) -> Line<'static> {
     let pad_total = width.saturating_sub(label.len());
@@ -363,6 +398,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_forward(frame, app, size);
     }
 
+    if app.lock.privacy_scrambled {
+        scramble_frame(frame, app.lock.privacy_use_katakana);
+        app.image.link_regions.clear();
+        app.image.link_url_map.clear();
+        app.image.visible_images.clear();
+        app.image.kitty_pending_transmits.clear();
+        return;
+    }
+
     // Collect link regions from the rendered buffer for OSC 8 injection
     let area = frame.area();
     app.image.link_regions = collect_link_regions(frame.buffer_mut(), area, app.theme.link);
@@ -418,6 +462,21 @@ mod tests {
     #[case("", 5, "")]
     fn truncate_cases(#[case] input: &str, #[case] max: usize, #[case] expected: &str) {
         assert_eq!(truncate(input, max), expected);
+    }
+
+    #[test]
+    fn privacy_symbols_hide_text_but_preserve_blanks() {
+        assert_eq!(privacy_symbol(0, " ", false), None);
+        let scrambled = privacy_symbol(4, "hello", false).expect("text should be scrambled");
+        assert!(ASCII_PRIVACY_SYMBOLS.contains(scrambled));
+        assert_ne!(scrambled, 'h');
+        assert_eq!(privacy_symbol(4, "hello", false), Some(scrambled));
+    }
+
+    #[test]
+    fn katakana_privacy_symbols_are_opt_in() {
+        let scrambled = privacy_symbol(4, "hello", true).expect("text should be scrambled");
+        assert!(KATAKANA_PRIVACY_SYMBOLS.contains(scrambled));
     }
 
     // --- status_symbol ---
@@ -572,6 +631,18 @@ mod snapshot_tests {
         assert_eq!(app.active_conversation.as_deref(), Some("+15550001111"));
         let output = render_to_string(&mut app, 100, 30);
         insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn privacy_scrambles_the_rendered_frame() {
+        let mut app = demo_app();
+        let normal = render_to_string(&mut app, 100, 30);
+        app.lock.privacy_scrambled = true;
+        let scrambled = render_to_string(&mut app, 100, 30);
+
+        assert_ne!(scrambled, normal);
+        assert!(!scrambled.contains("Alice"));
+        assert!(!scrambled.contains("connected"));
     }
 
     // Scrolled-state render coverage (#496 / #503): every other snapshot renders

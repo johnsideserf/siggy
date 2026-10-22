@@ -30,6 +30,10 @@ pub enum LockPhase {
 #[derive(Default)]
 pub struct LockState {
     pub phase: LockPhase,
+    /// Whether the rendered frame is currently privacy-scrambled.
+    pub privacy_scrambled: bool,
+    /// Whether privacy scrambling uses half-width katakana instead of ASCII.
+    pub privacy_use_katakana: bool,
     /// In-progress passphrase being typed on the lock screen. Cleared on
     /// phase transition.
     pub input_buffer: String,
