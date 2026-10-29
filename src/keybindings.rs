@@ -20,6 +20,7 @@ pub enum KeyAction {
     // Global
     Quit,
     Lock,
+    Privacy,
     NextConversation,
     PrevConversation,
     ResizeSidebarLeft,
@@ -423,6 +424,7 @@ pub fn parse_key_combo(s: &str) -> Result<KeyCombo, String> {
 /// Actions in display order for the keybindings overlay.
 pub const GLOBAL_ACTIONS: &[KeyAction] = &[
     KeyAction::Quit,
+    KeyAction::Privacy,
     KeyAction::NextConversation,
     KeyAction::PrevConversation,
     KeyAction::ResizeSidebarLeft,
@@ -489,6 +491,7 @@ pub fn action_label(action: KeyAction) -> &'static str {
     match action {
         KeyAction::Quit => "Quit",
         KeyAction::Lock => "Lock session",
+        KeyAction::Privacy => "Scramble display",
         KeyAction::NextConversation => "Next conversation",
         KeyAction::PrevConversation => "Previous conversation",
         KeyAction::ResizeSidebarLeft => "Shrink sidebar",
@@ -585,13 +588,14 @@ pub fn default_profile() -> KeyBindings {
 const DEFAULT_BINDINGS: &[BindingRow] = {
     use BindingMode::{Global, Insert, Normal};
     use KeyAction::*;
-    use KeyCode::{BackTab, Char, Enter, Esc, PageDown, PageUp, Tab};
+    use KeyCode::{BackTab, Char, Enter, Esc, F, PageDown, PageUp, Tab};
     use KeyModifiers as M;
 
     &[
         // Global
         (Global, M::CONTROL, Char('c'), Quit),
         (Global, M::CONTROL, Char('l'), Lock),
+        (Global, M::NONE, F(12), Privacy),
         (Global, M::NONE, Tab, NextConversation),
         (Global, M::SHIFT, BackTab, PrevConversation),
         (Global, M::CONTROL, KeyCode::Left, ResizeSidebarLeft),
@@ -654,13 +658,14 @@ pub fn emacs_profile() -> KeyBindings {
 const EMACS_BINDINGS: &[BindingRow] = {
     use BindingMode::{Global, Insert, Normal};
     use KeyAction::*;
-    use KeyCode::{BackTab, Char, Enter, Esc, PageDown, PageUp, Tab};
+    use KeyCode::{BackTab, Char, Enter, Esc, F, PageDown, PageUp, Tab};
     use KeyModifiers as M;
 
     &[
         // Global
         (Global, M::CONTROL, Char('c'), Quit),
         (Global, M::CONTROL, Char('l'), Lock),
+        (Global, M::NONE, F(12), Privacy),
         (Global, M::NONE, Tab, NextConversation),
         (Global, M::SHIFT, BackTab, PrevConversation),
         (Global, M::CONTROL, KeyCode::Left, ResizeSidebarLeft),
@@ -718,6 +723,7 @@ const MINIMAL_BINDINGS: &[BindingRow] = {
         (Global, M::CONTROL, Char('q'), Quit),
         (Global, M::CONTROL, Char('c'), Quit),
         (Global, M::CONTROL, Char('l'), Lock),
+        (Global, M::NONE, F(12), Privacy),
         (Global, M::CONTROL, Char('p'), CommandPalette),
         (Global, M::NONE, Tab, NextConversation),
         (Global, M::SHIFT, BackTab, PrevConversation),
@@ -1141,6 +1147,7 @@ mod tests {
         let kb = default_profile();
         assert_eq!(kb.display_key(KeyAction::Quit), "Ctrl+c");
         assert_eq!(kb.display_key(KeyAction::ScrollDown), "Ctrl+e");
+        assert_eq!(kb.display_key(KeyAction::Privacy), "F12");
     }
 
     #[test]

@@ -58,6 +58,7 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     );
     let quit_key = dk(KeyAction::Quit);
     let lock_key = dk(KeyAction::Lock);
+    let privacy_key = dk(KeyAction::Privacy);
     let palette_key = dk(KeyAction::CommandPalette);
     let mut shortcuts: Vec<(String, &str)> = vec![
         (nav_keys, "Next / prev conversation"),
@@ -66,6 +67,7 @@ pub(in crate::ui) fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         (scroll_keys, "Scroll messages"),
         (resize_keys, "Resize sidebar"),
         (lock_key, "Lock the session"),
+        (privacy_key, "Scramble the display"),
         (quit_key, "Quit"),
     ];
     // Unbound in some profiles (e.g. Emacs, where Ctrl+P is line-up);
