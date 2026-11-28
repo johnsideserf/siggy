@@ -93,7 +93,7 @@ outbound request). They have a `method` field but no `id`:
 | `sendSyncRequest` | Request a sync from the primary device |
 | `sendReaction` | Send an emoji reaction to a message |
 | `remoteDelete` | Delete a message for all recipients |
-| `sendTypingIndicator` | Send typing started/stopped indicator |
+| `sendTyping` | Send typing started/stopped indicator |
 | `sendReceipt` | Send a read receipt for one or more messages |
 | `updateGroup` | Create/rename group, add/remove members |
 | `quitGroup` | Leave a group |

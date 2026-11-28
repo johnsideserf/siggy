@@ -181,7 +181,7 @@ pub fn parse_rpc_result(
         }
         "sendReaction"
         | "remoteDelete"
-        | "sendTypingIndicator"
+        | "sendTyping"
         | "sendReceipt"
         | "updateContact"
         | "updateGroup"
