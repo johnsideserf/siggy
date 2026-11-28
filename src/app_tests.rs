@@ -6983,3 +6983,42 @@ fn contact_sync_without_prior_uuid_conversation_rekeys_nothing(mut app: App) {
         "re-key never conjures conversations from nothing"
     );
 }
+
+// --- #748: demo conversations must exist in the DB ---
+
+#[rstest]
+fn demo_conversations_are_persisted_to_db(mut app: App) {
+    app.is_demo = true;
+    app.populate_demo_data(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+
+    let in_db: std::collections::HashSet<String> = app
+        .db
+        .load_conversations(0)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    for id in &app.store.conversation_order {
+        assert!(in_db.contains(id), "demo conversation {id} missing from DB");
+    }
+}
+
+#[rstest]
+fn demo_send_does_not_raise_db_error(mut app: App) {
+    app.is_demo = true;
+    app.populate_demo_data(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap());
+    let conv_id = app.active_conversation.clone().expect("demo opens a chat");
+
+    app.input.buffer = "hello".to_string();
+    app.input.cursor = app.input.buffer.len();
+    let req = app.handle_input();
+
+    assert!(matches!(req, Some(SendRequest::Message { .. })));
+    assert!(
+        !app.status_message.contains("DB error"),
+        "unexpected status: {}",
+        app.status_message
+    );
+    let last = app.store.conversations[&conv_id].messages.last().unwrap();
+    assert_eq!(last.body, "hello");
+}
