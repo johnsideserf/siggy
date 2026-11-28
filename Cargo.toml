@@ -66,7 +66,6 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 open = "5"
 notify-rust = "4"
 argon2 = "0.6"
-rand_core = { version = "0.6", features = ["getrandom"] }
 
 emojis = "0.9"
 icy_sixel = "0.7"

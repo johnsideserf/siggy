@@ -4330,7 +4330,6 @@ dependencies = [
  "presage",
  "presage-store-sqlite",
  "qrcode",
- "rand_core 0.6.4",
  "ratatui",
  "rstest",
  "rusqlite",
