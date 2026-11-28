@@ -7022,3 +7022,35 @@ fn demo_send_does_not_raise_db_error(mut app: App) {
     let last = app.store.conversations[&conv_id].messages.last().unwrap();
     assert_eq!(last.body, "hello");
 }
+
+// --- #750: paste temp dir must not leak ---
+
+#[rstest]
+fn app_new_does_not_create_paste_temp_dir(app: App) {
+    assert!(
+        !app.paste_temp_path.exists(),
+        "App::new must not create {} eagerly",
+        app.paste_temp_path.display()
+    );
+}
+
+#[rstest]
+fn dropping_app_removes_paste_temp_dir_and_files(mut app: App) {
+    let img_data = arboard::ImageData {
+        width: 1,
+        height: 1,
+        bytes: std::borrow::Cow::Owned(vec![255, 0, 0, 255]),
+    };
+    app.active_conversation = Some("test-conv".to_string());
+    app.handle_clipboard_image(img_data);
+    let file = app
+        .pending_attachment
+        .clone()
+        .expect("paste attaches a file");
+    let dir = app.paste_temp_path.to_path_buf();
+    assert!(file.exists() && file.starts_with(&dir));
+
+    drop(app);
+
+    assert!(!dir.exists(), "{} should be removed on drop", dir.display());
+}
