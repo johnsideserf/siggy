@@ -427,7 +427,10 @@ impl SignalClient {
         if stop {
             params["stop"] = serde_json::json!(true);
         }
-        self.send_rpc("sendTypingIndicator", params).await?;
+        // signal-cli's JSON-RPC method is `sendTyping` (the CLI subcommand name);
+        // `sendTypingIndicator` does not exist and surfaced as a spurious
+        // "signal-cli looks outdated" hint on every keystroke burst (#732).
+        self.send_rpc("sendTyping", params).await?;
         Ok(())
     }
 
@@ -1286,6 +1289,57 @@ mod wire_tests {
                 "account": "+15550000000",
                 "groupId": ["Z0VlVnFLbE..."],
             })
+        );
+    }
+
+    /// #732 regression guard: every method name passed to `send_rpc` must be a
+    /// real signal-cli JSON-RPC method. A misspelled method fails at runtime
+    /// with "Method not implemented", which siggy surfaces as a misleading
+    /// "signal-cli looks outdated" hint. The allowlist is the set of
+    /// `getName()` values of signal-cli's commands (checked against v0.14.10).
+    #[test]
+    fn send_rpc_methods_exist_in_signal_cli() {
+        const SIGNAL_CLI_METHODS: &[&str] = &[
+            "block",
+            "getUserStatus",
+            "joinGroup",
+            "listContacts",
+            "listGroups",
+            "listIdentities",
+            "quitGroup",
+            "remoteDelete",
+            "send",
+            "sendMessageRequestResponse",
+            "sendPinMessage",
+            "sendPollCreate",
+            "sendPollTerminate",
+            "sendPollVote",
+            "sendReaction",
+            "sendReceipt",
+            "sendSyncRequest",
+            "sendTyping",
+            "sendUnpinMessage",
+            "trust",
+            "unblock",
+            "updateContact",
+            "updateGroup",
+            "updateProfile",
+            "version",
+        ];
+        let src = include_str!("client.rs");
+        let needle = concat!("send_rpc", "(\"");
+        let mut seen = 0;
+        for chunk in src.split(needle).skip(1) {
+            let method = chunk.split('"').next().unwrap_or_default();
+            assert!(
+                SIGNAL_CLI_METHODS.contains(&method),
+                "send_rpc calls `{method}`, which is not a signal-cli JSON-RPC method"
+            );
+            seen += 1;
+        }
+        assert!(
+            seen > 10,
+            "expected to find the send_rpc call sites, found {seen}"
         );
     }
 }
