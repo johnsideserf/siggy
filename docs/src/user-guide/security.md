@@ -136,6 +136,23 @@ While locked:
 - Terminal bell and OS desktop notifications are suppressed
 - Window title is clamped to bare `siggy` so the unread count does not leak
 
+### Display privacy mode
+
+Set `privacy_timeout_seconds = N` to replace the rendered terminal frame with
+stable Matrix-like symbols after N seconds without a keypress. It starts
+scrambled by default; set `privacy_start_scrambled = false` to show the first
+frame normally. Press any key to reveal it again, or press `F12` to scramble it
+immediately. This changes only the display;
+message text remains intact in memory and SQLite, so use `--incognito` when
+local persistence is also a concern.
+
+The scramble uses ASCII symbols by default. Set `privacy_use_katakana = true`
+to use half-width Japanese katakana, digits, and `Z`, matching the classic
+Matrix-rain character palette. The film's glyphs were custom mirrored
+letterforms, so the terminal version cannot reproduce that mirroring without a
+custom font. Terminals do not reliably report font glyph coverage, so Katakana
+is opt-in rather than an automatic default.
+
 **Threat model.** Session lock is a deterrent against casual on-screen
 snooping, not a defence against an attacker with shell access. Anyone who can
 read your home directory can also delete `lock_hash` and bypass the prompt,

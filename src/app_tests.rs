@@ -6460,6 +6460,14 @@ fn bound_key_dispatches_command_action(mut app: App) {
 }
 
 #[rstest]
+fn privacy_key_scrambles_display(mut app: App) {
+    assert!(!app.lock.privacy_scrambled);
+    let consumed = app.handle_global_key(KeyModifiers::NONE, KeyCode::F(12));
+    assert!(consumed);
+    assert!(app.lock.privacy_scrambled);
+}
+
+#[rstest]
 fn toggle_sidebar_action_flips_visibility(mut app: App) {
     use crate::keybindings::{BindingMode, KeyAction, KeyCombo};
     let combo = KeyCombo {

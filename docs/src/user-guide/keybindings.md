@@ -31,6 +31,7 @@ of your active profile:
 ```toml
 [global]
 quit = "ctrl+q"
+privacy = "f12"
 
 [normal]
 scroll_up = "ctrl+j"
@@ -97,6 +98,7 @@ The tables below show the Default profile bindings.
 |---|---|
 | `Ctrl+C` | Quit |
 | `Ctrl+P` | Command palette (fuzzy finder over conversations and commands) |
+| `F12` | Scramble the display immediately |
 | `Tab` / `Shift+Tab` | Next / previous conversation |
 | `PgUp` / `PgDn` | Scroll messages (5 lines) |
 | `Ctrl+Left` / `Ctrl+Right` | Resize sidebar |

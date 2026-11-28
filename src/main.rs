@@ -393,6 +393,12 @@ fn should_auto_lock(timeout_mins: u64, idle: Duration, already_locked: bool) -> 
     timeout_mins > 0 && !already_locked && idle >= Duration::from_secs(timeout_mins * 60)
 }
 
+/// Whether the rendered frame should be privacy-scrambled after keyboard
+/// inactivity. The caller clears `privacy_scrambled` on the next keypress.
+fn should_scramble_privacy(timeout_secs: u64, idle: Duration, already_scrambled: bool) -> bool {
+    timeout_secs > 0 && !already_scrambled && idle >= Duration::from_secs(timeout_secs)
+}
+
 /// Whether the startup contact sync has run past its grace period without
 /// completing (`loading` still true). Pure, like `should_auto_lock`, so the
 /// watchdog decision can be unit-tested without driving the event loop.
@@ -1530,6 +1536,8 @@ async fn run_app<B: backend::Backend>(
     // Non-toggle scalar settings, copied directly.
     app.notifications.notification_preview = config.notification_preview;
     app.notifications.clipboard_clear_seconds = config.clipboard_clear_seconds;
+    app.lock.privacy_scrambled = config.privacy_start_scrambled;
+    app.lock.privacy_use_katakana = config.privacy_use_katakana;
     app.image.image_mode = config.image_mode.unwrap_or_default();
     app.image.image_max_width = config.image_max_width.clamp(1, 240);
     app.image.preview_image_max_width = config.preview_image_max_width.clamp(1, 240);
@@ -1610,6 +1618,7 @@ async fn run_app<B: backend::Backend>(
     let mut next_reconnect_at: Option<Instant> = None;
     // Auto-lock idle tracking (#438): reset on every keypress (not mouse).
     let mut last_activity = Instant::now();
+    let mut last_privacy_scrambled = false;
     // Startup-sync watchdog: when the loop begins, `app.loading` is still true
     // until the contact list arrives. If it never does, the timeout below clears
     // the spinner so the app does not appear hung (see STARTUP_SYNC_TIMEOUT).
@@ -1642,6 +1651,17 @@ async fn run_app<B: backend::Backend>(
             let native = app.image.image_mode == crate::domain::ImageMode::Native;
             let sixel_mode =
                 native && app.image.image_protocol == image_render::ImageProtocol::Sixel;
+            let privacy_scrambled = app.lock.privacy_scrambled;
+
+            if privacy_scrambled != last_privacy_scrambled {
+                if sixel_mode {
+                    erase_sixel_rects(terminal.backend_mut(), &app.image.prev_visible_images)?;
+                }
+                terminal.clear()?;
+                app.image.prev_visible_images.clear();
+                app.clear_kitty_placements();
+                last_privacy_scrambled = privacy_scrambled;
+            }
 
             // Always start sync update for atomic rendering (prevents cursor flicker).
             queue!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
@@ -1676,16 +1696,19 @@ async fn run_app<B: backend::Backend>(
             // Post-draw work that needs cursor hidden: OSC8 links use MoveTo,
             // and non-Sixel native images write escape sequences. Sixel emit
             // happens outside sync and handles its own cursor.
-            let has_post_draw = !app.image.link_regions.is_empty() || (native && !sixel_mode);
+            let has_post_draw = !privacy_scrambled
+                && (!app.image.link_regions.is_empty() || (native && !sixel_mode));
             if has_post_draw && app.mode == InputMode::Insert {
                 queue!(terminal.backend_mut(), Hide)?;
             }
-            emit_osc8_links(
-                terminal.backend_mut(),
-                &app.image.link_regions,
-                app.theme.link,
-            )?;
-            if native && !sixel_mode {
+            if !privacy_scrambled {
+                emit_osc8_links(
+                    terminal.backend_mut(),
+                    &app.image.link_regions,
+                    app.theme.link,
+                )?;
+            }
+            if native && !sixel_mode && !privacy_scrambled {
                 emit_native_images(terminal.backend_mut(), &mut app)?;
             }
             if has_post_draw && app.mode == InputMode::Insert {
@@ -1697,7 +1720,7 @@ async fn run_app<B: backend::Backend>(
             // sync, the text from ratatui's diff has already been processed,
             // and our Sixel overlays cleanly on top. SavePosition/RestorePosition
             // in emit keeps cursor at the input bar (no Hide/Show needed).
-            if sixel_mode {
+            if sixel_mode && !privacy_scrambled {
                 use std::io::Write;
                 emit_native_images(terminal.backend_mut(), &mut app)?;
                 terminal.backend_mut().flush()?;
@@ -1783,6 +1806,7 @@ async fn run_app<B: backend::Backend>(
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     needs_redraw = true;
                     last_activity = Instant::now();
+                    app.lock.privacy_scrambled = false;
                     if app.keybindings_overlay.capturing {
                         app.handle_keybinding_capture(key.modifiers, key.code);
                     } else if !app.handle_global_key(key.modifiers, key.code) {
@@ -1832,6 +1856,16 @@ async fn run_app<B: backend::Backend>(
             app.lock.is_locked(),
         ) {
             app.lock_now();
+            needs_redraw = true;
+        }
+
+        if should_scramble_privacy(
+            config.privacy_timeout_seconds,
+            last_activity.elapsed(),
+            app.lock.privacy_scrambled,
+        ) && !app.lock.is_locked()
+        {
+            app.lock.privacy_scrambled = true;
             needs_redraw = true;
         }
 
@@ -2081,6 +2115,14 @@ mod tests {
         ));
         // Already locked -> no-op (don't re-lock).
         assert!(!should_auto_lock(1, 10 * min, true));
+    }
+
+    #[test]
+    fn should_scramble_privacy_respects_timeout_and_state() {
+        assert!(!should_scramble_privacy(0, Duration::from_secs(999), false));
+        assert!(!should_scramble_privacy(5, Duration::from_secs(4), false));
+        assert!(should_scramble_privacy(5, Duration::from_secs(5), false));
+        assert!(!should_scramble_privacy(5, Duration::from_secs(5), true));
     }
 
     #[test]
