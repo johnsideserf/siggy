@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.15.1
+
+Patch release for a false "signal-cli looks outdated" hint
+([#732](https://github.com/johnsideserf/siggy/issues/732)), plus a
+composer fix for tiny terminals and dependency updates.
+
+### Fixed
+
+- **No more "update signal-cli" hint on an up-to-date signal-cli.** siggy
+  sent typing indicators with a JSON-RPC method name signal-cli doesn't
+  have (`sendTypingIndicator` instead of `sendTyping`), so every typing
+  burst failed with "Method not implemented" and siggy wrongly blamed an
+  outdated signal-cli. Typing indicators now actually reach your contacts,
+  and a new test checks every RPC method siggy sends against signal-cli's
+  command list. Reported by [@Stez69](https://github.com/Stez69) and
+  [@neuthral](https://github.com/neuthral).
+- **The composer no longer underflows on terminals two rows tall or
+  smaller** (including the 0x0 size a pty opened without a window size
+  reports), which could panic and leave the terminal in the alternate
+  screen ([#699](https://github.com/johnsideserf/siggy/issues/699)).
+
+### Changed
+
+- `argon2` updated to 0.6. Session-lock passphrases set with earlier
+  versions keep working; a regression test pins this.
+- Routine dependency updates (`emojis`, `tokio`, `uuid`, `ureq`, `toml`,
+  `arboard`, `icy_sixel` and others).
+
+### Native backend (preview, not in release builds yet)
+
+- The native store now has a single-instance lock, so two siggy processes
+  can no longer fight over one account
+  ([#685](https://github.com/johnsideserf/siggy/issues/685)).
+- `--send`, `--receive` and `--watch` use the native engine in native
+  builds instead of shelling out to signal-cli
+  ([#686](https://github.com/johnsideserf/siggy/issues/686)).
+
 ## v1.15.0
 
 Minor release adding Omarchy desktop theme integration
