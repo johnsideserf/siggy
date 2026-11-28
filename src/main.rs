@@ -72,8 +72,10 @@ use ratatui::{
 };
 
 use app::{App, InputMode, OverlayKind, SendRequest};
+use backend::headless::Headless;
 use config::Config;
 use setup::SetupResult;
+#[cfg(feature = "signal-cli-backend")]
 use signal::client::SignalClient;
 use signal::types::LinkState;
 
@@ -94,6 +96,7 @@ const STARTUP_SYNC_TIMEOUT: Duration = Duration::from_secs(20);
 /// the siggy TUI is open makes signal-cli block on the account lock and the
 /// command times out with an otherwise opaque error. Returns `None` when
 /// nothing recognised, so the caller keeps its generic message.
+#[cfg(feature = "signal-cli-backend")]
 fn cli_stderr_hint(stderr: &str) -> Option<&'static str> {
     let e = stderr.to_ascii_lowercase();
     if e.contains("is in use by another instance") || e.contains("config file is in use") {
@@ -124,24 +127,25 @@ fn oneshot_target(recipient: &str) -> (String, bool) {
 }
 
 /// Send a single message non-interactively, await confirmation, and return
-/// whether it was accepted (#257). Spawns signal-cli, sends, then waits up to
-/// 30s for the correlated `SendTimestamp` (ok) or `SendFailed`.
+/// whether it was accepted (#257). Sends through the compiled-in engine
+/// (#686), then waits up to 30s for the correlated `SendTimestamp` (ok) or
+/// `SendFailed`.
 ///
-/// Drives the signal-cli client directly rather than the [`backend::Backend`]
-/// trait: the headless modes need raw send/event access without an [`App`],
-/// which the trait deliberately does not expose. They stay engine-specific
-/// until the native backend implements them (#640; R8's native half lands
-/// with U17). Same applies to `run_receive_stream` and `run_watch`.
-async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Result<bool> {
-    let mut client = SignalClient::spawn(config).await?;
+/// Drives a [`backend::headless::Headless`] engine rather than the
+/// [`backend::Backend`] trait: the headless modes need raw send/event access
+/// without an [`App`], which `Backend` deliberately does not expose. Same
+/// applies to `run_receive_stream` and `run_watch`.
+async fn run_send_oneshot<H: Headless>(
+    engine: &mut H,
+    recipient: &str,
+    body: &str,
+) -> Result<bool> {
     let (target, is_group) = oneshot_target(recipient);
-    let token = client
-        .send_message(&target, body, is_group, &[], &[], &[], None, None)
-        .await?;
+    let token = engine.send_text(&target, body, is_group).await?;
 
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            match client.event_rx.recv().await {
+            match engine.next_event().await {
                 Some(signal::types::SignalEvent::SendTimestamp { token: t, .. }) if t == token => {
                     return Some(true);
                 }
@@ -149,21 +153,23 @@ async fn run_send_oneshot(config: &Config, recipient: &str, body: &str) -> Resul
                     return Some(false);
                 }
                 Some(_) => continue,
-                None => return None, // channel closed: child exited
+                None => return None, // engine stopped (child exited)
             }
         }
     })
     .await;
 
-    let _ = client.shutdown().await;
-    let stderr = client.stderr_output();
+    let hint = engine.finish().await;
     match outcome {
         Ok(Some(ok)) => Ok(ok),
-        Ok(None) => Err(match cli_stderr_hint(&stderr) {
+        Ok(None) => Err(match hint {
             Some(hint) => anyhow::anyhow!("{hint}"),
-            None => anyhow::anyhow!("signal-cli disconnected before confirming the send"),
+            None => anyhow::anyhow!(
+                "{} disconnected before confirming the send",
+                backend::ACTIVE_ENGINE_NAME
+            ),
         }),
-        Err(_) => Err(match cli_stderr_hint(&stderr) {
+        Err(_) => Err(match hint {
             Some(hint) => anyhow::anyhow!("{hint}"),
             None => anyhow::anyhow!("timed out waiting for send confirmation"),
         }),
@@ -191,15 +197,14 @@ fn resolve_db_path(config: &Config) -> std::path::PathBuf {
 }
 
 /// Stream incoming messages to stdout, one tab-separated line each
-/// (`timestamp_ms`, sender, group-id-or-empty, body), until signal-cli
-/// disconnects or the user interrupts (Ctrl-C) (#257). Outgoing/sync and
+/// (`timestamp_ms`, sender, group-id-or-empty, body), until the engine
+/// stops or the user interrupts (Ctrl-C) (#257). Outgoing/sync and
 /// body-less (attachment-only) messages are skipped; the body has control
 /// characters stripped so each message stays a single clean line.
-async fn run_receive_stream(config: &Config) -> Result<()> {
+async fn run_receive_stream<H: Headless>(engine: &mut H) -> Result<()> {
     use std::io::Write;
-    let mut client = SignalClient::spawn(config).await?;
     loop {
-        match client.event_rx.recv().await {
+        match engine.next_event().await {
             Some(signal::types::SignalEvent::MessageReceived(msg)) => {
                 if msg.is_outgoing {
                     continue;
@@ -217,14 +222,13 @@ async fn run_receive_stream(config: &Config) -> Result<()> {
                     let _ = std::io::stdout().flush();
                 }
             }
-            Some(signal::types::SignalEvent::Disconnected) | None => break,
+            None => break,
             Some(_) => {}
         }
     }
-    let _ = client.shutdown().await;
-    // If signal-cli disconnected for a recognised reason (account lock held by
+    // If the engine stopped for a recognised reason (account lock held by
     // another instance, not registered), report it instead of exiting cleanly.
-    match cli_stderr_hint(&client.stderr_output()) {
+    match engine.finish().await {
         Some(hint) => Err(anyhow::anyhow!("{hint}")),
         None => Ok(()),
     }
@@ -248,9 +252,9 @@ async fn run_watch(config: &Config) -> Result<()> {
     }
     println!("watching with {} rule(s)", engine.rule_count());
 
-    let mut client = SignalClient::spawn(config).await?;
+    let mut client = backend::headless::start(config).await?;
     loop {
-        match client.event_rx.recv().await {
+        match client.next_event().await {
             Some(signal::types::SignalEvent::MessageReceived(msg)) => {
                 let Some(body) = msg.body.as_deref().filter(|b| !b.is_empty()) else {
                     continue;
@@ -274,10 +278,7 @@ async fn run_watch(config: &Config) -> Result<()> {
                             conv_id,
                             is_group,
                             text,
-                        } => match client
-                            .send_message(&conv_id, &text, is_group, &[], &[], &[], None, None)
-                            .await
-                        {
+                        } => match client.send_text(&conv_id, &text, is_group).await {
                             Ok(_) => println!("{now_ms}\treply\t{conv_id}\t{text}"),
                             Err(e) => eprintln!("reply to {conv_id} failed: {e}"),
                         },
@@ -291,12 +292,11 @@ async fn run_watch(config: &Config) -> Result<()> {
                 }
                 let _ = std::io::stdout().flush();
             }
-            Some(signal::types::SignalEvent::Disconnected) | None => break,
+            None => break,
             Some(_) => {}
         }
     }
-    let _ = client.shutdown().await;
-    match cli_stderr_hint(&client.stderr_output()) {
+    match client.finish().await {
         Some(hint) => Err(anyhow::anyhow!("{hint}")),
         None => Ok(()),
     }
@@ -704,9 +704,13 @@ async fn main() -> Result<()> {
     }
 
     // Non-interactive incoming-message stream for scripts (#257). Runs until
-    // signal-cli disconnects or Ctrl-C; no TUI.
+    // the engine stops or Ctrl-C; no TUI.
     if receive {
-        match run_receive_stream(&config).await {
+        let result = match backend::headless::start(&config).await {
+            Ok(mut engine) => run_receive_stream(&mut engine).await,
+            Err(e) => Err(e),
+        };
+        match result {
             Ok(()) => std::process::exit(0),
             Err(e) => {
                 eprintln!("receive failed: {e}");
@@ -730,13 +734,20 @@ async fn main() -> Result<()> {
     // Non-interactive one-shot send for scripts/cron (#257). No TUI; exit 0 on
     // confirmed send, 1 on rejection/timeout/error.
     if let Some((recipient, body)) = send_args {
-        match run_send_oneshot(&config, &recipient, &body).await {
+        let result = match backend::headless::start(&config).await {
+            Ok(mut engine) => run_send_oneshot(&mut engine, &recipient, &body).await,
+            Err(e) => Err(e),
+        };
+        match result {
             Ok(true) => {
                 println!("sent");
                 std::process::exit(0);
             }
             Ok(false) => {
-                eprintln!("send failed: signal-cli rejected the message");
+                eprintln!(
+                    "send failed: {} rejected the message",
+                    backend::ACTIVE_ENGINE_NAME
+                );
                 std::process::exit(1);
             }
             Err(e) => {
@@ -2023,6 +2034,128 @@ async fn run_app<B: backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use signal::types::{SendToken, SignalEvent};
+    use std::collections::VecDeque;
+
+    /// Scripted [`Headless`] engine for the oneshot loops (#686): replays a
+    /// fixed event queue, then reports stopped; records sends.
+    struct ScriptedEngine {
+        events: VecDeque<SignalEvent>,
+        sent: Vec<(String, String, bool)>,
+        finish_hint: Option<String>,
+        finished: bool,
+    }
+
+    impl ScriptedEngine {
+        fn new(events: Vec<SignalEvent>) -> Self {
+            Self {
+                events: events.into(),
+                sent: Vec::new(),
+                finish_hint: None,
+                finished: false,
+            }
+        }
+    }
+
+    impl Headless for ScriptedEngine {
+        async fn next_event(&mut self) -> Option<SignalEvent> {
+            self.events.pop_front()
+        }
+
+        async fn send_text(
+            &mut self,
+            recipient: &str,
+            body: &str,
+            is_group: bool,
+        ) -> Result<SendToken> {
+            self.sent
+                .push((recipient.to_string(), body.to_string(), is_group));
+            Ok(SendToken::new("tok"))
+        }
+
+        async fn finish(&mut self) -> Option<String> {
+            self.finished = true;
+            self.finish_hint.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn send_oneshot_waits_for_its_own_confirmation() {
+        let mut engine = ScriptedEngine::new(vec![
+            SignalEvent::SyncComplete,
+            SignalEvent::SendFailed {
+                token: SendToken::new("other"),
+            },
+            SignalEvent::SendTimestamp {
+                token: SendToken::new("tok"),
+                server_ts: 1,
+            },
+        ]);
+        assert!(
+            run_send_oneshot(&mut engine, "@Ada.42", "hi")
+                .await
+                .unwrap()
+        );
+        // Target classification happens before the engine sees it.
+        assert_eq!(engine.sent, [("u:ada.42".into(), "hi".into(), false)]);
+        assert!(engine.finished, "engine is shut down after the send");
+    }
+
+    #[tokio::test]
+    async fn send_oneshot_reports_rejection() {
+        let mut engine = ScriptedEngine::new(vec![SignalEvent::SendFailed {
+            token: SendToken::new("tok"),
+        }]);
+        assert!(!run_send_oneshot(&mut engine, "grp==", "hi").await.unwrap());
+        assert_eq!(engine.sent, [("grp==".into(), "hi".into(), true)]);
+    }
+
+    #[tokio::test]
+    async fn send_oneshot_disconnect_prefers_the_engine_hint() {
+        let mut engine = ScriptedEngine::new(vec![]);
+        let err = run_send_oneshot(&mut engine, "+15550001111", "hi")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{} disconnected before confirming the send",
+                backend::ACTIVE_ENGINE_NAME
+            )
+        );
+
+        let mut engine = ScriptedEngine::new(vec![]);
+        engine.finish_hint = Some("relink needed".into());
+        let err = run_send_oneshot(&mut engine, "+15550001111", "hi")
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "relink needed");
+    }
+
+    #[tokio::test]
+    async fn receive_stream_ends_cleanly_or_with_the_engine_hint() {
+        let mut engine = ScriptedEngine::new(vec![SignalEvent::SyncComplete]);
+        assert!(run_receive_stream(&mut engine).await.is_ok());
+        assert!(engine.finished);
+
+        let mut engine = ScriptedEngine::new(vec![]);
+        engine.finish_hint = Some("not registered".into());
+        assert_eq!(
+            run_receive_stream(&mut engine)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "not registered"
+        );
+    }
+
+    /// The oneshot error copy is formatted from the engine name now (#686);
+    /// the signal-cli build must keep printing "signal-cli" byte-for-byte.
+    #[cfg(feature = "signal-cli-backend")]
+    #[test]
+    fn signal_cli_engine_name_is_unchanged() {
+        assert_eq!(backend::ACTIVE_ENGINE_NAME, "signal-cli");
+    }
 
     #[test]
     fn oneshot_target_classifies_recipients() {
@@ -2083,6 +2216,7 @@ mod tests {
         assert!(!should_auto_lock(1, 10 * min, true));
     }
 
+    #[cfg(feature = "signal-cli-backend")]
     #[test]
     fn cli_stderr_hint_recognises_known_fatal_conditions() {
         // The lock-contention line signal-cli prints when the TUI is open.

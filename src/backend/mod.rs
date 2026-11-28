@@ -20,6 +20,7 @@
 //! [`ACTIVE_ENGINE_NAME`] (flow gap G7).
 
 pub mod demo;
+pub mod headless;
 #[cfg(test)]
 pub mod mock;
 #[cfg(feature = "native-backend")]
