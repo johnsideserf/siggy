@@ -27,6 +27,8 @@ use crate::signal::types::*;
 /// Maximum age for pending RPC entries before they are considered stale.
 const PENDING_REQUEST_TTL: Duration = Duration::from_secs(60);
 
+// Compiled but unused under the native feature: see the impl note below.
+#[cfg_attr(feature = "native-backend", allow(dead_code))]
 pub struct SignalClient {
     child: Child,
     stdin_tx: mpsc::Sender<String>,
@@ -36,11 +38,11 @@ pub struct SignalClient {
     stderr_buffer: Arc<Mutex<String>>,
 }
 
-// Under the native feature the signal-cli adapter (this impl's main caller)
-// is compiled out, but SignalClient itself stays: the one-shot CLI modes
-// (--receive/--send/--watch) still drive it directly under either feature
-// until U12/U13 migrate them through the boundary. Allow the orphaned
-// methods rather than cfg-ing them one by one; drop with that migration.
+// Under the native feature the signal-cli adapter and the signal-cli
+// headless engine (backend::headless, #686) are compiled out, leaving
+// SignalClient with no caller in the binary. It stays compiled because the
+// lib target re-exports `signal`; allow the orphaned items rather than
+// cfg-ing them one by one.
 #[cfg_attr(feature = "native-backend", allow(dead_code))]
 impl SignalClient {
     pub async fn spawn(config: &Config) -> Result<Self> {
