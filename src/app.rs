@@ -47,6 +47,49 @@ use crate::theme::{self, Theme};
 /// If signal-cli never confirms, the file is deleted after this many seconds.
 pub const PASTE_CLEANUP_SENTINEL_SECS: u64 = 3600;
 
+/// Per-`App` directory for clipboard-paste temp files (#750).
+///
+/// The directory is created lazily by the first paste
+/// (`handle_clipboard_image`), not at construction, and removed with
+/// everything in it when the owning `App` drops. Previously every `App::new`
+/// created it eagerly and nothing ever removed it, leaking one empty
+/// `siggy-paste-<pid>-<n>` dir per siggy run (and ~500 per `cargo test`).
+#[derive(Debug)]
+pub struct PasteTempDir(PathBuf);
+
+impl PasteTempDir {
+    /// A unique, PID-scoped path under the system temp dir. Not created.
+    fn new() -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(std::env::temp_dir().join(format!("siggy-paste-{}-{}", std::process::id(), unique)))
+    }
+}
+
+impl std::ops::Deref for PasteTempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for PasteTempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for PasteTempDir {
+    fn drop(&mut self) {
+        // Best-effort; NotFound (nothing was ever pasted) is the common case.
+        match std::fs::remove_dir_all(&self.0) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => crate::debug_log::logf(format_args!("paste temp dir cleanup failed: {e}")),
+        }
+    }
+}
+
 /// How long after send confirmation to wait before deleting a paste temp file.
 pub(crate) const PASTE_CLEANUP_DELAY_SECS: u64 = 10;
 
@@ -606,8 +649,9 @@ pub struct App {
     pub file_picker: FilePickerState,
     /// File selected for sending as attachment
     pub pending_attachment: Option<PathBuf>,
-    /// Directory for temporary clipboard paste files (PID-scoped to avoid conflicts)
-    pub paste_temp_path: PathBuf,
+    /// Directory for temporary clipboard paste files (PID-scoped to avoid
+    /// conflicts). Created on first paste, removed when the App drops (#750).
+    pub paste_temp_path: PasteTempDir,
     /// Paste temp files pending deletion: send token → (path, delete_after)
     /// Populated when a paste attachment send is dispatched; deletion deferred 10s after
     /// the backend confirms or fails the send, to avoid deleting before it reads the file.
@@ -2134,22 +2178,7 @@ impl App {
             file_picker: FilePickerState::default(),
             pending_attachment: None,
             pending_paste_cleanups: HashMap::new(),
-            paste_temp_path: {
-                static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let dir = std::env::temp_dir().join(format!(
-                    "siggy-paste-{}-{}",
-                    std::process::id(),
-                    unique
-                ));
-                // Best-effort: clean any stale files from a previous run with the same PID,
-                // then recreate. Errors here are non-fatal; handle_clipboard_image re-checks.
-                let _ = std::fs::remove_dir_all(&dir);
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    crate::debug_log::logf(format_args!("paste temp dir init failed: {e}"));
-                }
-                dir
-            },
+            paste_temp_path: PasteTempDir::new(),
             reply_target: None,
             editing_message: None,
             search: SearchState::default(),
