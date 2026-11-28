@@ -10,7 +10,7 @@
 use chrono::Utc;
 
 use crate::app::App;
-use crate::conversation_store::{Conversation, DisplayMessage, Quote};
+use crate::conversation_store::{Conversation, DisplayMessage, Quote, db_warn};
 
 pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
     use crate::signal::types::{
@@ -457,6 +457,18 @@ pub(crate) fn populate_demo_data(app: &mut App, base_date: chrono::NaiveDate) {
         let id = conv.id.clone();
         let msg_count = conv.messages.len();
         let unread = conv.unread;
+        // Mirror the conversation row into the (in-memory) DB: messages,
+        // read markers and other per-conversation writes reference
+        // `conversations(id)` with foreign keys on, so a demo send would
+        // otherwise fail with "FOREIGN KEY constraint failed" (#748).
+        // Messages stay memory-only; nothing reads them back in demo mode.
+        db_warn(
+            app.db.upsert_conversation(&id, &conv.name, conv.is_group),
+            "demo upsert_conversation",
+        );
+        if !conv.accepted {
+            db_warn(app.db.update_accepted(&id, false), "demo update_accepted");
+        }
         app.store.conversations.insert(id.clone(), conv);
         if msg_count > 0 {
             app.store
