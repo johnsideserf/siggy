@@ -95,6 +95,10 @@ impl ReceiveEngine {
 /// path (None disables journaling - in-memory test DBs only; production
 /// callers always pass it, this is not a soft-degrade switch).
 pub fn spawn(store_file: PathBuf, journal_db: Option<PathBuf>) -> Result<ReceiveEngine> {
+    // Single-instance guard (#685), taken before the engine thread exists
+    // so a second siggy fails fast with the actionable copy instead of
+    // fighting this one over the websocket session. Held until exit.
+    super::store::lock_store(&store_file)?;
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (status_tx, status_rx) = watch::channel(EngineStatus::Connecting);
     let (command_tx, command_rx) = mpsc::unbounded_channel();
