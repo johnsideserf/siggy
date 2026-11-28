@@ -10,9 +10,8 @@
 use anyhow::{Context, Result};
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
-use rand_core::OsRng;
 use std::path::{Path, PathBuf};
 
 /// State machine for the lock screen.
@@ -63,10 +62,10 @@ pub fn lock_hash_path(config_path: &Path) -> PathBuf {
 /// Hash a passphrase with argon2 defaults. Returns the PHC string format
 /// (`$argon2id$...`) suitable for `verify_passphrase`.
 pub fn hash_passphrase(passphrase: &str) -> Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
+    // argon2 0.6 generates a random 16-byte salt via getrandom (OS RNG).
     let argon2 = Argon2::default();
     let hash = argon2
-        .hash_password(passphrase.as_bytes(), &salt)
+        .hash_password(passphrase.as_bytes())
         .map_err(|e| anyhow::anyhow!("argon2 hash failed: {e}"))?;
     Ok(hash.to_string())
 }
@@ -127,6 +126,28 @@ mod tests {
     fn hash_then_verify_rejects_wrong_passphrase() {
         let h = hash_passphrase("correct horse battery staple").expect("hash");
         assert!(!verify_passphrase("Tr0ub4dor&3", &h));
+    }
+
+    /// Hashes written by argon2 0.5.x (siggy <= 1.15) must keep verifying after
+    /// the 0.6 upgrade, or existing users get locked out (#707). Generated
+    /// with argon2 0.5.3 `Argon2::default()` + `SaltString::generate`.
+    #[test]
+    fn verifies_hash_from_argon2_0_5() {
+        const LEGACY: &str = "$argon2id$v=19$m=19456,t=2,p=1$NSL7dIW8KX3zeZS77+kELQ$3SNKVzYoVaR5WzpfKCLYReXoSj7DetatHhPOXrwllVA";
+        assert!(verify_passphrase("correct horse battery staple", LEGACY));
+        assert!(!verify_passphrase("Tr0ub4dor&3", LEGACY));
+    }
+
+    /// New hashes keep the same PHC shape and default params as 0.5 wrote.
+    #[test]
+    fn new_hash_uses_argon2id_defaults() {
+        let h = hash_passphrase("x").expect("hash");
+        assert!(h.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"), "{h}");
+        assert_ne!(
+            h,
+            hash_passphrase("x").expect("hash"),
+            "salt must be random"
+        );
     }
 
     #[test]
