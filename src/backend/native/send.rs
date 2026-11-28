@@ -176,6 +176,9 @@ async fn ensure_manager<'a>(
 }
 
 async fn load_manager(store_file: &Path) -> anyhow::Result<Manager<SqliteStore, Registered>> {
+    // Already held via supervisor::spawn; kept so no store open bypasses
+    // the single-instance guard (#685).
+    super::store::lock_store(store_file)?;
     let path = store_file
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("native store path is not valid UTF-8"))?;

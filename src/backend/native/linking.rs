@@ -174,6 +174,8 @@ async fn link_state_of_store(store_file: PathBuf) -> LinkState {
 }
 
 async fn open_store(store_file: &std::path::Path) -> Result<SqliteStore> {
+    // Single-instance guard (#685); a no-op once this process holds it.
+    store::lock_store(store_file)?;
     let path = store_file
         .to_str()
         .context("native store path is not valid UTF-8")?;

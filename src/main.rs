@@ -32,6 +32,7 @@ mod fs_migrate;
 mod handlers;
 mod image_render;
 mod input;
+mod instance_lock;
 mod keybindings;
 mod link;
 mod list_overlay;
@@ -103,6 +104,23 @@ fn cli_stderr_hint(stderr: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Native single-instance guard for the non-TUI paths that touch the store
+/// (#685): take this process's exclusive store lock, or print the
+/// actionable copy and exit 1. The native twin of signal-cli's own
+/// per-account lock. No-op with no account configured, and on the
+/// signal-cli build (signal-cli enforces its own lock).
+fn native_instance_guard_or_exit(config: &Config) {
+    #[cfg(feature = "native-backend")]
+    if !config.account.is_empty()
+        && let Err(e) = backend::native::store::lock_account(&config.account)
+    {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
+    #[cfg(not(feature = "native-backend"))]
+    let _ = config;
 }
 
 /// Classify a `--send` recipient: phone numbers and usernames (`@name.123`
@@ -657,6 +675,7 @@ async fn main() -> Result<()> {
             eprintln!("no account configured; nothing to reset");
             std::process::exit(1);
         }
+        native_instance_guard_or_exit(&config);
         if !setup::account_exists_locally(&config.account) {
             println!("No local account data found for {}.", config.account);
             std::process::exit(0);
@@ -680,6 +699,7 @@ async fn main() -> Result<()> {
     // when signal-cli is detected, an account is set, and the account is
     // actually registered (#640 U5 - the old report never checked the link).
     if check {
+        native_instance_guard_or_exit(&config);
         std::process::exit(run_check(&config, &resolved_config_path).await);
     }
 
@@ -779,6 +799,13 @@ async fn main() -> Result<()> {
     };
     #[cfg(not(unix))]
     let theme_signal: Option<ThemeSignal> = None;
+
+    // Fail fast on a second native instance (#685) while stderr is still a
+    // plain terminal. run_with_engine re-checks after the setup wizard, which
+    // may change the account.
+    if !demo_mode {
+        native_instance_guard_or_exit(&config);
+    }
 
     // Set up terminal BEFORE anything else so all errors render in the TUI
     enable_raw_mode()?;
@@ -1049,6 +1076,18 @@ async fn run_with_engine(
     // provisioning restart clears the registration row (presage calls
     // clear_registration at session start), which is the native equivalent
     // of the #603 relink path.
+    //
+    // Single-instance guard first (#685): a no-op when main() already took
+    // it, but the setup wizard may have just chosen a different account.
+    if let Err(e) = backend::native::store::lock_account(&config.account) {
+        show_error_screen(
+            terminal,
+            &format!("Failed to Start {}", backend::ACTIVE_ENGINE_NAME),
+            &e.to_string(),
+        )
+        .await?;
+        return Ok(());
+    }
     if !setup_handled_linking
         && backend::native::NativeBackend::link_state(config).await != LinkState::Linked
     {
